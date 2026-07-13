@@ -22,7 +22,8 @@
 | 中间件 | 作用 |
 | --- | --- |
 | `create_agent_filesystem_middleware` | 接入沙盒文件系统、用户工作区、线程 uploads/outputs 与只读 Skills 路由，并在工具结果过大时把内容写入 `outputs/large_tool_results` |
-| `save_attachments_to_fs` / `AttachmentMiddleware` | 从 LangGraph state 的 `uploads` 读取附件路径，把可读路径注入系统提示，提示模型按需使用 `read_file` |
+| `save_attachments_to_fs` / `AttachmentMiddleware` | 从 LangGraph state 的 `uploads` 读取附件路径；文本/图片提示模型按需使用 `read_file`，表格提示使用 sandbox `execute` 与 pandas/openpyxl |
+| `sanitize_model_content` / `ModelContentSanitizerMiddleware` | 模型调用前把历史 `ToolMessage` 中不受供应商支持的文件二进制块替换为纯文本指引，保留工具调用配对与图片块 |
 | `SkillsMiddleware` | 注入可见 Skill 的提示段，监听读取 `SKILL.md` 后的 Skill 激活，并按依赖追加工具和 MCP 工具；知识库工具由内置 `knowledge-base` Skill 按需加载 |
 | `YuxiSubAgentMiddleware` | 仅主 Agent 在存在可见子智能体时挂载，提供 `task` 工具调用真实子 Agent graph |
 | `YuxiSummarizationMiddleware` | 基于 DeepAgents `SummarizationMiddleware` 做长上下文压缩，并清洗被摘要历史里的工具结果 |
@@ -52,7 +53,9 @@
 
 ## 附件与文件系统
 
-附件上传后会先落盘到线程文件系统，并在 LangGraph state 中记录 `uploads`。`AttachmentMiddleware` 只把文件名和可读路径注入提示词，不会把文件内容整体塞进模型上下文。模型需要查看附件时，应通过 `read_file` 读取对应路径。
+附件上传后会先落盘到线程文件系统，并在 LangGraph state 中记录 `uploads`。`AttachmentMiddleware` 只把文件名和可读路径注入提示词，不会主动把文件内容整体塞进模型上下文。文本和图片可通过 `read_file` 查看；XLSX/XLS/CSV 等表格应通过 sandbox `execute` 运行 pandas/openpyxl，生成的 Markdown、CSV 和图表写入 `outputs`。表格若已生成 Markdown 预览，提示中会同时保留原始表格路径与预览路径。
+
+Office、PDF、ZIP 等通用二进制不会通过 `read_file` 作为 `file/document` 内容块发送给模型。`ModelContentSanitizerMiddleware` 还会在每次模型调用前净化旧 checkpoint 中已经存在的文件工具块，因此历史线程无需先改数据库即可继续运行；原始 checkpoint 不被改写。
 
 文件系统中间件负责把 sandbox backend、线程 uploads/outputs、用户工作区和只读 Skills 组合成 Agent 可访问的虚拟文件系统。普通 Agent 默认使用当前 `thread_id` 作为文件作用域；子智能体使用 child `thread_id` 做 checkpoint，同时沿用父线程的 uploads/outputs，并使用子 Agent 自己的 Skills 作用域。
 

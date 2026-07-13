@@ -29,6 +29,8 @@ MAX_ATTACHMENT_MARKDOWN_CHARS = 32_000  # TODO: 转 MARKDOWN的时候，不应�
 TMP_ATTACHMENT_PREFIX = "tmp/chat_attachments"
 TMP_ATTACHMENT_PARSE_EXTENSIONS = (".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif")
 TMP_ATTACHMENT_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif")
+TMP_ATTACHMENT_TABLE_EXTENSIONS = (".csv", ".xls", ".xlsx")
+TMP_ATTACHMENT_PARSE_EXTENSIONS += TMP_ATTACHMENT_TABLE_EXTENSIONS
 TMP_ATTACHMENT_OCR_METHODS = tuple(DocumentProcessorFactory.get_available_processors())
 TMP_ATTACHMENT_PARSE_METHODS = ("disable", *TMP_ATTACHMENT_OCR_METHODS)
 
@@ -204,11 +206,13 @@ def _require_tmp_object_section(
 def _normalize_parse_method(file_name: str, parse_method: str | None) -> str:
     suffix = Path(file_name).suffix.lower()
     if suffix not in TMP_ATTACHMENT_PARSE_EXTENSIONS:
-        raise HTTPException(status_code=400, detail="当前仅支持 PDF 和图片附件解析")
+        raise HTTPException(status_code=400, detail="当前仅支持 PDF、图片和表格附件解析")
 
     method = parse_method or ("rapid_ocr" if suffix in TMP_ATTACHMENT_IMAGE_EXTENSIONS else "disable")
     if suffix in TMP_ATTACHMENT_IMAGE_EXTENSIONS:
         allowed_methods = TMP_ATTACHMENT_OCR_METHODS
+    elif suffix in TMP_ATTACHMENT_TABLE_EXTENSIONS:
+        allowed_methods = ("disable",)
     else:
         allowed_methods = TMP_ATTACHMENT_PARSE_METHODS
 
@@ -234,6 +238,7 @@ def _build_state_uploads(attachments: list[dict]) -> list[dict]:
                 "status": attachment.get("status", "uploaded"),
                 "uploaded_at": attachment.get("uploaded_at"),
                 "path": path,
+                "original_path": attachment.get("original_path"),
                 "artifact_url": attachment.get("artifact_url"),
                 "request_id": attachment.get("request_id"),
             }
@@ -600,6 +605,8 @@ async def upload_tmp_attachment_view(*, file: UploadFile, current_uid: str) -> d
         parse_methods = list(TMP_ATTACHMENT_PARSE_METHODS)
     elif suffix in TMP_ATTACHMENT_IMAGE_EXTENSIONS:
         parse_methods = list(TMP_ATTACHMENT_OCR_METHODS)
+    elif suffix in TMP_ATTACHMENT_TABLE_EXTENSIONS:
+        parse_methods = ["disable"]
     else:
         parse_methods = []
 

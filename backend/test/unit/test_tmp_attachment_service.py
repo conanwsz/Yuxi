@@ -9,7 +9,9 @@ from types import SimpleNamespace
 import pytest
 
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
-os.environ.setdefault("SAVE_DIR", os.path.join(os.environ.get("CLAUDE_JOB_DIR", tempfile.gettempdir()), "yuxi-test-saves"))
+os.environ.setdefault(
+    "SAVE_DIR", os.path.join(os.environ.get("CLAUDE_JOB_DIR", tempfile.gettempdir()), "yuxi-test-saves")
+)
 
 from yuxi.services import conversation_service as service
 
@@ -111,6 +113,56 @@ async def test_upload_tmp_attachment_writes_user_scoped_minio_object(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_upload_tmp_spreadsheet_exposes_local_parse_preview(monkeypatch):
+    fake_minio = FakeMinioClient()
+    monkeypatch.setattr(service, "get_minio_client", lambda: fake_minio)
+
+    response = await service.upload_tmp_attachment_view(
+        file=FakeUpload(
+            "report.xlsx",
+            b"xlsx-bytes",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ),
+        current_uid="user-1",
+    )
+
+    assert response["parse_supported"] is True
+    assert response["parse_methods"] == ["disable"]
+
+
+@pytest.mark.asyncio
+async def test_parse_tmp_spreadsheet_uses_builtin_parser(monkeypatch):
+    fake_minio = FakeMinioClient()
+    object_name = "tmp/chat_attachments/user-1/tmp-1/original/report.xlsx"
+    fake_minio.objects[("knowledgebases", object_name)] = b"xlsx-bytes"
+    monkeypatch.setattr(service, "get_minio_client", lambda: fake_minio)
+
+    parse_calls = []
+
+    async def fake_parse(source: str, params: dict | None = None) -> str:
+        parse_calls.append({"source": source, "params": params})
+        return "| month | revenue |\n| --- | --- |\n| Jan | 100 |"
+
+    monkeypatch.setattr(service.Parser, "aparse", staticmethod(fake_parse))
+
+    response = await service.parse_tmp_attachment_view(
+        object_name=object_name,
+        file_name="report.xlsx",
+        parse_method="disable",
+        bucket_name="knowledgebases",
+        current_uid="user-1",
+    )
+
+    assert parse_calls == [
+        {
+            "source": f"minio://knowledgebases/{object_name}",
+            "params": {"ocr_engine": "disable"},
+        }
+    ]
+    assert response["parsed_object_name"].endswith("/parsed/report.md")
+
+
+@pytest.mark.asyncio
 async def test_parse_tmp_attachment_uses_selected_method_and_uploads_markdown(monkeypatch):
     fake_minio = FakeMinioClient()
     object_name = "tmp/chat_attachments/user-1/tmp-1/original/demo.pdf"
@@ -196,9 +248,9 @@ async def test_confirm_tmp_thread_attachments_materializes_original_and_parsed_f
     assert original_name.endswith("_demo.pdf")
     assert markdown_name.endswith("_demo.md")
     assert (tmp_path / "threads" / "thread-1" / "user-data" / "uploads" / original_name).read_bytes() == b"pdf-bytes"
-    assert (
-        tmp_path / "threads" / "thread-1" / "user-data" / "uploads" / "attachments" / markdown_name
-    ).read_text(encoding="utf-8") == "# parsed"
+    assert (tmp_path / "threads" / "thread-1" / "user-data" / "uploads" / "attachments" / markdown_name).read_text(
+        encoding="utf-8"
+    ) == "# parsed"
     assert Path(fake_repo.attachments[0]["original_path"]).name == original_name
 
 
@@ -219,7 +271,7 @@ async def test_parse_tmp_attachment_uses_object_name_for_type_validation(monkeyp
         )
 
     assert exc_info.value.status_code == 400
-    assert "PDF 和图片" in exc_info.value.detail
+    assert exc_info.value.detail == "当前仅支持 PDF、图片和表格附件解析"
 
 
 @pytest.mark.asyncio
@@ -347,5 +399,9 @@ async def test_confirm_tmp_thread_attachments_keeps_duplicate_names_separate(mon
 
     first, second = response["attachments"]
     assert first["original_path"] != second["original_path"]
-    assert (tmp_path / "threads" / "thread-1" / "user-data" / "uploads" / Path(first["original_path"]).name).read_bytes() == b"first"
-    assert (tmp_path / "threads" / "thread-1" / "user-data" / "uploads" / Path(second["original_path"]).name).read_bytes() == b"second"
+    assert (
+        tmp_path / "threads" / "thread-1" / "user-data" / "uploads" / Path(first["original_path"]).name
+    ).read_bytes() == b"first"
+    assert (
+        tmp_path / "threads" / "thread-1" / "user-data" / "uploads" / Path(second["original_path"]).name
+    ).read_bytes() == b"second"

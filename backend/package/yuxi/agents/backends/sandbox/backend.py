@@ -44,6 +44,8 @@ _SKILLS_ROOT = "/" + VIRTUAL_SKILLS_PATH.strip("/")
 _READABLE_ROOTS = (_USER_DATA_ROOT, _SKILLS_ROOT)
 _WRITABLE_ROOTS = (_WORKSPACE_ROOT, _OUTPUTS_ROOT)
 _BINARY_PREVIEW_TOO_LARGE_ERROR = f"Binary file exceeds maximum preview size of {MAX_BINARY_BYTES} bytes"
+_SPREADSHEET_EXTENSIONS = frozenset({".ods", ".xls", ".xlsb", ".xlsm", ".xlsx"})
+_UNSUPPORTED_BINARY_EXTENSIONS = _SPREADSHEET_EXTENSIONS | frozenset({".doc", ".docx", ".pdf", ".ppt", ".pptx", ".zip"})
 
 
 def _normalize_path(path: str) -> str:
@@ -124,6 +126,19 @@ def _filter_readable_matches(matches: list[GrepMatch]) -> list[GrepMatch]:
 
 def _permission_error(operation: str, path: str) -> str:
     return f"permission denied for {operation} on '{path}'"
+
+
+def _unsupported_binary_read_message(path: str) -> str:
+    if PurePosixPath(path).suffix.lower() in _SPREADSHEET_EXTENSIONS:
+        return (
+            f"Spreadsheet '{path}' cannot be returned directly by read_file. "
+            "Use execute with Python and pandas/openpyxl to inspect or transform it, "
+            "then write results under /home/gem/user-data/outputs."
+        )
+    return (
+        f"Binary file '{path}' cannot be returned directly by read_file. "
+        "Use an appropriate parser or execute it inside the sandbox and return text or output artifact paths."
+    )
 
 
 def _describe_read_error(file_path: str, exc: Exception) -> str:
@@ -337,20 +352,25 @@ class ProvisionerSandboxBackend(BaseSandbox):
             return ReadResult(error=_permission_error("read", normalized_path))
 
         try:
-            if _get_file_type(normalized_path) != "text":
+            if PurePosixPath(normalized_path).suffix.lower() in _UNSUPPORTED_BINARY_EXTENSIONS:
+                return ReadResult(error=_unsupported_binary_read_message(normalized_path))
+            file_type = _get_file_type(normalized_path)
+            if file_type == "image":
                 return self._read_base64_file(normalized_path)
+            if file_type != "text":
+                return ReadResult(error=_unsupported_binary_read_message(normalized_path))
 
             try:
                 content = self._read_binary(normalized_path, offset=offset, limit=limit)
             except Exception as exc:  # noqa: BLE001
                 if not _is_utf8_decode_failure(exc):
                     raise
-                return self._read_base64_file(normalized_path)
+                return ReadResult(error=_unsupported_binary_read_message(normalized_path))
 
             if not _looks_like_binary(content):
                 return ReadResult(file_data={"content": content.decode("utf-8"), "encoding": "utf-8"})
 
-            return self._read_base64_file(normalized_path)
+            return ReadResult(error=_unsupported_binary_read_message(normalized_path))
         except Exception as exc:  # noqa: BLE001
             error = _describe_read_error(file_path, exc)
             return ReadResult(error=error.removeprefix("Error: "))
