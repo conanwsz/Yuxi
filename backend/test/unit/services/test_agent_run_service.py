@@ -63,6 +63,7 @@ def test_prepare_run_input_message_keeps_invocation_meta_namespaced():
 
     assert input_message.extra_metadata["source"] == "agent_call"
     assert input_message.extra_metadata["agent_invocation_meta"] == {"trace_id": "trace-1"}
+    assert input_message.extra_metadata["model_spec"] == "provider:model"
     assert "evaluation" not in input_message.extra_metadata
     assert "custom_variables" not in input_message.extra_metadata
 
@@ -711,7 +712,7 @@ async def test_create_agent_run_persists_input_before_enqueue(monkeypatch: pytes
     assert db.added[0].request_id == "req-1"
     assert db.enqueued == [("process_agent_run", db.created_run.id, f"run:{db.created_run.id}")]
     assert db.created_run_kwargs["input_payload"] == {"model_spec": "agent-default-model"}
-    assert "model_spec" not in db.added[0].extra_metadata
+    assert db.added[0].extra_metadata["model_spec"] == "agent-default-model"
     assert db.added[0].extra_metadata["raw_message"]["type"] == "human"
     assert db.added[0].extra_metadata["raw_message"]["content"] == "hello"
     assert "run_id" not in db.added[0].extra_metadata
@@ -1369,6 +1370,7 @@ async def test_create_chat_run_persists_validated_model_spec(monkeypatch: pytest
     )
 
     assert db.created_run_kwargs["input_payload"]["model_spec"] == "claude-x"
+    assert db.added[0].extra_metadata["model_spec"] == "claude-x"
 
 
 @pytest.mark.asyncio
@@ -1411,7 +1413,7 @@ async def test_create_chat_run_snapshots_agent_configured_model_spec(monkeypatch
     )
 
     assert db.created_run_kwargs["input_payload"]["model_spec"] == "agent-config-model"
-    assert "model_spec" not in db.added[0].extra_metadata
+    assert db.added[0].extra_metadata["model_spec"] == "agent-config-model"
 
 
 @pytest.mark.asyncio
@@ -1437,7 +1439,7 @@ async def test_create_chat_run_snapshots_system_default_when_agent_model_empty(m
     )
 
     assert db.created_run_kwargs["input_payload"]["model_spec"] == "system-default-model"
-    assert "model_spec" not in db.added[0].extra_metadata
+    assert db.added[0].extra_metadata["model_spec"] == "system-default-model"
 
 
 @pytest.mark.asyncio

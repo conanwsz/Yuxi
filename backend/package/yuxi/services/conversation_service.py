@@ -14,6 +14,7 @@ from yuxi.agents.buildin import agent_manager
 from yuxi.config import config as app_config
 from yuxi.knowledge.parser import DocumentProcessorFactory, Parser
 from yuxi.repositories.agent_repository import AgentRepository
+from yuxi.repositories.agent_run_repository import AgentRunRepository
 from yuxi.repositories.conversation_repository import INVOCATION_CONVERSATION_SOURCES, ConversationRepository
 from yuxi.services.mention_search_service import invalidate_mention_cache
 from yuxi.storage.minio import StorageError, get_minio_client
@@ -982,5 +983,12 @@ async def get_thread_history_view(
 
         history.append(msg_dict)
 
+    response = {"history": history}
+    latest_run = await AgentRunRepository(db).get_latest_run_by_thread_for_user(thread_id, current_uid)
+    if latest_run and isinstance(latest_run.input_payload, dict):
+        model_spec = latest_run.input_payload.get("model_spec")
+        if isinstance(model_spec, str) and model_spec.strip():
+            response["model_spec"] = model_spec.strip()
+
     logger.info(f"Loaded {len(history)} messages with feedback for thread {thread_id}")
-    return {"history": history}
+    return response

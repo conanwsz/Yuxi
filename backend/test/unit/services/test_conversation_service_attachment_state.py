@@ -55,6 +55,33 @@ def test_build_state_files_only_parsed_and_with_content():
 
 
 @pytest.mark.asyncio
+async def test_thread_history_returns_latest_run_model_for_existing_threads(monkeypatch: pytest.MonkeyPatch):
+    class ConversationRepo:
+        def __init__(self, _db):
+            pass
+
+        async def get_conversation_by_thread_id(self, _thread_id):
+            return SimpleNamespace(id=1, uid="u1", status="active")
+
+        async def get_messages_by_thread_id(self, _thread_id):
+            return []
+
+    class AgentRunRepo:
+        def __init__(self, _db):
+            pass
+
+        async def get_latest_run_by_thread_for_user(self, _thread_id, _uid):
+            return SimpleNamespace(input_payload={"model_spec": "cornex:Qwen3.6-27b"})
+
+    monkeypatch.setattr(svc, "ConversationRepository", ConversationRepo)
+    monkeypatch.setattr(svc, "AgentRunRepository", AgentRunRepo)
+
+    result = await svc.get_thread_history_view(thread_id="thread-1", current_uid="u1", db=object())
+
+    assert result == {"history": [], "model_spec": "cornex:Qwen3.6-27b"}
+
+
+@pytest.mark.asyncio
 async def test_sync_thread_attachment_state_updates_graph(monkeypatch: pytest.MonkeyPatch):
     captured: dict = {}
 

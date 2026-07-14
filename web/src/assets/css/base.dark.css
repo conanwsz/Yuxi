@@ -1,27 +1,27 @@
 /* 深色模式 */
 :root.dark {
-  --main-1000: #e1f6fb;
-  --main-900: #c4eaf5;
-  --main-800: #a3d8e8;
-  --main-700: #82c3d6;
-  --main-600: #5faec2;
-  --main-500: #4a9fb8;
-  --main-400: #3996ae;
-  --main-300: #24839a;
-  --main-200: #046a82;
-  --main-100: #035065;
-  --main-50: #023944;
-  --main-40: #01151f;
-  --main-30: #010d14;
-  --main-20: #010a0f;
-  --main-10: #00070a;
-  --main-5: #000405;
-  --main-1: #000102;
+  --main-1000: #dbeafe;
+  --main-900: #bfdbfe;
+  --main-800: #93c5fd;
+  --main-700: #60a5fa;
+  --main-600: #3b82f6;
+  --main-500: #2563eb;
+  --main-400: #1d4ed8;
+  --main-300: #17458e;
+  --main-200: #123172;
+  --main-100: #0b1f55;
+  --main-50: #08183f;
+  --main-40: #06112f;
+  --main-30: #040c23;
+  --main-20: #030819;
+  --main-10: #020610;
+  --main-5: #01030a;
+  --main-1: #000104;
   --main-0: #000000;
 
   /* 保留原有的 main 变量 */
-  --main-color: #4a9fb8;
-  --main-bright: #5faec2;
+  --main-color: #3b82f6;
+  --main-bright: #60a5fa;
 
   --gray-10000: #fafafa;
   --gray-2000: #f8fafa;
