@@ -2135,16 +2135,20 @@ const fetchThreadMessages = async ({ agentId, threadId, delay = 0 }) => {
     const response = await agentApi.getAgentHistory(threadId)
     const history = response.history || []
     threadMessages.value[threadId] = history
-    restoreThreadModelSelection(threadId, history)
+    restoreThreadModelSelection(threadId, history, response.model_spec)
   } catch (error) {
     handleChatError(error, 'load')
     throw error
   }
 }
 
-// 跨会话还原：用最近一条用户消息记录的 model_spec 还原模型选择
-const restoreThreadModelSelection = (threadId, history) => {
+// 跨会话还原：历史接口优先返回最近 run 的模型，旧线程再回退到用户消息元数据。
+const restoreThreadModelSelection = (threadId, history, historyModelSpec) => {
   if (selectedModelByThread[threadId]) return
+  if (historyModelSpec) {
+    selectedModelByThread[threadId] = historyModelSpec
+    return
+  }
   for (let i = history.length - 1; i >= 0; i -= 1) {
     const msg = history[i]
     if (msg?.type !== 'human') continue

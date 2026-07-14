@@ -94,7 +94,7 @@
 </template>
 
 <script setup>
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { modelProviderApi } from '@/apis/system_api'
 import { RefreshCw, X } from 'lucide-vue-next'
 import { useModelStatus } from '@/composables/useModelStatus'
@@ -168,6 +168,18 @@ const hasFilteredModels = computed(() => {
   return Object.values(filteredV2Models.value).some((providerData) => providerData.models?.length)
 })
 
+const selectedModel = computed(() => {
+  const spec = props.model_spec
+  if (!spec) return null
+
+  for (const providerData of Object.values(v2Models.value)) {
+    const model = providerData.models?.find((item) => item.spec === spec)
+    if (model) return model
+  }
+
+  return null
+})
+
 const getProviderDisplayName = (providerId, providerData = {}) => {
   return (
     providerData.provider_display_name ||
@@ -198,6 +210,8 @@ const fetchV2Models = async () => {
 
   return fetchV2ModelsPromise
 }
+
+onMounted(fetchV2Models)
 
 // 下拉展开前先刷新模型列表，避免弹层打开后再因数据加载发生高度跳变。
 const handleOpenChange = async (open) => {
@@ -271,6 +285,9 @@ const displayModelText = computed(() => {
   const spec = props.model_spec
   if (!spec) return props.placeholder
 
+  const displayName = selectedModel.value?.display_name
+  if (displayName) return displayName
+
   const modelName = extractModelName(spec)
   if (props.displayName === 'mini') {
     return modelName.includes('/') ? modelName.split('/').pop() : modelName
@@ -279,7 +296,9 @@ const displayModelText = computed(() => {
   return spec
 })
 
-const displayModelTitle = computed(() => props.model_spec || props.placeholder)
+const displayModelTitle = computed(
+  () => selectedModel.value?.display_name || props.model_spec || props.placeholder
+)
 
 // 检查当前模型状态
 const checkCurrentModelStatus = async () => {

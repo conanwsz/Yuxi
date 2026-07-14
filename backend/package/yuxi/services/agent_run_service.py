@@ -453,7 +453,7 @@ def _prepare_run_input_message(
     model_spec: str,
     meta: dict,
 ) -> AgentRunInputMessage:
-    metadata: dict[str, Any] = {"request_id": request_id}
+    metadata: dict[str, Any] = {"request_id": request_id, "model_spec": model_spec}
     if attachment_file_ids := (meta.get("attachment_file_ids") or []):
         metadata["attachment_file_ids"] = attachment_file_ids
     if source := meta.get("source"):
