@@ -62,7 +62,11 @@
 - 对话消息图片支持点击全屏预览：对话中用户上传的图片支持点击放大查看，复用文件预览的全屏蒙层交互（Teleport 蒙层，点击图片/空白处或按 Esc 关闭），不引入额外依赖。
 - 新增 Agent token usage 状态快照，在状态面板中作为普通可折叠分组展示完整 `messages`、当前传给 LLM 的 `messages`、system/tools 构成、输入构成堆叠条和上下文窗口占用估算。
 - 优化 Agent token usage 状态面板展示：后端补充 LLM 内容消息与工具消息的 token/count 拆分字段，前端将内容消息、工具消息、系统消息与工具定义分开展示，并修正上下文窗口/剩余信息换行与对话流式输出期间的底部跟随滚动。
-- 对齐 DeepAgents `read_file` 的非文本读取边界：已知非文本扩展和小型未知二进制返回 base64，多模态工具结果可直接携带图片；二进制预览沿用 DeepAgents 500 KiB 上限，OpenAI 兼容模型请求会把 tool-role 图片额外镜像为 user-role 图片消息。
+- 收紧 DeepAgents `read_file` 的非文本读取边界：图片继续以多模态块返回，并由 OpenAI 兼容模型请求镜像为 user-role 图片；XLSX/XLS 等表格与 Office、PDF、ZIP 等通用二进制不再以 base64 `file/document` 块进入模型，而是返回 sandbox `execute`/专用解析工具指引。附件提示按类型分流，临时表格附件支持生成 Markdown 预览并保留原始路径；新增模型调用前净化中间件，使已保存无效文件工具块的历史线程也能继续运行。
+- 修复对话模型选择回显：AgentRun 输入消息持久化本次实际 `model_spec`，历史接口同时返回线程最近一次 run 的模型；重新进入旧线程时，前端优先使用该值恢复选择，不再错误回退到智能体默认模型。
+- 首页移除 GitHub 入口、Stars 徽章及统计卡片，取消对应的 GitHub 实时请求；全局主色由墨绿色调整为与机器人 Logo 一致的深蓝色，首页主按钮、品牌标题和登录强调色同步更新。
+- 浏览器页面标题更新为“超级楚楚 - 楚能AI平台”。
+- 修复模型选择器回显：前台按钮现在复用模型管理中的显示名称，不再将内部模型标识直接展示给用户。
 - 新增默认 OCR 解析引擎配置 `default_ocr_engine`，普通登录用户可读取系统配置；知识库上传弹窗与临时附件解析弹窗默认选中系统默认 OCR，解析入口仅在未显式传入 `ocr_engine` 时使用该默认值。修复读取该配置时因反向导入知识库模块导致配置初始化循环、并中断后续配置加载的问题；OCR 注册表改为轻量模块，知识库单例迁移到显式 runtime 入口，解析器调用方直接导入真实定义模块，包初始化不再加载运行对象。
 - 新增 Agent 内置 `ocr_parse_file` 工具：只允许解析 `/home/gem/user-data/{workspace,uploads,outputs}` 下的沙盒虚拟路径文件，使用指定或系统默认 OCR 引擎生成 Markdown，并把结果写入 `outputs/ocr/*.md`；工具返回结果文件路径、字符数和短预览，不写入知识库 MinIO，也不创建知识库文件记录。
 - 收敛 Agent Invocation 服务边界：新增 `agent_invocation_service.py` 承接 agent-call/eval 的外部调用语义、同步等待、异步响应与 OpenAI-compatible 响应装配；`agent_invocation_router.py` 收敛为 HTTP 适配层，`agent_run_service.py` 只保留通用 AgentRun 生命周期能力，`subagent_run_service.py` 改为调用公开 AgentRun 创建 API，不再穿透私有函数。

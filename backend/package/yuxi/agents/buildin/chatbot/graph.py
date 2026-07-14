@@ -16,6 +16,7 @@ from yuxi.agents.context import (
 from yuxi.agents.middlewares import (
     TokenUsageMiddleware,
     create_summary_middleware,
+    sanitize_model_content,
     save_attachments_to_fs,
 )
 from yuxi.agents.middlewares.skills import SkillsMiddleware
@@ -67,6 +68,7 @@ async def _build_middlewares(context):
             summary_middleware,
             TodoListMiddleware(system_prompt=TODO_MID_PROMPT),
             PatchToolCallsMiddleware(),
+            sanitize_model_content,
             ModelRetryMiddleware(max_retries=getattr(context, "model_retry_times", 2)),
             TokenUsageMiddleware(),
         ]

@@ -514,6 +514,19 @@ def test_provisioner_read_treats_known_non_text_extension_as_base64(monkeypatch)
     assert result.file_data == {"content": "R0lGODlh", "encoding": "base64"}
 
 
+def test_provisioner_read_rejects_spreadsheet_binary_with_execute_guidance(monkeypatch) -> None:
+    monkeypatch.setattr("yuxi.agents.backends.sandbox.backend.get_sandbox_provider", lambda: object())
+    backend = ProvisionerSandboxBackend(thread_id="thread-1", uid="user-1")
+    monkeypatch.setattr(backend, "_read_binary", lambda path, offset=0, limit=None: b"PK\x03\x04xlsx")
+    monkeypatch.setattr(backend, "_read_file_base64", lambda _path: pytest.fail("xlsx must not be returned as base64"))
+
+    result = backend.read("/home/gem/user-data/uploads/report.xlsx")
+
+    assert result.file_data is None
+    assert "execute" in result.error
+    assert "pandas/openpyxl" in result.error
+
+
 def test_provisioner_read_rejects_large_known_binary_before_read(monkeypatch) -> None:
     monkeypatch.setattr("yuxi.agents.backends.sandbox.backend.get_sandbox_provider", lambda: object())
     backend = ProvisionerSandboxBackend(thread_id="thread-1", uid="user-1")
@@ -534,7 +547,7 @@ def test_provisioner_read_rejects_large_known_binary_before_read(monkeypatch) ->
     assert read_calls == []
 
 
-def test_provisioner_read_rejects_large_unknown_binary_before_full_read(monkeypatch) -> None:
+def test_provisioner_read_rejects_large_unknown_binary_without_base64_return(monkeypatch) -> None:
     monkeypatch.setattr("yuxi.agents.backends.sandbox.backend.get_sandbox_provider", lambda: object())
     backend = ProvisionerSandboxBackend(thread_id="thread-1", uid="user-1")
     read_calls: list[tuple[str, int, int | None]] = []
@@ -549,11 +562,11 @@ def test_provisioner_read_rejects_large_unknown_binary_before_full_read(monkeypa
     result = backend.read("/home/gem/user-data/large.unknown")
 
     assert result.file_data is None
-    assert result.error == f"Binary file exceeds maximum preview size of {MAX_BINARY_BYTES} bytes"
+    assert "cannot be returned directly by read_file" in result.error
     assert read_calls == [("/home/gem/user-data/large.unknown", 0, 2000)]
 
 
-def test_provisioner_read_falls_back_to_base64_on_sandbox_utf8_decode_failure(monkeypatch) -> None:
+def test_provisioner_read_rejects_binary_on_sandbox_utf8_decode_failure(monkeypatch) -> None:
     monkeypatch.setattr("yuxi.agents.backends.sandbox.backend.get_sandbox_provider", lambda: object())
     backend = ProvisionerSandboxBackend(thread_id="thread-1", uid="user-1")
     monkeypatch.setattr(backend, "_file_size_bytes", lambda _path: 6)
@@ -566,8 +579,8 @@ def test_provisioner_read_falls_back_to_base64_on_sandbox_utf8_decode_failure(mo
 
     result = backend.read("/home/gem/user-data/workspace/uploaded.bin")
 
-    assert result.error is None
-    assert result.file_data == {"content": "R0lGODlh", "encoding": "base64"}
+    assert result.file_data is None
+    assert "cannot be returned directly by read_file" in result.error
 
 
 def test_read_file_tool_returns_multimodal_block_for_small_binary() -> None:

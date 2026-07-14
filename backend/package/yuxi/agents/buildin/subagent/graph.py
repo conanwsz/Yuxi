@@ -18,7 +18,12 @@ from yuxi.agents.context import (
     DEFAULT_YUXI_SUMMARY_PROMPT,
     prepare_agent_runtime_context,
 )
-from yuxi.agents.middlewares import TokenUsageMiddleware, create_summary_middleware, save_attachments_to_fs
+from yuxi.agents.middlewares import (
+    TokenUsageMiddleware,
+    create_summary_middleware,
+    sanitize_model_content,
+    save_attachments_to_fs,
+)
 from yuxi.agents.middlewares.skills import SkillsMiddleware
 from yuxi.agents.toolkits.service import resolve_configured_runtime_tools
 
@@ -76,6 +81,7 @@ async def _build_middlewares(context):
         summary_middleware,
         TodoListMiddleware(system_prompt=TODO_MID_PROMPT),
         PatchToolCallsMiddleware(),
+        sanitize_model_content,
         _SubAgentToolFilterMiddleware(),
         ModelRetryMiddleware(),
         TokenUsageMiddleware(),

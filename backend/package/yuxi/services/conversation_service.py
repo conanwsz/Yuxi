@@ -15,6 +15,7 @@ from yuxi.config import config as app_config
 from yuxi.knowledge.parser.factory import DocumentProcessorFactory
 from yuxi.knowledge.parser.unified import Parser
 from yuxi.repositories.agent_repository import AgentRepository
+from yuxi.repositories.agent_run_repository import AgentRunRepository
 from yuxi.repositories.conversation_repository import INVOCATION_CONVERSATION_SOURCES, ConversationRepository
 from yuxi.services.mention_search_service import invalidate_mention_cache
 from yuxi.storage.minio import StorageError, get_minio_client
@@ -30,6 +31,8 @@ MAX_ATTACHMENT_MARKDOWN_CHARS = 32_000  # TODO: 转 MARKDOWN的时候，不应�
 TMP_ATTACHMENT_PREFIX = "tmp/chat_attachments"
 TMP_ATTACHMENT_PARSE_EXTENSIONS = (".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif")
 TMP_ATTACHMENT_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif")
+TMP_ATTACHMENT_TABLE_EXTENSIONS = (".csv", ".xls", ".xlsx")
+TMP_ATTACHMENT_PARSE_EXTENSIONS += TMP_ATTACHMENT_TABLE_EXTENSIONS
 TMP_ATTACHMENT_OCR_METHODS = tuple(DocumentProcessorFactory.get_available_processors())
 TMP_ATTACHMENT_PARSE_METHODS = ("disable", *TMP_ATTACHMENT_OCR_METHODS)
 
@@ -205,11 +208,13 @@ def _require_tmp_object_section(
 def _normalize_parse_method(file_name: str, parse_method: str | None) -> str:
     suffix = Path(file_name).suffix.lower()
     if suffix not in TMP_ATTACHMENT_PARSE_EXTENSIONS:
-        raise HTTPException(status_code=400, detail="当前仅支持 PDF 和图片附件解析")
+        raise HTTPException(status_code=400, detail="当前仅支持 PDF、图片和表格附件解析")
 
     method = parse_method or ("rapid_ocr" if suffix in TMP_ATTACHMENT_IMAGE_EXTENSIONS else "disable")
     if suffix in TMP_ATTACHMENT_IMAGE_EXTENSIONS:
         allowed_methods = TMP_ATTACHMENT_OCR_METHODS
+    elif suffix in TMP_ATTACHMENT_TABLE_EXTENSIONS:
+        allowed_methods = ("disable",)
     else:
         allowed_methods = TMP_ATTACHMENT_PARSE_METHODS
 
@@ -235,6 +240,7 @@ def _build_state_uploads(attachments: list[dict]) -> list[dict]:
                 "status": attachment.get("status", "uploaded"),
                 "uploaded_at": attachment.get("uploaded_at"),
                 "path": path,
+                "original_path": attachment.get("original_path"),
                 "artifact_url": attachment.get("artifact_url"),
                 "request_id": attachment.get("request_id"),
             }
@@ -601,6 +607,8 @@ async def upload_tmp_attachment_view(*, file: UploadFile, current_uid: str) -> d
         parse_methods = list(TMP_ATTACHMENT_PARSE_METHODS)
     elif suffix in TMP_ATTACHMENT_IMAGE_EXTENSIONS:
         parse_methods = list(TMP_ATTACHMENT_OCR_METHODS)
+    elif suffix in TMP_ATTACHMENT_TABLE_EXTENSIONS:
+        parse_methods = ["disable"]
     else:
         parse_methods = []
 
@@ -976,5 +984,12 @@ async def get_thread_history_view(
 
         history.append(msg_dict)
 
+    response = {"history": history}
+    latest_run = await AgentRunRepository(db).get_latest_run_by_thread_for_user(thread_id, current_uid)
+    if latest_run and isinstance(latest_run.input_payload, dict):
+        model_spec = latest_run.input_payload.get("model_spec")
+        if isinstance(model_spec, str) and model_spec.strip():
+            response["model_spec"] = model_spec.strip()
+
     logger.info(f"Loaded {len(history)} messages with feedback for thread {thread_id}")
-    return {"history": history}
+    return response

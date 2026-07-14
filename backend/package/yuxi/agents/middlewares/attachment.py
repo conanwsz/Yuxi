@@ -1,12 +1,13 @@
 """Attachment prompt injection middleware.
 
 Read uploaded file metadata from LangGraph state and inject readable paths
-into the system prompt so the model can use `read_file` on demand.
+with file-type-specific handling instructions into the system prompt.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from pathlib import PurePosixPath
 from typing import NotRequired
 
 from langchain.agents import AgentState
@@ -16,6 +17,7 @@ from langchain_core.messages import SystemMessage
 from yuxi.utils import logger
 
 ATTACHMENT_PROMPT_MARKER = "<!-- attachment_context -->"
+_SPREADSHEET_EXTENSIONS = frozenset({".csv", ".ods", ".tsv", ".xls", ".xlsb", ".xlsm", ".xlsx"})
 
 
 class AttachmentState(AgentState):
@@ -29,24 +31,34 @@ def _build_attachment_prompt(uploads: Sequence[dict]) -> str | None:
     if not uploads:
         return None
 
-    valid_uploads: list[tuple[str, str]] = []
+    upload_infos: list[str] = []
     for upload in uploads:
         path = upload.get("path")
         if not isinstance(path, str) or not path.strip():
             continue
         file_name = upload.get("file_name", "未知文件")
-        valid_uploads.append((str(file_name), path))
+        original_path = upload.get("original_path")
+        source_path = original_path if isinstance(original_path, str) and original_path.strip() else path
+        if PurePosixPath(source_path).suffix.lower() in _SPREADSHEET_EXTENSIONS:
+            upload_infos.append(f"- {file_name}\n  - 原始文件: {source_path}")
+            if path != source_path:
+                upload_infos.append(f"  - 文本预览: {path}")
+            upload_infos.append(
+                "  - 处理方式: 不要对 Excel 原始文件调用 `read_file`；"
+                "使用 `execute` 运行 Python，通过 pandas/openpyxl 读取和分析，产物写入 outputs。"
+            )
+            continue
+        upload_infos.append(f"- {file_name}: {path}")
 
-    if not valid_uploads:
+    if not upload_infos:
         return None
 
-    upload_infos = [f"- {file_name}: {path}" for file_name, path in valid_uploads]
     lines = [
         "用户上传了以下文件：",
         "",
         *upload_infos,
         "",
-        "请优先使用 `read_file` 工具读取这些路径中的文件内容，再回答用户问题。",
+        "文本和图片可以使用 `read_file`；其他二进制文件应使用对应解析工具或在 sandbox 中执行代码处理。",
     ]
     return "\n".join(lines)
 
