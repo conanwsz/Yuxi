@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 os.environ.setdefault("OPENAI_API_KEY", "dummy")
 
 from yuxi.services import oidc_service
-from yuxi.storage.postgres.models_business import User
+from yuxi.storage.postgres.models_business import Role, User
 
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
@@ -20,10 +20,13 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 async def oidc_session():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
+        await conn.run_sync(Role.__table__.create)
         await conn.run_sync(User.__table__.create)
 
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     async with session_factory() as session:
+        session.add(Role(key="user", name="普通用户", permissions=[]))
+        await session.commit()
         yield session
 
     await engine.dispose()
@@ -101,3 +104,17 @@ async def test_oidc_callback_allows_existing_binding_when_sub_contains_colon(oid
 
     assert response.status_code == 302
     assert unquote(response.headers["location"]).startswith("/auth/oidc/callback?code=")
+
+
+async def test_oidc_auto_create_rejects_missing_default_role(oidc_session, monkeypatch):
+    monkeypatch.setattr(oidc_service.oidc_config, "default_role", "missing-role")
+
+    with pytest.raises(oidc_service.HTTPException) as exc_info:
+        await oidc_service.create_oidc_user(
+            oidc_session,
+            {"sub": "new-user", "name": "New User", "username": "new-user"},
+            department_id=1,
+        )
+
+    assert exc_info.value.status_code == 500
+    assert "默认角色不存在" in exc_info.value.detail

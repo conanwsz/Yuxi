@@ -48,6 +48,35 @@ class Department(Base):
         }
 
 
+class Role(Base):
+    """Global single-role RBAC definition."""
+
+    __tablename__ = "roles"
+
+    key = Column(String(64), primary_key=True)
+    name = Column(String(100), nullable=False, unique=True)
+    description = Column(String(255), nullable=True)
+    permissions = Column(JSON, nullable=False, default=list)
+    is_system = Column(Boolean, nullable=False, default=False)
+    created_by = Column(String(64), nullable=True)
+    created_at = Column(DateTime, default=utc_now_naive)
+    updated_at = Column(DateTime, default=utc_now_naive, onupdate=utc_now_naive)
+
+    users = relationship("User", back_populates="role_definition")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "key": self.key,
+            "name": self.name,
+            "description": self.description,
+            "permissions": sorted(self.permissions or []),
+            "is_system": bool(self.is_system),
+            "created_by": self.created_by,
+            "created_at": format_utc_datetime(self.created_at),
+            "updated_at": format_utc_datetime(self.updated_at),
+        }
+
+
 class User(Base):
     """用户模型"""
 
@@ -59,7 +88,7 @@ class User(Base):
     phone_number = Column(String, nullable=True, unique=True, index=True)  # 手机号
     avatar = Column(String, nullable=True)  # 头像URL
     password_hash = Column(String, nullable=False)
-    role = Column(String, nullable=False, default="user")  # 角色: superadmin, admin, user
+    role = Column(String(64), ForeignKey("roles.key", ondelete="RESTRICT"), nullable=False, default="user")
     department_id = Column(Integer, ForeignKey("departments.id"), nullable=True)  # 部门ID
     created_at = Column(DateTime, default=utc_now_naive)
     last_login = Column(DateTime, nullable=True)
@@ -78,6 +107,7 @@ class User(Base):
 
     # 关联部门
     department = relationship("Department", back_populates="users")
+    role_definition = relationship("Role", back_populates="users")
 
     # 关联 API Keys
     api_keys = relationship("APIKey", back_populates="user", cascade="all, delete-orphan")
@@ -93,6 +123,8 @@ class User(Base):
             "phone_number": self.phone_number,
             "avatar": self.avatar,
             "role": self.role,
+            "role_name": getattr(self, "role_name", self.role),
+            "permissions": sorted(getattr(self, "permission_keys", set())),
             "department_id": self.department_id,
             "created_at": format_utc_datetime(self.created_at),
             "last_login": format_utc_datetime(self.last_login),

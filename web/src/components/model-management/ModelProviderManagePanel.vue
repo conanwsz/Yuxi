@@ -16,12 +16,14 @@ import {
 
 import { modelProviderApi } from '@/apis/system_api'
 import { useConfigStore } from '@/stores/config'
+import { useUserStore } from '@/stores/user'
 import { modelIcons } from '@/utils/modelIcon'
 import PageShoulder from '@/components/shared/PageShoulder.vue'
 import InfoCard from '@/components/shared/InfoCard.vue'
 import ExtensionCardGrid from '@/components/extensions/ExtensionCardGrid.vue'
 
 const configStore = useConfigStore()
+const userStore = useUserStore()
 const loading = ref(false)
 const remoteLoading = ref(false)
 const saving = ref(false)
@@ -697,7 +699,12 @@ defineExpose({
   <div class="model-provider-manage-panel">
     <PageShoulder v-model:search="searchQuery" search-placeholder="搜索供应商...">
       <template #actions>
-        <a-button type="primary" class="lucide-icon-btn" @click="openCreateProviderModal">
+        <a-button
+          v-if="userStore.hasPermission('models.manage')"
+          type="primary"
+          class="lucide-icon-btn"
+          @click="openCreateProviderModal"
+        >
           <Plus :size="14" />
           新增供应商
         </a-button>
@@ -716,7 +723,7 @@ defineExpose({
         :default-icon="Globe"
         :info="getProviderInfo(provider)"
         :status="getProviderStatus(provider)"
-        @click="openEditProviderModal(provider)"
+        @click="userStore.hasPermission('models.manage') && openEditProviderModal(provider)"
       >
         <template #icon>
           <img
@@ -728,12 +735,12 @@ defineExpose({
         <template #footer>
           <button class="view-models-btn" type="button" @click.stop="openModelsModal(provider)">
             <Settings2 :size="14" />
-            管理模型
+            {{ userStore.hasPermission('models.manage') ? '管理模型' : '模型列表' }}
             <span v-if="provider.enabled_models?.length" class="enabled-count"
               >（已启用 {{ provider.enabled_models.length }} 个）</span
             >
           </button>
-          <span class="provider-enable-switch" @click.stop>
+          <span v-if="userStore.hasPermission('models.manage')" class="provider-enable-switch" @click.stop>
             <a-switch
               size="small"
               :checked="provider.is_enabled"
@@ -921,7 +928,7 @@ defineExpose({
             <h4 class="models-section-title">
               已启用模型 ({{ currentProviderForModels.enabled_models?.length || 0 }})
             </h4>
-            <div class="actions">
+            <div v-if="userStore.hasPermission('models.manage')" class="actions">
               <a-button
                 size="small"
                 type="primary"
@@ -982,6 +989,7 @@ defineExpose({
               </span>
               <span class="col-ops">
                 <a-button
+                  v-if="userStore.hasPermission('models.manage')"
                   size="small"
                   class="model-test-button"
                   :class="{
@@ -999,10 +1007,16 @@ defineExpose({
                   />
                   <Zap v-else :size="13" />
                 </a-button>
-                <a-button size="small" class="lucide-icon-btn" @click="openModelConfigModal(model)">
+                <a-button
+                  v-if="userStore.hasPermission('models.manage')"
+                  size="small"
+                  class="lucide-icon-btn"
+                  @click="openModelConfigModal(model)"
+                >
                   <Settings2 :size="13" />
                 </a-button>
                 <a-button
+                  v-if="userStore.hasPermission('models.manage')"
                   size="small"
                   danger
                   class="lucide-icon-btn"
@@ -1017,7 +1031,7 @@ defineExpose({
         </div>
 
         <!-- Remote Models Section -->
-        <div class="models-section">
+        <div v-if="userStore.hasPermission('models.manage')" class="models-section">
           <div class="remote-header">
             <h4 class="models-section-title">远端候选模型 ({{ filteredRemoteModels.length }})</h4>
             <a-input

@@ -11,16 +11,16 @@
     />
 
     <div v-if="!isDetailPage" class="extensions-content">
-      <div v-if="userStore.isAdmin && activeTab === 'knowledge'" class="tab-panel">
+      <div v-if="userStore.hasPermission('knowledge.read') && activeTab === 'knowledge'" class="tab-panel">
         <DataBaseView ref="knowledgeRef" embedded />
       </div>
-      <div v-if="userStore.isAdmin && activeTab === 'tools'" class="tab-panel">
+      <div v-if="userStore.hasPermission('tools.read') && activeTab === 'tools'" class="tab-panel">
         <ToolsCardList ref="toolsRef" />
       </div>
       <div v-if="activeTab === 'skills'" class="tab-panel">
         <SkillCardList ref="skillsRef" />
       </div>
-      <div v-if="userStore.isAdmin && activeTab === 'mcp'" class="tab-panel">
+      <div v-if="userStore.hasPermission('mcp.read') && activeTab === 'mcp'" class="tab-panel">
         <McpCardList ref="mcpRef" />
       </div>
     </div>
@@ -48,16 +48,18 @@ const skillsRef = ref(null)
 const mcpRef = ref(null)
 const toolsRef = ref(null)
 
-const adminExtensionTabs = [
-  { key: 'knowledge', label: '知识库' },
-  { key: 'tools', label: '工具' },
-  { key: 'mcp', label: 'MCP' },
-  { key: 'skills', label: 'Skills' }
-]
-const userExtensionTabs = [{ key: 'skills', label: 'Skills' }]
-const extensionTabs = computed(() => (userStore.isAdmin ? adminExtensionTabs : userExtensionTabs))
+const extensionTabs = computed(() =>
+  [
+    ['knowledge.read', { key: 'knowledge', label: '知识库' }],
+    ['tools.read', { key: 'tools', label: '工具' }],
+    ['mcp.read', { key: 'mcp', label: 'MCP' }],
+    ['skills.read', { key: 'skills', label: 'Skills' }]
+  ]
+    .filter(([permission]) => userStore.hasPermission(permission))
+    .map(([, tab]) => tab)
+)
 const allowedTabKeys = computed(() => extensionTabs.value.map((tab) => tab.key))
-const defaultTabKey = computed(() => extensionTabs.value[0]?.key || 'skills')
+const defaultTabKey = computed(() => extensionTabs.value[0]?.key || null)
 
 const normalizeTab = (tab) => {
   if (allowedTabKeys.value.includes(tab)) return tab
@@ -94,7 +96,7 @@ const activeChildLoading = computed(() => {
 })
 
 watch(
-  () => [route.query.tab, userStore.isAdmin],
+  () => [route.query.tab, userStore.permissions.join(',')],
   ([tab]) => {
     const nextTab = normalizeTab(tab)
     if (activeTab.value !== nextTab) activeTab.value = nextTab

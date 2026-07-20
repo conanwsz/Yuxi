@@ -23,6 +23,7 @@ from yuxi.agents.skills.repository import SkillRepository
 from yuxi.storage.postgres.models_business import Skill, User
 from yuxi.utils.logging_config import logger
 from yuxi.utils.share_config import SHARE_ACCESS_LEVELS, normalize_share_config
+from yuxi.services.permission_service import has_permission
 
 SKILL_SLUG_PATTERN = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 SKILL_NAME_PATTERN = SKILL_SLUG_PATTERN
@@ -60,7 +61,6 @@ TEXT_FILE_EXTENSIONS = {
 BUILTIN_SKILL_OPERATOR = "builtin-system"
 SKILL_SOURCE_TYPES = {"builtin", "upload", "remote"}
 ACCESS_LEVELS = SHARE_ACCESS_LEVELS
-ADMIN_ROLES = {"admin", "superadmin"}
 DEFAULT_SKILL_SHARE_CONFIG = {"access_level": "user", "department_ids": [], "user_uids": []}
 BUILTIN_SKILL_SHARE_CONFIG = {"access_level": "global", "department_ids": [], "user_uids": []}
 SKILL_DRAFT_TTL_SECONDS = 60 * 60
@@ -105,7 +105,7 @@ def is_builtin_skill(item: Skill | dict) -> bool:
 
 
 def get_allowed_skill_access_levels(user: User) -> list[str]:
-    if user.role in ADMIN_ROLES:
+    if user.role != "user" and has_permission(user, "skills.share"):
         return ["global", "department", "user"]
     return ["user"]
 
@@ -161,8 +161,10 @@ def user_can_access_skill(user: User, skill: Skill, *, require_enabled: bool = T
 
 def user_can_manage_skill(user: User, skill: Skill) -> bool:
     if is_builtin_skill(skill):
-        return user.role in ADMIN_ROLES
-    return user.role in ADMIN_ROLES or skill.created_by == str(user.uid or "")
+        return user.role != "user"
+    if skill.created_by == str(user.uid or ""):
+        return True
+    return user.role != "user" and user_can_access_skill(user, skill, require_enabled=False)
 
 
 def can_skill_depend_on(parent: Skill, dependency: Skill) -> bool:
@@ -889,7 +891,7 @@ async def confirm_skill_install_draft(
     operator: User,
 ) -> list[dict[str, Any]]:
     draft_dir, data = _load_skill_draft(draft_id)
-    if data.get("created_by") != operator.uid and operator.role not in ADMIN_ROLES:
+    if data.get("created_by") != operator.uid and not has_permission(operator, "skills.create"):
         raise ValueError("无权确认该安装草稿")
 
     source_type = data.get("source_type")
@@ -978,7 +980,7 @@ async def confirm_skill_install_draft(
 
 async def discard_skill_install_draft(*, draft_id: str, operator: User) -> None:
     draft_dir, data = _load_skill_draft(draft_id)
-    if data.get("created_by") != operator.uid and operator.role not in ADMIN_ROLES:
+    if data.get("created_by") != operator.uid and not has_permission(operator, "skills.create"):
         raise ValueError("无权删除该安装草稿")
     shutil.rmtree(draft_dir, ignore_errors=True)
 

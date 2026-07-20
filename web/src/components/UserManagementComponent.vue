@@ -19,7 +19,12 @@
             <RefreshCw :size="16" :class="{ spin: userManagement.refreshing }" />
           </template>
         </a-button>
-        <a-button type="primary" @click="showAddUserModal" class="add-btn lucide-icon-btn">
+        <a-button
+          v-if="userStore.hasPermission('users.create')"
+          type="primary"
+          @click="showAddUserModal"
+          class="add-btn lucide-icon-btn"
+        >
           <template #icon><Plus :size="16" /></template>
           添加用户
         </a-button>
@@ -48,9 +53,9 @@
         </a-select>
         <a-select v-model:value="userManagement.roleFilter" class="filter-select">
           <a-select-option value="">全部权限</a-select-option>
-          <a-select-option value="superadmin">超级管理员</a-select-option>
-          <a-select-option value="admin">管理员</a-select-option>
-          <a-select-option value="user">普通用户</a-select-option>
+          <a-select-option v-for="role in roleOptions" :key="role.key" :value="role.key">
+            {{ role.name }}
+          </a-select-option>
         </a-select>
       </div>
     </div>
@@ -91,30 +96,33 @@
               </template>
 
               <template #status>
-                <div
-                  v-if="user.role === 'admin' || user.role === 'superadmin' || user.department_name"
-                  class="role-dept-badge"
-                >
+                <div class="role-dept-badge">
                   <span class="role-icon-wrapper" :class="getRoleClass(user.role)">
                     <UserLock v-if="user.role === 'superadmin'" :size="14" />
                     <UserStar v-else-if="user.role === 'admin'" :size="14" />
                     <User v-else :size="14" />
                   </span>
-                  <span v-if="user.department_name" class="dept-text">
-                    {{ user.department_name }}
+                  <span class="dept-text">
+                    {{ user.role_name || roleName(user.role) }}
+                    <template v-if="user.department_name"> · {{ user.department_name }}</template>
                   </span>
                 </div>
               </template>
 
               <template #card-more-action-corner>
                 <a-menu>
-                  <a-menu-item key="edit" @click.stop="showEditUserModal(user)">
+                  <a-menu-item
+                    v-if="userStore.hasPermission('users.update')"
+                    key="edit"
+                    @click.stop="showEditUserModal(user)"
+                  >
                     <span class="lucide-menu-item">
                       <SquarePen :size="14" />
                       <span>编辑用户</span>
                     </span>
                   </a-menu-item>
                   <a-menu-item
+                    v-if="userStore.hasPermission('users.delete')"
                     key="delete"
                     :disabled="isUserDeleteDisabled(user)"
                     :danger="!isUserDeleteDisabled(user)"
@@ -226,19 +234,14 @@
           </a-form-item>
         </template>
 
-        <a-form-item
-          v-if="userManagement.editMode && userManagement.form.role === 'superadmin'"
-          label="角色"
-          class="form-item"
-        >
-          <a-input value="超级管理员" disabled />
-          <div class="help-text">超级管理员账户无法修改角色</div>
-        </a-form-item>
-        <a-form-item v-else label="角色" class="form-item">
-          <a-select v-model:value="userManagement.form.role">
-            <a-select-option value="user">普通用户</a-select-option>
-            <a-select-option value="admin" v-if="userStore.isSuperAdmin">管理员</a-select-option>
+        <a-form-item label="角色" class="form-item">
+          <a-select v-if="userStore.isSuperAdmin" v-model:value="userManagement.form.role">
+            <a-select-option v-for="role in roles" :key="role.key" :value="role.key">
+              {{ role.name }}
+            </a-select-option>
           </a-select>
+          <a-input v-else :value="roleName(userManagement.form.role)" disabled />
+          <div v-if="!userStore.isSuperAdmin" class="help-text">只有超级管理员可以修改角色</div>
         </a-form-item>
 
         <!-- 部门选择器（仅超级管理员可见） -->
@@ -259,10 +262,11 @@
 </template>
 
 <script setup>
-import { reactive, onMounted, watch, computed } from 'vue'
+import { reactive, ref, onMounted, watch, computed } from 'vue'
 import { message, Modal } from 'ant-design-vue'
 import { useUserStore } from '@/stores/user'
 import { departmentApi } from '@/apis'
+import { roleApi } from '@/apis/role_api'
 import {
   Plus,
   SquarePen,
@@ -279,6 +283,13 @@ import FallbackAvatar from '@/components/common/FallbackAvatar.vue'
 import InfoCard from '@/components/shared/InfoCard.vue'
 
 const userStore = useUserStore()
+const roles = ref([])
+
+const roleName = (key) => {
+  const role = roles.value.find((item) => item.key === key)
+  if (role) return role.name
+  return { superadmin: '超级管理员', admin: '管理员', user: '普通用户' }[key] || key
+}
 
 // 用户管理相关状态
 const userManagement = reactive({
@@ -307,6 +318,12 @@ const userManagement = reactive({
     phoneError: '' // 手机号错误信息
   },
   displayPasswordFields: true // 编辑时是否显示密码字段
+})
+
+const roleOptions = computed(() => {
+  if (roles.value.length) return roles.value
+  const keys = [...new Set(userManagement.users.map((user) => user.role))]
+  return keys.map((key) => ({ key, name: roleName(key) }))
 })
 
 // 部门列表（仅超级管理员使用）
@@ -377,6 +394,16 @@ const fetchDepartments = async () => {
     departmentManagement.departments = departments
   } catch (error) {
     console.error('获取部门列表失败:', error)
+  }
+}
+
+const fetchRoles = async () => {
+  if (!userStore.isSuperAdmin) return
+  try {
+    const result = await roleApi.getRoles()
+    roles.value = result.roles || []
+  } catch (error) {
+    console.error('获取角色列表失败:', error)
   }
 }
 
@@ -486,7 +513,7 @@ const handleRefresh = async () => {
   if (userManagement.refreshing) return
   userManagement.refreshing = true
   try {
-    await Promise.all([fetchUsers(), fetchDepartments()])
+    await Promise.all([fetchUsers(), fetchDepartments(), fetchRoles()])
     message.success('刷新成功')
   } catch (error) {
     console.error('刷新失败:', error)
@@ -577,10 +604,8 @@ const handleUserFormSubmit = async () => {
     // 根据模式决定创建还是更新用户
     if (userManagement.editMode) {
       // 创建更新数据对象
-      const updateData = {
-        username: userManagement.form.username.trim(),
-        role: userManagement.form.role
-      }
+      const updateData = { username: userManagement.form.username.trim() }
+      if (userStore.isSuperAdmin) updateData.role = userManagement.form.role
 
       // 添加手机号字段
       if (userManagement.form.phoneNumber) {
@@ -679,8 +704,7 @@ const getRoleClass = (role) => {
 
 // 在组件挂载时获取用户列表
 onMounted(async () => {
-  await fetchUsers()
-  await fetchDepartments()
+  await Promise.all([fetchUsers(), fetchDepartments(), fetchRoles()])
 })
 </script>
 

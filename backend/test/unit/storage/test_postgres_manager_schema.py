@@ -33,6 +33,29 @@ class _RecordingEngine:
 
 
 @pytest.mark.asyncio
+async def test_ensure_business_schema_creates_and_backfills_roles_before_adding_user_fk():
+    manager = PostgresManager()
+    original_initialized = manager._initialized
+    original_engine = manager.async_engine
+    connection = _RecordingConnection()
+
+    manager._initialized = True
+    manager.async_engine = _RecordingEngine(connection)
+    try:
+        await manager.ensure_business_schema()
+    finally:
+        manager._initialized = original_initialized
+        manager.async_engine = original_engine
+
+    statements = "\n".join(connection.statements)
+    assert "CREATE TABLE IF NOT EXISTS roles" in statements
+    assert "INSERT INTO roles (key, name, description, permissions, is_system" in statements
+    assert "SELECT DISTINCT users.role" in statements
+    assert "ADD CONSTRAINT fk_users_role_key" in statements
+    assert statements.index("SELECT DISTINCT users.role") < statements.index("ADD CONSTRAINT fk_users_role_key")
+
+
+@pytest.mark.asyncio
 async def test_ensure_business_schema_backfills_subagent_thread_columns_before_dropping_legacy_columns():
     manager = PostgresManager()
     original_initialized = manager._initialized

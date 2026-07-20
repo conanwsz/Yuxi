@@ -2,7 +2,12 @@
   <div class="mcp-cards-page extension-page-root">
     <PageShoulder search-placeholder="搜索 MCP..." v-model:search="searchQuery">
       <template #actions>
-        <a-button type="primary" @click="handleMcpAdd" class="lucide-icon-btn">
+        <a-button
+          v-if="userStore.hasPermission('mcp.manage')"
+          type="primary"
+          @click="handleMcpAdd"
+          class="lucide-icon-btn"
+        >
           <Plus :size="14" />
           <span>添加 MCP</span>
         </a-button>
@@ -38,7 +43,7 @@
           <template #icon>
             <span class="info-card-emoji-icon">{{ server.icon || '🔌' }}</span>
           </template>
-          <template #action>
+          <template v-if="userStore.hasPermission('mcp.manage')" #action>
             <button
               type="button"
               class="mcp-card-action mcp-card-action-danger"
@@ -66,7 +71,7 @@
           <template #icon>
             <span class="info-card-emoji-icon">{{ server.icon || '🔌' }}</span>
           </template>
-          <template #action>
+          <template v-if="userStore.hasPermission('mcp.manage')" #action>
             <button
               type="button"
               class="mcp-card-action"
@@ -134,6 +139,7 @@
         <div class="mcp-basic-info-footer">
           <a-button @click="closeBasicInfo">关闭</a-button>
           <a-button
+            v-if="userStore.hasPermission('mcp.manage')"
             type="primary"
             class="lucide-icon-btn"
             :loading="isActionLoading(previewServer)"
@@ -165,8 +171,10 @@ import InfoCard from '@/components/shared/InfoCard.vue'
 import PageShoulder from '@/components/shared/PageShoulder.vue'
 import McpFormModal from './McpFormModal.vue'
 import { formatExtensionCardTitle } from '@/utils/extensionDisplayName'
+import { useUserStore } from '@/stores/user'
 
 const router = useRouter()
+const userStore = useUserStore()
 
 const loading = ref(false)
 const servers = ref([])

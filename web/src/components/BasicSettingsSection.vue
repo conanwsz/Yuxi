@@ -1,9 +1,9 @@
 <template>
   <div class="basic-settings-section">
-    <template v-if="userStore.isAdmin">
+    <template v-if="userStore.hasPermission('system.config.read')">
       <div class="section-title">默认项配置</div>
       <div class="settings-panel">
-        <template v-if="userStore.isSuperAdmin">
+        <template v-if="userStore.hasPermission('system.config.update')">
           <div class="setting-row two-cols">
             <div class="col-item">
               <div class="setting-label">{{ items?.default_model?.des || '默认对话模型' }}</div>
@@ -73,7 +73,7 @@
         </template>
       </div>
 
-      <template v-if="userStore.isSuperAdmin">
+      <template v-if="userStore.hasPermission('system.config.update')">
         <div class="section-title">内容审查配置</div>
         <div class="section">
           <div class="card">
@@ -109,8 +109,8 @@
     </template>
 
     <!-- 服务链接部分 -->
-    <div v-if="userStore.isAdmin" class="section-title">服务链接</div>
-    <div v-if="userStore.isAdmin">
+    <div v-if="userStore.hasPermission('system.config.read')" class="section-title">服务链接</div>
+    <div v-if="userStore.hasPermission('system.config.read')">
       <p class="section-description">
         快速访问系统相关的外部服务，需要将 localhost 替换为实际的 IP 地址。
       </p>

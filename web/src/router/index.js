@@ -80,7 +80,7 @@ const router = createRouter({
           path: '',
           name: 'DashboardComp',
           component: () => import('../views/DashboardView.vue'),
-          meta: { keepAlive: false, requiresAuth: true, requiresSuperAdmin: true }
+          meta: { keepAlive: false, requiresAuth: true, requiredPermission: 'dashboard.read' }
         }
       ]
     },
@@ -118,7 +118,7 @@ const router = createRouter({
               meta: {
                 keepAlive: false,
                 requiresAuth: true,
-                requiresAdmin: true
+                requiredPermission: 'knowledge.read'
               }
             },
             {
@@ -128,7 +128,7 @@ const router = createRouter({
               meta: {
                 keepAlive: false,
                 requiresAuth: true,
-                requiresAdmin: true
+                requiredPermission: 'mcp.read'
               }
             },
             {
@@ -158,6 +158,8 @@ router.beforeEach(async (to) => {
   // 检查路由是否需要认证
   const requiresAuth = to.matched.some((record) => record.meta.requiresAuth === true)
   const requiresAdmin = to.matched.some((record) => record.meta.requiresAdmin)
+  const requiredPermission = to.matched.find((record) => record.meta.requiredPermission)?.meta
+    .requiredPermission
   const requiresSuperAdmin = to.matched.some((record) => record.meta.requiresSuperAdmin)
 
   const userStore = useUserStore()
@@ -212,6 +214,10 @@ router.beforeEach(async (to) => {
       console.error('获取智能体信息失败:', error)
       return '/agent'
     }
+  }
+
+  if (requiredPermission && !userStore.hasPermission(requiredPermission)) {
+    return '/agent'
   }
 
   // 如果用户已登录但访问登录页，按 redirect 参数跳转

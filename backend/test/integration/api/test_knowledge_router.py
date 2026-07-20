@@ -24,19 +24,21 @@ def _assert_forbidden_response(response):
 async def _create_test_department(test_client, admin_headers, prefix="pytest_dept"):
     suffix = uuid.uuid4().hex[:8]
     admin_uid = f"deptadmin_{suffix}"
+    admin_password = f"Pw!{suffix}"
     response = await test_client.post(
         "/api/departments",
         json={
             "name": f"{prefix}_{suffix}",
             "description": "pytest department",
             "admin_uid": admin_uid,
-            "admin_password": f"Pw!{suffix}",
+            "admin_password": admin_password,
         },
         headers=admin_headers,
     )
     assert response.status_code == 201, response.text
     payload = response.json()
     payload["admin_uid"] = admin_uid
+    payload["admin_password"] = admin_password
     return payload
 
 
@@ -589,6 +591,67 @@ async def test_user_share_config_filters_accessible_databases(test_client, admin
             await _delete_user_by_id(test_client, admin_headers, user_a["user"]["id"])
         if user_b:
             await _delete_user_by_id(test_client, admin_headers, user_b["user"]["id"])
+        await _delete_department_with_admin(test_client, admin_headers, department_a)
+        await _delete_department_with_admin(test_client, admin_headers, department_b)
+
+
+async def test_department_admin_cannot_manage_other_department_knowledge_by_id(
+    test_client, admin_headers
+):
+    department_a = await _create_test_department(test_client, admin_headers, "pytest_scope_a")
+    department_b = await _create_test_department(test_client, admin_headers, "pytest_scope_b")
+    database = None
+
+    try:
+        login = await test_client.post(
+            "/api/auth/token",
+            data={
+                "username": department_a["admin_uid"],
+                "password": department_a["admin_password"],
+            },
+        )
+        assert login.status_code == 200, login.text
+        department_a_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        database = await _create_test_database(
+            test_client,
+            admin_headers,
+            {
+                "access_level": "department",
+                "department_ids": [department_b["id"]],
+                "user_uids": [],
+            },
+        )
+        kb_id = database["kb_id"]
+
+        attempts = [
+            await test_client.put(
+                f"/api/knowledge/databases/{kb_id}",
+                json={"name": "forbidden-update"},
+                headers=department_a_headers,
+            ),
+            await test_client.delete(
+                f"/api/knowledge/databases/{kb_id}", headers=department_a_headers
+            ),
+            await test_client.get(
+                f"/api/knowledge/databases/{kb_id}/documents", headers=department_a_headers
+            ),
+            await test_client.get(
+                f"/api/knowledge/databases/{kb_id}/graph-build/status",
+                headers=department_a_headers,
+            ),
+            await test_client.get(
+                f"/api/evaluation/databases/{kb_id}/datasets", headers=department_a_headers
+            ),
+        ]
+        assert all(response.status_code == 404 for response in attempts), [
+            (response.status_code, response.text) for response in attempts
+        ]
+    finally:
+        if database:
+            await test_client.delete(
+                f"/api/knowledge/databases/{database['kb_id']}", headers=admin_headers
+            )
         await _delete_department_with_admin(test_client, admin_headers, department_a)
         await _delete_department_with_admin(test_client, admin_headers, department_b)
 

@@ -4,6 +4,7 @@
       <template #actions>
         <template v-if="!isBatchDeleteMode">
           <a-button
+            v-if="userStore.hasPermission('skills.delete')"
             @click="isBatchDeleteMode = true"
             :disabled="loading || importing || filteredDeletableSkills.length === 0"
             class="lucide-icon-btn"
@@ -11,6 +12,7 @@
             <span>批量管理</span>
           </a-button>
           <a-button
+            v-if="userStore.hasPermission('skills.create')"
             @click="handleOpenRemoteInstall"
             :disabled="loading || importing"
             class="lucide-icon-btn"
@@ -19,6 +21,7 @@
             <span>远程安装</span>
           </a-button>
           <a-upload
+            v-if="userStore.hasPermission('skills.create')"
             accept=".zip,.md"
             :show-upload-list="false"
             :custom-request="handleImportUpload"
@@ -112,7 +115,7 @@
             >
               <template #action>
                 <button
-                  v-if="skill.isRecommendation"
+                  v-if="skill.isRecommendation && userStore.hasPermission('skills.create')"
                   type="button"
                   class="skill-enabled-action"
                   :class="{ loading: isRecommendedSkillInstalling(skill.source) }"
@@ -132,7 +135,11 @@
                   type="button"
                   class="skill-enabled-action"
                   :class="{ enabled: skill.enabled !== false }"
-                  :disabled="!canManageSkill(skill) || isSkillToggling(skill.slug)"
+                  :disabled="
+                    !userStore.hasPermission('skills.enable') ||
+                    !canManageSkill(skill) ||
+                    isSkillToggling(skill.slug)
+                  "
                   :aria-label="skill.enabled === false ? '启用 Skill' : '禁用 Skill'"
                   @click.stop="handleToggleSkillEnabled(skill)"
                 >
@@ -183,6 +190,7 @@
           </div>
           <div class="skill-preview-actions">
             <a-switch
+              v-if="userStore.hasPermission('skills.enable')"
               :checked="previewSkill.enabled !== false"
               :disabled="!canManageSkill(previewSkill) || isSkillToggling(previewSkill.slug)"
               :loading="isSkillToggling(previewSkill.slug)"
@@ -218,7 +226,7 @@
           <div class="skill-preview-footer-right">
             <a-button @click="closeSkillPreview">关闭</a-button>
             <a-button type="primary" class="lucide-icon-btn" @click="goToPreviewSkillManagement">
-              <span>去管理</span>
+              <span>{{ userStore.hasPermission('skills.update') ? '去管理' : '查看详情' }}</span>
             </a-button>
           </div>
         </div>
@@ -614,6 +622,7 @@ import PageShoulder from '@/components/shared/PageShoulder.vue'
 import ShareConfigForm from '@/components/ShareConfigForm.vue'
 import MarkdownPreview from '@/components/common/MarkdownPreview.vue'
 import { formatExtensionCardTitle } from '@/utils/extensionDisplayName'
+import { useUserStore } from '@/stores/user'
 
 const BookMarkedIcon = BookMarked
 const RECOMMENDED_SKILLS = [
@@ -660,6 +669,7 @@ const RECOMMENDED_SKILLS = [
 ]
 
 const router = useRouter()
+const userStore = useUserStore()
 
 const loading = ref(false)
 const importing = ref(false)
@@ -764,13 +774,16 @@ const skillGroups = computed(() => [
 ])
 const visibleSkillGroups = computed(() => skillGroups.value.filter((group) => group.skills.length))
 const filteredDeletableSkills = computed(() =>
-  filteredInstalledSkills.value.filter(
-    (skill) => canManageSkill(skill) && skill.sourceType !== 'builtin'
-  )
+  userStore.hasPermission('skills.delete')
+    ? filteredInstalledSkills.value.filter(
+        (skill) => canManageSkill(skill) && skill.sourceType !== 'builtin'
+      )
+    : []
 )
 const canDeletePreviewSkill = computed(
   () =>
     !!previewSkill.value &&
+    userStore.hasPermission('skills.delete') &&
     canManageSkill(previewSkill.value) &&
     previewSkill.value.sourceType !== 'builtin'
 )
@@ -919,7 +932,13 @@ const handleToggleCardSelect = (slug) => {
 }
 
 const handleToggleSkillEnabled = async (skill) => {
-  if (!skill || !canManageSkill(skill) || isSkillToggling(skill.slug)) return
+  if (
+    !skill ||
+    !userStore.hasPermission('skills.enable') ||
+    !canManageSkill(skill) ||
+    isSkillToggling(skill.slug)
+  )
+    return
   const enabled = skill.enabled === false
   togglingSkillSlugs.value.push(skill.slug)
   try {

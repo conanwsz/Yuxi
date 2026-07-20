@@ -11,12 +11,28 @@ export const useUserStore = defineStore('user', () => {
   const phoneNumber = ref('')
   const avatar = ref('')
   const userRole = ref('')
+  const roleName = ref('')
+  const permissions = ref([])
   const departmentId = ref(null)
   const departmentName = ref('')
 
   // 计算属性
   const isLoggedIn = computed(() => !!token.value)
-  const isAdmin = computed(() => userRole.value === 'admin' || userRole.value === 'superadmin')
+  const hasPermission = (permission) =>
+    userRole.value === 'superadmin' || permissions.value.includes(permission)
+  const isAdmin = computed(
+    () =>
+      userRole.value === 'superadmin' ||
+      [
+        'users.read',
+        'system.config.update',
+        'models.manage',
+        'knowledge.read',
+        'tools.read',
+        'mcp.manage',
+        'skills.enable'
+      ].some(hasPermission)
+  )
   const isSuperAdmin = computed(() => userRole.value === 'superadmin')
 
   // 动作
@@ -56,6 +72,8 @@ export const useUserStore = defineStore('user', () => {
       phoneNumber.value = data.phone_number || ''
       avatar.value = data.avatar || ''
       userRole.value = data.role
+      roleName.value = data.role_name || data.role
+      permissions.value = data.permissions || []
       departmentId.value = data.department_id || null
       departmentName.value = data.department_name || ''
 
@@ -78,6 +96,8 @@ export const useUserStore = defineStore('user', () => {
     phoneNumber.value = ''
     avatar.value = ''
     userRole.value = ''
+    roleName.value = ''
+    permissions.value = []
     departmentId.value = null
     departmentName.value = ''
 
@@ -114,6 +134,8 @@ export const useUserStore = defineStore('user', () => {
       phoneNumber.value = data.phone_number || ''
       avatar.value = data.avatar || ''
       userRole.value = data.role
+      roleName.value = data.role_name || data.role
+      permissions.value = data.permissions || []
       departmentId.value = data.department_id || null
       departmentName.value = data.department_name || ''
 
@@ -327,6 +349,8 @@ export const useUserStore = defineStore('user', () => {
       phoneNumber.value = userData.phone_number || ''
       avatar.value = userData.avatar || ''
       userRole.value = userData.role
+      roleName.value = userData.role_name || userData.role
+      permissions.value = userData.permissions || []
       departmentId.value = userData.department_id || null
       departmentName.value = userData.department_name || ''
 
@@ -380,6 +404,8 @@ export const useUserStore = defineStore('user', () => {
     phoneNumber,
     avatar,
     userRole,
+    roleName,
+    permissions,
     departmentId,
     departmentName,
 
@@ -387,6 +413,7 @@ export const useUserStore = defineStore('user', () => {
     isLoggedIn,
     isAdmin,
     isSuperAdmin,
+    hasPermission,
 
     // 方法
     login,

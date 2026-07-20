@@ -16,8 +16,9 @@ const agentPanelRef = ref(null)
 const providerPanelRef = ref(null)
 
 const modelManageTabs = computed(() => {
-  const tabs = [{ key: 'agents', label: '智能体' }]
-  if (userStore.isAdmin) tabs.push({ key: 'providers', label: '模型供应商' })
+  const tabs = []
+  if (userStore.hasPermission('agents.read')) tabs.push({ key: 'agents', label: '智能体' })
+  if (userStore.hasPermission('models.read')) tabs.push({ key: 'providers', label: '模型供应商' })
   return tabs
 })
 
@@ -29,12 +30,12 @@ const activeLoading = computed(() => activePanel.value?.loading || false)
 const activeStats = computed(() => activePanel.value?.stats || {})
 
 const normalizeTab = (tab) => {
-  if (tab === 'providers' && userStore.isAdmin) return 'providers'
-  return 'agents'
+  if (modelManageTabs.value.some((item) => item.key === tab)) return tab
+  return modelManageTabs.value[0]?.key || null
 }
 
 watch(
-  () => [route.query.tab, userStore.isAdmin],
+  () => [route.query.tab, userStore.permissions.join(',')],
   ([tab]) => {
     const nextTab = normalizeTab(tab)
     if (activeTab.value !== nextTab) activeTab.value = nextTab
@@ -82,10 +83,10 @@ watch(activeTab, (tab) => {
     </PageHeader>
 
     <div class="model-manage-content">
-      <div v-show="activeTab === 'agents'" class="tab-panel">
+      <div v-if="userStore.hasPermission('agents.read') && activeTab === 'agents'" class="tab-panel">
         <AgentManagePanel ref="agentPanelRef" />
       </div>
-      <div v-if="userStore.isAdmin && activeTab === 'providers'" class="tab-panel">
+      <div v-if="userStore.hasPermission('models.read') && activeTab === 'providers'" class="tab-panel">
         <ModelProviderManagePanel ref="providerPanelRef" />
       </div>
     </div>

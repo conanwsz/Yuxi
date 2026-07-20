@@ -58,7 +58,8 @@ const conversationSearchOpen = ref(false)
 
 // Provide settings modal methods to child components
 const openSettingsModal = (tab) => {
-  settingsInitialTab.value = tab || (userStore.isAdmin ? 'base' : 'account')
+  settingsInitialTab.value =
+    tab || (userStore.hasPermission('system.config.read') ? 'base' : 'account')
   showSettingsModal.value = true
 }
 
@@ -104,10 +105,10 @@ onMounted(async () => {
   await initAgentNavigation()
   await getRemoteConfig()
   // 仅管理员加载任务中心数据
-  if (userStore.isAdmin) {
+  if (userStore.hasPermission('system.tasks.manage')) {
     taskerStore.loadTasks()
-    fetchGithubStars() // Fetch GitHub stars on mount
   }
+  fetchGithubStars()
 })
 
 const route = useRoute()
@@ -141,22 +142,30 @@ const mainList = computed(() => {
     activeIcon: FolderKanban
   })
 
-  items.push({
-    name: '智能体扩展',
-    path: '/extensions',
-    activePaths: ['/extensions'],
-    icon: LibraryBig,
-    activeIcon: LibraryBig
-  })
+  if (
+    ['knowledge.read', 'tools.read', 'mcp.read', 'skills.read'].some((permission) =>
+      userStore.hasPermission(permission)
+    )
+  ) {
+    items.push({
+      name: '智能体扩展',
+      path: '/extensions',
+      activePaths: ['/extensions'],
+      icon: LibraryBig,
+      activeIcon: LibraryBig
+    })
+  }
 
-  items.push({
-    name: '智能体管理',
-    path: '/model-manage',
-    icon: Box,
-    activeIcon: Box
-  })
+  if (['agents.read', 'models.read'].some((permission) => userStore.hasPermission(permission))) {
+    items.push({
+      name: '智能体管理',
+      path: '/model-manage',
+      icon: Box,
+      activeIcon: Box
+    })
+  }
 
-  if (userStore.isSuperAdmin) {
+  if (userStore.hasPermission('dashboard.read')) {
     items.push({
       name: '数据总览',
       path: '/dashboard',
@@ -388,7 +397,7 @@ provide('settingsModal', {
         <!-- 用户信息组件 -->
         <div class="nav-item user-info" @click.stop>
           <UserInfoComponent :show-role="!sidebarCollapsed">
-            <template v-if="userStore.isAdmin" #actions>
+            <template v-if="userStore.hasPermission('system.tasks.manage')" #actions>
               <a-tooltip placement="top" title="任务中心">
                 <button
                   class="user-task-center"
@@ -440,7 +449,7 @@ provide('settingsModal', {
     >
       <DebugComponent />
     </a-modal>
-    <TaskCenterDrawer v-if="userStore.isAdmin" />
+    <TaskCenterDrawer v-if="userStore.hasPermission('system.tasks.manage')" />
     <SettingsModal
       v-model:visible="showSettingsModal"
       :initial-tab="settingsInitialTab"
