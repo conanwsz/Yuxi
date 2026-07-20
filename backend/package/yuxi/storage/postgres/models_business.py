@@ -14,6 +14,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
@@ -82,6 +83,9 @@ class User(Base):
     # 关联 API Keys
     api_keys = relationship("APIKey", back_populates="user", cascade="all, delete-orphan")
 
+    # 外部身份（OIDC issuer + subject）
+    external_identities = relationship("ExternalIdentity", back_populates="user", cascade="all, delete-orphan")
+
     agent_env = relationship("AgentEnv", back_populates="user", cascade="all, delete-orphan", uselist=False)
     user_config = relationship("UserConfig", back_populates="user", cascade="all, delete-orphan", uselist=False)
 
@@ -131,6 +135,26 @@ class User(Base):
         self.login_failed_count = 0
         self.last_failed_login = None
         self.login_locked_until = None
+
+
+class ExternalIdentity(Base):
+    """将外部认证提供方的稳定主体映射到 Yuxi 用户。"""
+
+    __tablename__ = "external_identities"
+    __table_args__ = (
+        UniqueConstraint("issuer", "subject", name="uq_external_identities_issuer_subject"),
+        UniqueConstraint("email", name="uq_external_identities_email"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    issuer = Column(String(512), nullable=False)
+    subject = Column(String(512), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    email = Column(String(320), nullable=True)
+    created_at = Column(DateTime, default=utc_now_naive)
+    updated_at = Column(DateTime, default=utc_now_naive, onupdate=utc_now_naive)
+
+    user = relationship("User", back_populates="external_identities")
 
 
 class AgentEnv(Base):

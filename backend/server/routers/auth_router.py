@@ -139,6 +139,7 @@ class OIDCLoginResponse(BaseModel):
     role: str
     department_id: int | None = None
     department_name: str | None = None
+    redirect_path: str = "/"
 
 
 class CLIAuthSessionCreate(BaseModel):
@@ -1020,9 +1021,16 @@ async def get_oidc_login_url(redirect_path: str = "/"):
 
 
 @auth.get("/oidc/callback", response_class=RedirectResponse)
-async def oidc_callback(request: Request, code: str, state: str, db: AsyncSession = Depends(get_db)):
+async def oidc_callback(
+    request: Request,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    error_description: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
     """处理 OIDC 回调 - 重定向到前端 Vue 路由"""
-    return await oidc_callback_handler(code, state, db, request)
+    return await oidc_callback_handler(code, state, db, request, error, error_description)
 
 
 @auth.post("/oidc/exchange-code", response_model=OIDCLoginResponse)

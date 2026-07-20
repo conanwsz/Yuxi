@@ -391,6 +391,23 @@ class PostgresManager(metaclass=SingletonMeta):
             "ALTER TABLE IF EXISTS conversations ADD COLUMN IF NOT EXISTS is_pinned BOOLEAN NOT NULL DEFAULT FALSE",
             "ALTER TABLE IF EXISTS mcp_servers ADD COLUMN IF NOT EXISTS env JSONB",
             """
+            CREATE TABLE IF NOT EXISTS external_identities (
+                id SERIAL PRIMARY KEY,
+                issuer VARCHAR(512) NOT NULL,
+                subject VARCHAR(512) NOT NULL,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                email VARCHAR(320),
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW(),
+                CONSTRAINT uq_external_identities_issuer_subject UNIQUE (issuer, subject)
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS ix_external_identities_user_id ON external_identities(user_id)",
+            (
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_external_identities_email "
+                "ON external_identities(email) WHERE email IS NOT NULL"
+            ),
+            """
             CREATE TABLE IF NOT EXISTS agent_envs (
                 id SERIAL PRIMARY KEY,
                 uid VARCHAR NOT NULL REFERENCES users(uid) ON DELETE CASCADE,
