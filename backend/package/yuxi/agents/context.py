@@ -478,7 +478,9 @@ async def normalize_agent_context_config(
 ) -> dict:
     schema = context_schema or BaseContext
     raw_context = dict(context) if isinstance(context, dict) else {}
-    filtered = filter_config_by_role({"context": raw_context}, getattr(user, "role", None), schema)
+    from yuxi.services.permission_service import authorization_role
+
+    filtered = filter_config_by_role({"context": raw_context}, authorization_role(user), schema)
     normalized = dict(filtered.get("context") or {})
     field_names = {item.name for item in fields(schema)}
     resource_fields = _AGENT_RESOURCE_FIELDS & field_names

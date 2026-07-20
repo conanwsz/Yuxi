@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from yuxi.storage.postgres.models_business import APIKey, Department, User
 from yuxi.repositories.department_repository import DepartmentRepository
 from yuxi.repositories.user_repository import UserRepository
-from server.utils.auth_middleware import get_superadmin_user, get_admin_user, get_db
+from server.utils.auth_middleware import get_db, require_permission
 from yuxi.utils.auth_utils import AuthUtils
 from yuxi.services.operation_log_service import log_operation
 from yuxi.services.user_identity_service import is_valid_phone_number
@@ -61,7 +61,9 @@ class DepartmentResponse(BaseModel):
 
 
 @department.get("", response_model=list[DepartmentResponse])
-async def get_departments(current_user: User = Depends(get_admin_user), db: AsyncSession = Depends(get_db)):
+async def get_departments(
+    current_user: User = Depends(require_permission("departments.read")), db: AsyncSession = Depends(get_db)
+):
     """获取所有部门列表（管理员可访问）"""
     dept_repo = DepartmentRepository()
     return await dept_repo.list_with_user_count()
@@ -69,7 +71,9 @@ async def get_departments(current_user: User = Depends(get_admin_user), db: Asyn
 
 @department.get("/{department_id}", response_model=DepartmentResponse)
 async def get_department(
-    department_id: int, current_user: User = Depends(get_superadmin_user), db: AsyncSession = Depends(get_db)
+    department_id: int,
+    current_user: User = Depends(require_permission("departments.read")),
+    db: AsyncSession = Depends(get_db),
 ):
     """获取指定部门详情"""
     result = await db.execute(select(Department).filter(Department.id == department_id))
@@ -91,7 +95,7 @@ async def get_department(
 async def create_department(
     department_data: DepartmentCreate,
     request: Request,
-    current_user: User = Depends(get_superadmin_user),
+    current_user: User = Depends(require_permission("departments.create")),
     db: AsyncSession = Depends(get_db),
 ):
     """创建新部门，同时创建该部门的管理员"""
@@ -168,7 +172,7 @@ async def update_department(
     department_id: int,
     department_data: DepartmentUpdate,
     request: Request,
-    current_user: User = Depends(get_superadmin_user),
+    current_user: User = Depends(require_permission("departments.update")),
     db: AsyncSession = Depends(get_db),
 ):
     """更新部门信息"""
@@ -208,7 +212,7 @@ async def update_department(
 async def delete_department(
     department_id: int,
     request: Request,
-    current_user: User = Depends(get_superadmin_user),
+    current_user: User = Depends(require_permission("departments.delete")),
     db: AsyncSession = Depends(get_db),
 ):
     """删除部门"""

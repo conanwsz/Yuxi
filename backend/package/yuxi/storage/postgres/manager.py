@@ -376,7 +376,58 @@ class PostgresManager(metaclass=SingletonMeta):
     async def ensure_business_schema(self):
         """确保业务 schema 包含后续新增字段（运行时 schema 演进）。"""
         self._check_initialized()
+        from yuxi.services.permission_service import DEFAULT_ROLE_DEFINITIONS, DEFAULT_ROLE_PERMISSIONS
+
+        role_seed_statements = []
+        for role_key, (role_name, role_description) in DEFAULT_ROLE_DEFINITIONS.items():
+            permissions = json.dumps(sorted(DEFAULT_ROLE_PERMISSIONS[role_key]), ensure_ascii=False).replace("'", "''")
+            role_seed_statements.append(
+                "INSERT INTO roles (key, name, description, permissions, is_system, created_at, updated_at) "
+                f"VALUES ('{role_key}', '{role_name}', '{role_description}', "
+                f"'{permissions}'::jsonb, TRUE, NOW(), NOW()) "
+                "ON CONFLICT (key) DO NOTHING"
+            )
+
         stmts = [
+            """
+            CREATE TABLE IF NOT EXISTS roles (
+                key VARCHAR(64) PRIMARY KEY,
+                name VARCHAR(100) NOT NULL UNIQUE,
+                description VARCHAR(255),
+                permissions JSONB NOT NULL DEFAULT '[]'::jsonb,
+                is_system BOOLEAN NOT NULL DEFAULT FALSE,
+                created_by VARCHAR(64),
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+            """,
+            *role_seed_statements,
+            """
+            INSERT INTO roles (key, name, description, permissions, is_system, created_at, updated_at)
+            SELECT DISTINCT users.role, users.role, '从历史用户数据迁移', '[]'::jsonb, FALSE, NOW(), NOW()
+            FROM users
+            WHERE users.role IS NOT NULL
+            ON CONFLICT (key) DO NOTHING
+            """,
+            """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1
+                    FROM pg_constraint constraint_info
+                    JOIN pg_attribute attribute_info
+                      ON attribute_info.attrelid = constraint_info.conrelid
+                     AND attribute_info.attnum = ANY(constraint_info.conkey)
+                    WHERE constraint_info.contype = 'f'
+                      AND constraint_info.conrelid = 'users'::regclass
+                      AND constraint_info.confrelid = 'roles'::regclass
+                      AND attribute_info.attname = 'role'
+                ) THEN
+                    ALTER TABLE users
+                    ADD CONSTRAINT fk_users_role_key FOREIGN KEY (role) REFERENCES roles(key) ON DELETE RESTRICT;
+                END IF;
+            END $$
+            """,
             "ALTER TABLE IF EXISTS skills ADD COLUMN IF NOT EXISTS tool_dependencies JSONB DEFAULT '[]'::jsonb",
             "ALTER TABLE IF EXISTS skills ADD COLUMN IF NOT EXISTS mcp_dependencies JSONB DEFAULT '[]'::jsonb",
             "ALTER TABLE IF EXISTS skills ADD COLUMN IF NOT EXISTS skill_dependencies JSONB DEFAULT '[]'::jsonb",

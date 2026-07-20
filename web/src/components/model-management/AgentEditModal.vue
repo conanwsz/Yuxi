@@ -79,7 +79,7 @@ const getDefaultBackendId = () => DEFAULT_AGENT_BACKEND_ID
 const isSubAgentBackend = (backendId) => backendId === SUB_AGENT_BACKEND_ID
 
 const getInitialShareConfig = () => ({
-  access_level: userStore.isAdmin ? 'global' : 'user',
+  access_level: userStore.hasPermission('agents.share') && userStore.userRole !== 'user' ? 'global' : 'user',
   department_ids: [],
   user_uids: userStore.uid ? [userStore.uid] : []
 })
@@ -89,7 +89,10 @@ const normalizeShareConfigForPayload = () => {
     return { access_level: 'global', department_ids: [], user_uids: [] }
   }
   const config = agentShareConfig.value || getInitialShareConfig()
-  const accessLevel = userStore.isAdmin ? config.access_level : 'user'
+  const accessLevel =
+    userStore.hasPermission('agents.share') && userStore.userRole !== 'user'
+      ? config.access_level
+      : 'user'
   return {
     access_level: accessLevel,
     department_ids: accessLevel === 'department' ? config.department_ids || [] : [],
@@ -101,7 +104,9 @@ const isEditingBuiltinAgent = computed(() => isBuiltinAgent({ id: editingAgentId
 const canEditAgentShareConfig = computed(() => !isEditingBuiltinAgent.value)
 const getAgentShareAllowedLevels = () => {
   if (isEditingBuiltinAgent.value) return ['global']
-  return userStore.isAdmin ? ['global', 'department', 'user'] : ['user']
+  return userStore.hasPermission('agents.share') && userStore.userRole !== 'user'
+    ? ['global', 'department', 'user']
+    : ['user']
 }
 
 const agentModalTitle = computed(() => (editingAgentId.value ? '编辑智能体' : '新增智能体'))

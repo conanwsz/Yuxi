@@ -2,8 +2,8 @@
   <a-modal
     v-model:open="visible"
     :title="null"
-    width="90%"
-    :style="{ maxWidth: '980px', minWidth: '320px', top: '10%' }"
+    width="calc(100vw - 48px)"
+    :style="{ maxWidth: '1600px', minWidth: '320px', top: '24px', paddingBottom: '24px' }"
     :footer="null"
     :closable="false"
     @cancel="handleClose"
@@ -41,7 +41,7 @@
             class="sider-item"
             :class="{ activesec: activeTab === 'base' }"
             @click="activeTab = 'base'"
-            v-if="userStore.isAdmin"
+            v-if="userStore.hasPermission('system.config.read')"
           >
             <Settings class="icon" :size="18" />
             <span>基本设置</span>
@@ -50,7 +50,7 @@
             class="sider-item"
             :class="{ activesec: activeTab === 'user' }"
             @click="activeTab = 'user'"
-            v-if="userStore.isAdmin"
+            v-if="userStore.hasPermission('users.read')"
           >
             <User class="icon" :size="18" />
             <span>用户管理</span>
@@ -59,10 +59,19 @@
             class="sider-item"
             :class="{ activesec: activeTab === 'department' }"
             @click="activeTab = 'department'"
-            v-if="userStore.isSuperAdmin"
+            v-if="userStore.hasPermission('departments.read')"
           >
             <Users class="icon" :size="18" />
             <span>部门管理</span>
+          </div>
+          <div
+            class="sider-item"
+            :class="{ activesec: activeTab === 'permission' }"
+            @click="activeTab = 'permission'"
+            v-if="userStore.isSuperAdmin"
+          >
+            <ShieldCheck class="icon" :size="18" />
+            <span>权限管理</span>
           </div>
           <div
             class="sider-item"
@@ -139,7 +148,7 @@
           class="nav-item"
           :class="{ active: activeTab === 'base' }"
           @click="activeTab = 'base'"
-          v-if="userStore.isAdmin"
+          v-if="userStore.hasPermission('system.config.read')"
         >
           基本设置
         </div>
@@ -147,7 +156,7 @@
           class="nav-item"
           :class="{ active: activeTab === 'user' }"
           @click="activeTab = 'user'"
-          v-if="userStore.isAdmin"
+          v-if="userStore.hasPermission('users.read')"
         >
           用户管理
         </div>
@@ -155,9 +164,17 @@
           class="nav-item"
           :class="{ active: activeTab === 'department' }"
           @click="activeTab = 'department'"
-          v-if="userStore.isSuperAdmin"
+          v-if="userStore.hasPermission('departments.read')"
         >
           部门管理
+        </div>
+        <div
+          class="nav-item"
+          :class="{ active: activeTab === 'permission' }"
+          @click="activeTab = 'permission'"
+          v-if="userStore.isSuperAdmin"
+        >
+          权限管理
         </div>
       </div>
 
@@ -176,16 +193,20 @@
             <AgentEnvSettingsCard />
           </div>
 
-          <div v-show="activeTab === 'base'" v-if="userStore.isAdmin">
+          <div v-show="activeTab === 'base'" v-if="userStore.hasPermission('system.config.read')">
             <BasicSettingsSection />
           </div>
 
-          <div v-show="activeTab === 'user'" v-if="userStore.isAdmin">
+          <div v-show="activeTab === 'user'" v-if="userStore.hasPermission('users.read')">
             <UserManagementComponent />
           </div>
 
-          <div v-show="activeTab === 'department'" v-if="userStore.isSuperAdmin">
+          <div v-show="activeTab === 'department'" v-if="userStore.hasPermission('departments.read')">
             <DepartmentManagementComponent />
+          </div>
+
+          <div v-show="activeTab === 'permission'" v-if="userStore.isSuperAdmin">
+            <PermissionManagementComponent />
           </div>
         </div>
       </div>
@@ -203,6 +224,7 @@ import {
   Key,
   Star,
   SquareTerminal,
+  ShieldCheck,
   User,
   Users,
   X
@@ -213,6 +235,7 @@ import BasicSettingsSection from '@/components/BasicSettingsSection.vue'
 import ApiKeyManagementComponent from '@/components/ApiKeyManagementComponent.vue'
 import UserManagementComponent from '@/components/UserManagementComponent.vue'
 import DepartmentManagementComponent from '@/components/DepartmentManagementComponent.vue'
+import PermissionManagementComponent from '@/components/PermissionManagementComponent.vue'
 
 const props = defineProps({
   visible: {
@@ -242,8 +265,10 @@ const visible = computed({
 const availableTabs = computed(() => {
   const tabs = []
   if (userStore.isLoggedIn) tabs.push('account', 'userConfig', 'agentEnv')
-  if (userStore.isAdmin) tabs.push('base', 'user')
-  if (userStore.isSuperAdmin) tabs.push('department')
+  if (userStore.hasPermission('system.config.read')) tabs.push('base')
+  if (userStore.hasPermission('users.read')) tabs.push('user')
+  if (userStore.hasPermission('departments.read')) tabs.push('department')
+  if (userStore.isSuperAdmin) tabs.push('permission')
   return tabs
 })
 
@@ -252,7 +277,7 @@ const setActiveTab = (preferredTab) => {
     activeTab.value = preferredTab
     return
   }
-  activeTab.value = userStore.isAdmin ? 'base' : availableTabs.value[0]
+  activeTab.value = availableTabs.value.includes('base') ? 'base' : availableTabs.value[0]
 }
 
 const handleClose = () => {
@@ -296,14 +321,25 @@ watch(
 
 .settings-container {
   display: flex;
-  height: 70vh;
+  height: calc(100vh - 48px);
+  max-height: 920px;
+  min-height: min(640px, calc(100vh - 48px));
   width: 100%;
   position: relative;
 
   @media (max-width: 900px) {
     flex-direction: column;
-    height: auto;
-    min-height: 70vh;
+    height: calc(100vh - 16px);
+    min-height: 0;
+  }
+}
+
+@media (max-width: 900px) {
+  .settings-modal.ant-modal {
+    width: calc(100vw - 16px) !important;
+    top: 8px !important;
+    margin: 0 8px;
+    padding-bottom: 8px !important;
   }
 }
 

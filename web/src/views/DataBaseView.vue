@@ -26,6 +26,7 @@
       </template>
       <template #actions>
         <a-button
+          v-if="userStore.hasPermission('knowledge.create')"
           type="primary"
           class="lucide-icon-btn"
           :disabled="!kbTypes.length"
@@ -155,7 +156,7 @@
         </div>
 
         <!-- 共享配置 -->
-        <div class="form-section compact-section">
+        <div v-if="userStore.hasPermission('knowledge.share')" class="form-section compact-section">
           <h3 class="section-title">共享设置</h3>
           <ShareConfigForm
             ref="shareConfigFormRef"
@@ -167,6 +168,7 @@
       <template #footer>
         <a-button key="back" @click="cancelCreateDatabase">取消</a-button>
         <a-button
+          v-if="userStore.hasPermission('knowledge.create')"
           key="submit"
           type="primary"
           :loading="dbState.creating"
@@ -228,14 +230,19 @@
                 <span>复制 ID</span>
               </span>
             </a-menu-item>
-            <a-menu-item key="edit">
+            <a-menu-item v-if="userStore.hasPermission('knowledge.update')" key="edit">
               <span class="lucide-menu-item">
                 <Pencil :size="15" />
                 <span>编辑知识库</span>
               </span>
             </a-menu-item>
-            <a-menu-divider />
-            <a-menu-item key="delete" danger>
+            <a-menu-divider
+              v-if="
+                userStore.hasPermission('knowledge.update') ||
+                userStore.hasPermission('knowledge.delete')
+              "
+            />
+            <a-menu-item v-if="userStore.hasPermission('knowledge.delete')" key="delete" danger>
               <span class="lucide-menu-item">
                 <Trash2 :size="15" />
                 <span>删除知识库</span>
@@ -254,6 +261,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { useConfigStore } from '@/stores/config'
 import { useDatabaseStore } from '@/stores/database'
+import { useUserStore } from '@/stores/user'
 import { QuestionCircleOutlined } from '@ant-design/icons-vue'
 import { Copy, Pencil, Plus, Trash2 } from 'lucide-vue-next'
 import { message, Modal } from 'ant-design-vue'
@@ -275,6 +283,7 @@ const route = useRoute()
 const router = useRouter()
 const configStore = useConfigStore()
 const databaseStore = useDatabaseStore()
+const userStore = useUserStore()
 const {
   chunkPresetSelectOptions: chunkPresetOptions,
   chunkPresetLoading,
@@ -451,11 +460,15 @@ const buildRequestData = () => {
       newDatabase.chunk_preset_id || DEFAULT_CHUNK_PRESET_ID
   }
 
-  requestData.share_config = {
-    access_level: shareConfig.value.access_level,
-    department_ids:
-      shareConfig.value.access_level === 'department' ? shareConfig.value.department_ids || [] : [],
-    user_uids: shareConfig.value.access_level === 'user' ? shareConfig.value.user_uids || [] : []
+  if (userStore.hasPermission('knowledge.share')) {
+    requestData.share_config = {
+      access_level: shareConfig.value.access_level,
+      department_ids:
+        shareConfig.value.access_level === 'department'
+          ? shareConfig.value.department_ids || []
+          : [],
+      user_uids: shareConfig.value.access_level === 'user' ? shareConfig.value.user_uids || [] : []
+    }
   }
 
   // 根据类型添加特定配置

@@ -19,7 +19,10 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
+
+from yuxi.repositories.role_repository import RoleRepository
 from yuxi.services.operation_log_service import log_operation
+from yuxi.services.permission_service import resolve_user_permissions
 from yuxi.storage.postgres.models_business import Department, ExternalIdentity, User
 from yuxi.utils.auth_utils import AuthUtils
 from yuxi.utils.datetime_utils import utc_now_naive
@@ -885,6 +888,13 @@ async def create_oidc_user(
 
     username = await build_unique_oidc_username(db, preferred_username, sub)
 
+    if not await RoleRepository(db).get(oidc_config.default_role):
+        logger.error("OIDC_DEFAULT_ROLE references a missing role: %s", oidc_config.default_role)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="OIDC 默认角色不存在，请联系管理员检查配置",
+        )
+
     for retry_index in range(3):
         try:
             new_user = User(
@@ -1120,6 +1130,7 @@ async def oidc_callback_handler(
         result = await db.execute(select(Department.name).filter(Department.id == user.department_id))
         department_name = result.scalar_one_or_none()
 
+    await resolve_user_permissions(db, user)
     response_data = {
         "access_token": jwt_token,
         "token_type": "bearer",
@@ -1129,6 +1140,8 @@ async def oidc_callback_handler(
         "phone_number": user.phone_number,
         "avatar": user.avatar,
         "role": user.role,
+        "role_name": user.role_name,
+        "permissions": sorted(user.permission_keys),
         "department_id": user.department_id,
         "department_name": department_name,
         "redirect_path": state_data["redirect_path"],

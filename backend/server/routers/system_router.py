@@ -8,7 +8,7 @@ from yuxi import config, get_version
 from yuxi.storage.postgres.models_business import User
 from yuxi.utils.logging_config import logger
 
-from server.utils.auth_middleware import get_admin_user, get_required_user
+from server.utils.auth_middleware import require_permission
 
 system = APIRouter(prefix="/system", tags=["system"])
 
@@ -54,13 +54,15 @@ async def discovery():
 
 
 @system.get("/config")
-async def get_config(current_user: User = Depends(get_required_user)):
+async def get_config(current_user: User = Depends(require_permission("system.config.read"))):
     """获取系统配置"""
     return config.dump_config()
 
 
 @system.post("/config")
-async def update_config_single(key=Body(...), value=Body(...), current_user: User = Depends(get_admin_user)) -> dict:
+async def update_config_single(
+    key=Body(...), value=Body(...), current_user: User = Depends(require_permission("system.config.update"))
+) -> dict:
     """更新单个配置项"""
     if not isinstance(key, str) or key not in type(config).model_fields:
         raise HTTPException(status_code=400, detail=f"未知配置项: {key}")
@@ -75,7 +77,9 @@ async def update_config_single(key=Body(...), value=Body(...), current_user: Use
 
 
 @system.post("/config/update")
-async def update_config_batch(items: dict = Body(...), current_user: User = Depends(get_admin_user)) -> dict:
+async def update_config_batch(
+    items: dict = Body(...), current_user: User = Depends(require_permission("system.config.update"))
+) -> dict:
     """批量更新配置项"""
     try:
         config.update(items)
@@ -86,7 +90,9 @@ async def update_config_batch(items: dict = Body(...), current_user: User = Depe
 
 
 @system.get("/logs")
-async def get_system_logs(levels: str | None = None, current_user: User = Depends(get_admin_user)):
+async def get_system_logs(
+    levels: str | None = None, current_user: User = Depends(require_permission("system.logs.read"))
+):
     """获取系统日志
 
     Args:
@@ -173,7 +179,7 @@ async def get_info_config():
 
 
 @system.post("/info/reload")
-async def reload_info_config(current_user: User = Depends(get_admin_user)):
+async def reload_info_config(current_user: User = Depends(require_permission("system.config.update"))):
     """重新加载信息配置"""
     try:
         config = await load_info_config()
@@ -189,7 +195,7 @@ async def reload_info_config(current_user: User = Depends(get_admin_user)):
 
 
 @system.get("/ocr/health")
-async def check_ocr_services_health(current_user: User = Depends(get_admin_user)):
+async def check_ocr_services_health(current_user: User = Depends(require_permission("system.config.read"))):
     """
     检查所有OCR服务的健康状态
     返回各个OCR服务的可用性信息

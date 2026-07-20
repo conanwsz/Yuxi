@@ -75,7 +75,8 @@ saves_dev
 notebooks
 graphrag
 docker/volumes
-docs/vibe
+docs/vibe/*
+!docs/vibe/2026-07-20-rbac-permission-matrix.md
 .cursorrules
 
 /models

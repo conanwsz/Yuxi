@@ -32,13 +32,15 @@ from yuxi.knowledge.utils.sample_question_utils import (
 from yuxi.knowledge.utils.url_fetcher import fetch_url_content
 from yuxi.models.providers.cache import model_cache
 from yuxi.services.task_service import TaskContext, tasker
+from yuxi.services.permission_service import has_permission
 from yuxi.services.workspace_service import MAX_WORKSPACE_UPLOAD_SIZE_BYTES, resolve_workspace_file_path
 from yuxi.storage.minio.client import MinIOClient, StorageError, aupload_file_to_minio, get_minio_client
 from yuxi.storage.postgres.models_business import User
 from yuxi.utils import logger
 from yuxi.utils.upload_utils import MAX_UPLOAD_SIZE_BYTES, read_upload_with_limit, write_upload_to_path
 
-from server.utils.auth_middleware import get_admin_user, get_required_user
+from server.utils.auth_middleware import get_required_user
+from server.utils.knowledge_auth import get_knowledge_user as get_admin_user
 
 knowledge = APIRouter(prefix="/knowledge", tags=["knowledge"])
 
@@ -224,6 +226,14 @@ async def create_database(
     current_user: User = Depends(get_admin_user),
 ):
     """创建知识库"""
+    if share_config is not None and not has_permission(current_user, "knowledge.share"):
+        raise HTTPException(status_code=403, detail="缺少权限: knowledge.share")
+    if share_config is None and not has_permission(current_user, "knowledge.share"):
+        share_config = {
+            "access_level": "user",
+            "department_ids": [],
+            "user_uids": [str(current_user.uid)],
+        }
     logger.debug(
         f"Create database {database_name} with kb_type {kb_type}, "
         f"additional_params {additional_params}, llm_model_spec {llm_model_spec}, "
@@ -412,6 +422,8 @@ async def update_database_info(
     current_user: User = Depends(get_admin_user),
 ):
     """更新知识库信息"""
+    if data.share_config is not None and not has_permission(current_user, "knowledge.share"):
+        raise HTTPException(status_code=403, detail="缺少权限: knowledge.share")
     logger.debug(
         f"[update_database_info] 接收到的参数: name={data.name}, llm_model_spec={data.llm_model_spec}, "
         f"additional_params={data.additional_params}, share_config={data.share_config}"

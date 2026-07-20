@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from yuxi.storage.postgres.models_business import Agent, User
 from yuxi.utils.datetime_utils import utc_now_naive
 from yuxi.utils.share_config import SHARE_ACCESS_LEVELS, normalize_share_config
+from yuxi.services.permission_service import has_permission
 
 DEFAULT_AGENT_SLUG = "default-chatbot"
 DEFAULT_AGENT_NAME = "智能助手"
@@ -100,7 +101,6 @@ FACT_VERIFIER_SYSTEM_PROMPT = """你是「事实核查员」子智能体，专�
 - 不要编造来源或链接。"""
 
 ACCESS_LEVELS = SHARE_ACCESS_LEVELS
-ADMIN_ROLES = {"admin", "superadmin"}
 
 
 def is_builtin_agent(agent: Agent) -> bool:
@@ -163,7 +163,9 @@ def user_can_access_agent(user: User, agent: Agent) -> bool:
 
 
 def user_can_manage_agent(user: User, agent: Agent) -> bool:
-    return user.role in ADMIN_ROLES or agent.created_by == str(user.uid)
+    if agent.created_by == str(user.uid):
+        return True
+    return user.role != "user" and user_can_access_agent(user, agent)
 
 
 def _slugify(value: str | None) -> str:
@@ -430,7 +432,9 @@ class AgentRepository:
             share_config,
             user_uid=str(creator.uid) if creator else created_by,
             department_id=creator.department_id if creator else None,
-            force_private=bool(creator and creator.role not in ADMIN_ROLES),
+            force_private=bool(
+                creator and (creator.role == "user" or not has_permission(creator, "agents.share"))
+            ),
         )
         if is_default and normalized_share_config.get("access_level") != "global":
             raise ValueError("默认智能体必须全局共享")
@@ -492,7 +496,9 @@ class AgentRepository:
                     share_config,
                     user_uid=str(updater.uid) if updater else updated_by,
                     department_id=updater.department_id if updater else None,
-                    force_private=bool(updater and updater.role not in ADMIN_ROLES),
+                    force_private=bool(
+                        updater and (updater.role == "user" or not has_permission(updater, "agents.share"))
+                    ),
                 )
                 agent.share_config = normalized_share_config
 

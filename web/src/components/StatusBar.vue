@@ -123,7 +123,7 @@ const openTaskCenter = () => {
 }
 
 const openSettings = () => {
-  openSettingsModal?.(userStore.isAdmin ? 'base' : 'account')
+  openSettingsModal?.(userStore.hasPermission('system.config.read') ? 'base' : 'account')
 }
 
 const toggleTheme = () => {

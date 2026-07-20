@@ -106,6 +106,8 @@ async def test_admin_can_login_and_fetch_profile(test_client, admin_headers):
     assert profile_response.status_code == 200
     data = profile_response.json()
     assert data["role"] in {"admin", "superadmin"}
+    assert data["role_name"]
+    assert isinstance(data["permissions"], list)
     assert data["username"]
     assert data["id"]
 

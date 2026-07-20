@@ -76,6 +76,8 @@ const handleCallback = async () => {
     userStore.phoneNumber = tokenData.phone_number || ''
     userStore.avatar = tokenData.avatar || ''
     userStore.userRole = tokenData.role || 'user'
+    userStore.roleName = tokenData.role_name || tokenData.role || '普通用户'
+    userStore.permissions = tokenData.permissions || []
     userStore.departmentId = tokenData.department_id || null
     userStore.departmentName = tokenData.department_name || ''
 

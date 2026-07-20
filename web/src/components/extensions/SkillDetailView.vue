@@ -20,7 +20,7 @@
       <div class="detail-actions">
         <a-space :size="8">
           <button
-            v-if="isInstalledSkill && canManageCurrentSkill"
+            v-if="isInstalledSkill"
             type="button"
             @click="handleExport"
             class="lucide-icon-btn extension-panel-action extension-panel-action-secondary"
@@ -29,7 +29,7 @@
             <span>导出</span>
           </button>
           <button
-            v-if="isInstalledSkill && canManageCurrentSkill && !isBuiltinInstalledSkill"
+            v-if="isInstalledSkill && canDeleteCurrentSkill && !isBuiltinInstalledSkill"
             type="button"
             @click="confirmDeleteSkill"
             class="lucide-icon-btn extension-panel-action extension-panel-action-danger"
@@ -114,7 +114,7 @@
                   <p>控制此 Skill 是否可用，以及哪些用户可以选择和运行它。</p>
                 </div>
                 <a-button
-                  v-if="canManageCurrentSkill"
+                  v-if="canEditSkillSettings"
                   type="primary"
                   :loading="savingShareConfig"
                   @click="saveShareConfig"
@@ -136,7 +136,7 @@
                     <span class="status-pill" :class="enabledForm ? 'enabled' : 'disabled'">
                       {{ enabledForm ? '已启用' : '已禁用' }}
                     </span>
-                    <a-switch v-model:checked="enabledForm" :disabled="!canManageCurrentSkill" />
+                    <a-switch v-model:checked="enabledForm" :disabled="!canEnableCurrentSkill" />
                   </div>
                 </section>
 
@@ -150,7 +150,7 @@
                   <div v-if="isBuiltinInstalledSkill" class="readonly-scope-hint">
                     内置 Skill 固定为全局生效范围，可通过启用状态控制是否参与运行时。
                   </div>
-                  <div v-else-if="isReadOnlySkill" class="readonly-scope-hint">
+                  <div v-else-if="!canShareCurrentSkill" class="readonly-scope-hint">
                     当前 Skill 对你只读，不能修改生效范围。
                   </div>
                   <ShareConfigForm
@@ -361,9 +361,11 @@ import { skillApi } from '@/apis/skill_api'
 import AgentFilePreview from '@/components/AgentFilePreview.vue'
 import FileTreeComponent from '@/components/FileTreeComponent.vue'
 import ShareConfigForm from '@/components/ShareConfigForm.vue'
+import { useUserStore } from '@/stores/user'
 
 const route = useRoute()
 const router = useRouter()
+const userStore = useUserStore()
 const slug = computed(() => decodeURIComponent(route.params.slug))
 
 const loading = ref(false)
@@ -400,8 +402,30 @@ const isInstalledSkill = computed(() => !!currentSkill.value?.dir_path)
 const isBuiltinInstalledSkill = computed(() => {
   return !!(isInstalledSkill.value && currentSkill.value?.source_type === 'builtin')
 })
-const canManageCurrentSkill = computed(() => currentSkill.value?.can_manage !== false)
-const isReadOnlySkill = computed(() => isInstalledSkill.value && !canManageCurrentSkill.value)
+const isSkillInManageableScope = computed(() => currentSkill.value?.can_manage !== false)
+const canManageCurrentSkill = computed(
+  () => isSkillInManageableScope.value && userStore.hasPermission('skills.update')
+)
+const canDeleteCurrentSkill = computed(
+  () => isSkillInManageableScope.value && userStore.hasPermission('skills.delete')
+)
+const canEnableCurrentSkill = computed(
+  () => isSkillInManageableScope.value && userStore.hasPermission('skills.enable')
+)
+const canShareCurrentSkill = computed(
+  () => isSkillInManageableScope.value && userStore.hasPermission('skills.share')
+)
+const canEditSkillSettings = computed(
+  () => canEnableCurrentSkill.value || (!isBuiltinInstalledSkill.value && canShareCurrentSkill.value)
+)
+const isReadOnlySkill = computed(
+  () =>
+    isInstalledSkill.value &&
+    !canManageCurrentSkill.value &&
+    !canDeleteCurrentSkill.value &&
+    !canEnableCurrentSkill.value &&
+    !canShareCurrentSkill.value
+)
 const canEditSkillFiles = computed(
   () => canManageCurrentSkill.value && !isBuiltinInstalledSkill.value
 )
@@ -662,7 +686,7 @@ const saveCurrentFile = async (content = fileContent.value) => {
 
 const confirmDeleteSkill = () => {
   const target = currentSkill.value
-  if (!target || !canManageCurrentSkill.value || isBuiltinInstalledSkill.value) return
+  if (!target || !canDeleteCurrentSkill.value || isBuiltinInstalledSkill.value) return
   const actionText = '删除'
   Modal.confirm({
     title: `确认${actionText}技能「${target.slug}」？`,
@@ -683,7 +707,7 @@ const confirmDeleteSkill = () => {
 }
 
 const handleExport = async () => {
-  if (!currentSkill.value || !isInstalledSkill.value || !canManageCurrentSkill.value) return
+  if (!currentSkill.value || !isInstalledSkill.value) return
   try {
     const response = await skillApi.exportSkill(currentSkill.value.slug)
     const blob = await response.blob()
@@ -726,8 +750,8 @@ const handleCreateNode = async () => {
 }
 
 const saveShareConfig = async () => {
-  if (!currentSkill.value || !isInstalledSkill.value || !canManageCurrentSkill.value) return
-  if (!isBuiltinInstalledSkill.value) {
+  if (!currentSkill.value || !isInstalledSkill.value || !canEditSkillSettings.value) return
+  if (!isBuiltinInstalledSkill.value && canShareCurrentSkill.value) {
     const validation = shareConfigFormRef.value?.validate?.()
     if (validation && !validation.valid) {
       message.warning(validation.message || '请完善 Skill 生效范围')
@@ -737,10 +761,13 @@ const saveShareConfig = async () => {
 
   savingShareConfig.value = true
   try {
-    if (!isBuiltinInstalledSkill.value) {
-      await skillApi.updateSkillShareConfig(currentSkill.value.slug, shareConfigForm.value)
+    let result = null
+    if (!isBuiltinInstalledSkill.value && canShareCurrentSkill.value) {
+      result = await skillApi.updateSkillShareConfig(currentSkill.value.slug, shareConfigForm.value)
     }
-    const result = await skillApi.updateSkillEnabled(currentSkill.value.slug, enabledForm.value)
+    if (canEnableCurrentSkill.value) {
+      result = await skillApi.updateSkillEnabled(currentSkill.value.slug, enabledForm.value)
+    }
     if (result?.data) {
       currentSkill.value = result.data
       syncShareConfigFromSkill(result.data)

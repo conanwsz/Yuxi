@@ -7,6 +7,7 @@ import { useRouter } from 'vue-router'
 import { agentApi } from '@/apis/agent_api'
 import AgentEditModal from '@/components/model-management/AgentEditModal.vue'
 import { isBuiltinAgent, useAgentStore } from '@/stores/agent'
+import { useUserStore } from '@/stores/user'
 import PageShoulder from '@/components/shared/PageShoulder.vue'
 import InfoCard from '@/components/shared/InfoCard.vue'
 import FallbackAvatar from '@/components/common/FallbackAvatar.vue'
@@ -14,6 +15,7 @@ import ExtensionCardGrid from '@/components/extensions/ExtensionCardGrid.vue'
 import { generatePixelAvatar } from '@/utils/pixelAvatar'
 
 const agentStore = useAgentStore()
+const userStore = useUserStore()
 const router = useRouter()
 const agentLoading = ref(false)
 const searchQuery = ref('')
@@ -69,6 +71,10 @@ const agentStats = computed(() => ({
     .length
 }))
 const canManageAgent = (agent) => !!agent?.can_manage
+const canEditAgent = (agent) =>
+  userStore.hasPermission('agents.update') && canManageAgent(agent)
+const canDeleteAgent = (agent) =>
+  userStore.hasPermission('agents.delete') && canManageAgent(agent) && !isBuiltinAgent(agent)
 const getAgentDefaultIconSrc = (agent) => (agent.id ? generatePixelAvatar(agent.id) : '')
 
 // ============ Agent Operations ============
@@ -152,7 +158,12 @@ defineExpose({
   <div class="agent-manage-panel">
     <PageShoulder v-model:search="searchQuery" search-placeholder="搜索智能体...">
       <template #actions>
-        <a-button type="primary" class="lucide-icon-btn" @click="openCreateAgentModal">
+        <a-button
+          v-if="userStore.hasPermission('agents.create')"
+          type="primary"
+          class="lucide-icon-btn"
+          @click="openCreateAgentModal"
+        >
           <Plus :size="14" />
           新增智能体
         </a-button>
@@ -181,7 +192,7 @@ defineExpose({
             :default-icon="Bot"
             :tags="[]"
             class="config-card agent-card"
-            @click="canManageAgent(agent) && openEditAgentModal(agent)"
+            @click="canEditAgent(agent) && openEditAgentModal(agent)"
           >
             <template #icon>
               <FallbackAvatar
@@ -197,18 +208,22 @@ defineExpose({
               />
             </template>
 
-            <template v-if="canManageAgent(agent)" #card-more-action-corner>
+            <template v-if="canEditAgent(agent) || canDeleteAgent(agent)" #card-more-action-corner>
               <a-menu>
-                <a-menu-item key="edit" @click.stop="openEditAgentModal(agent)">
+                <a-menu-item
+                  v-if="canEditAgent(agent)"
+                  key="edit"
+                  @click.stop="openEditAgentModal(agent)"
+                >
                   <span class="lucide-menu-item">
                     <SquarePen :size="14" />
                     <span>编辑智能体</span>
                   </span>
                 </a-menu-item>
                 <a-menu-item
+                  v-if="canDeleteAgent(agent)"
                   key="delete"
-                  :disabled="isBuiltinAgent(agent)"
-                  :danger="!isBuiltinAgent(agent)"
+                  danger
                   @click.stop="deleteAgent(agent)"
                 >
                   <span class="lucide-menu-item">

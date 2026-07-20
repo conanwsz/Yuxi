@@ -46,14 +46,14 @@
               themeStore.isDark ? '切换到浅色模式' : '切换到深色模式 (Beta)'
             }}</span>
           </a-menu-item>
-          <a-menu-divider v-if="userStore.isAdmin" />
+          <a-menu-divider />
           <a-menu-item v-if="userStore.isSuperAdmin" key="debug" @click="showDebug = true">
             <template #icon><Terminal :size="16" /></template>
             <span class="menu-text">调试面板（非生产环境）</span>
           </a-menu-item>
-          <a-menu-item v-if="userStore.isAdmin" key="setting" @click="goToSetting">
+          <a-menu-item key="setting" @click="goToSetting">
             <template #icon><Settings :size="16" /></template>
-            <span class="menu-text">系统设置</span>
+            <span class="menu-text">设置</span>
           </a-menu-item>
           <a-menu-item key="logout" @click="logout">
             <template #icon><LogOut :size="16" /></template>
@@ -114,7 +114,7 @@ const userRoleText = computed(() => {
     case 'user':
       return '普通用户'
     default:
-      return '未知角色'
+      return userStore.roleName || userStore.userRole || '未知角色'
   }
 })
 

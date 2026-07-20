@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from server.utils.auth_middleware import get_admin_user, get_db, get_required_user
+from server.utils.auth_middleware import get_db, require_permission
 from yuxi.agents.skills.service import (
     confirm_skill_install_draft,
     create_skill_node,
@@ -120,7 +120,7 @@ def _serialize_skill_for_user(item, user: User) -> dict:
 
 @user_skills.get("/accessible")
 async def list_accessible_skills_route(
-    current_user: User = Depends(get_required_user),
+    current_user: User = Depends(require_permission("skills.read")),
     db: AsyncSession = Depends(get_db),
 ):
     try:
@@ -134,7 +134,7 @@ async def list_accessible_skills_route(
 @user_skills.post("/import/prepare")
 async def prepare_skill_upload_route(
     file: UploadFile = File(...),
-    current_user: User = Depends(get_required_user),
+    current_user: User = Depends(require_permission("skills.create")),
     db: AsyncSession = Depends(get_db),
 ):
     try:
@@ -153,7 +153,9 @@ async def prepare_skill_upload_route(
 
 
 @user_skills.post("/remote/list")
-async def list_remote_skills_route(payload: RemoteSkillSourceRequest, _current_user: User = Depends(get_required_user)):
+async def list_remote_skills_route(
+    payload: RemoteSkillSourceRequest, _current_user: User = Depends(require_permission("skills.create"))
+):
     try:
         return {"success": True, "data": await list_remote_skills(payload.source)}
     except ValueError as e:
@@ -165,7 +167,7 @@ async def list_remote_skills_route(payload: RemoteSkillSourceRequest, _current_u
 
 @user_skills.post("/remote/search")
 async def search_remote_skills_route(
-    payload: RemoteSkillSearchRequest, _current_user: User = Depends(get_required_user)
+    payload: RemoteSkillSearchRequest, _current_user: User = Depends(require_permission("skills.create"))
 ):
     try:
         return {"success": True, "data": await search_remote_skills(payload.query)}
@@ -179,7 +181,7 @@ async def search_remote_skills_route(
 @user_skills.post("/remote/prepare")
 async def prepare_remote_skills_route(
     payload: RemoteSkillPrepareRequest,
-    current_user: User = Depends(get_required_user),
+    current_user: User = Depends(require_permission("skills.create")),
     db: AsyncSession = Depends(get_db),
 ):
     try:
@@ -201,7 +203,7 @@ async def prepare_remote_skills_route(
 async def confirm_skill_install_draft_route(
     draft_id: str,
     payload: SkillDraftConfirmRequest,
-    current_user: User = Depends(get_required_user),
+    current_user: User = Depends(require_permission("skills.create")),
     db: AsyncSession = Depends(get_db),
 ):
     try:
@@ -220,7 +222,9 @@ async def confirm_skill_install_draft_route(
 
 
 @user_skills.delete("/install-drafts/{draft_id}")
-async def discard_skill_install_draft_route(draft_id: str, current_user: User = Depends(get_required_user)):
+async def discard_skill_install_draft_route(
+    draft_id: str, current_user: User = Depends(require_permission("skills.create"))
+):
     try:
         await discard_skill_install_draft(draft_id=draft_id, operator=current_user)
         return {"success": True}
@@ -233,7 +237,7 @@ async def discard_skill_install_draft_route(draft_id: str, current_user: User = 
 
 @skills.get("")
 async def list_skills_route(
-    current_user: User = Depends(get_required_user),
+    current_user: User = Depends(require_permission("skills.read")),
     db: AsyncSession = Depends(get_db),
 ):
     try:
@@ -251,7 +255,7 @@ async def list_skills_route(
 @skills.get("/dependency-options")
 async def get_skill_dependency_options_route(
     slug: str | None = Query(None, description="当前 Skill slug"),
-    current_user: User = Depends(get_required_user),
+    current_user: User = Depends(require_permission("skills.read")),
     db: AsyncSession = Depends(get_db),
 ):
     try:
@@ -267,7 +271,7 @@ async def get_skill_dependency_options_route(
 
 @skills.get("/builtin")
 async def list_builtin_skills_route(
-    _current_user: User = Depends(get_admin_user),
+    _current_user: User = Depends(require_permission("skills.enable")),
     db: AsyncSession = Depends(get_db),
 ):
     try:
@@ -282,7 +286,7 @@ async def list_builtin_skills_route(
 
 @skills.post("/builtin/sync")
 async def sync_builtin_skills_route(
-    current_user: User = Depends(get_admin_user),
+    current_user: User = Depends(require_permission("skills.enable")),
     db: AsyncSession = Depends(get_db),
 ):
     try:
@@ -299,7 +303,7 @@ async def sync_builtin_skills_route(
 async def update_skill_share_config_route(
     slug: str,
     payload: ShareConfigPayload,
-    current_user: User = Depends(get_required_user),
+    current_user: User = Depends(require_permission("skills.share")),
     db: AsyncSession = Depends(get_db),
 ):
     try:
@@ -316,7 +320,7 @@ async def update_skill_share_config_route(
 async def update_skill_enabled_route(
     slug: str,
     payload: SkillEnabledUpdateRequest,
-    current_user: User = Depends(get_required_user),
+    current_user: User = Depends(require_permission("skills.enable")),
     db: AsyncSession = Depends(get_db),
 ):
     try:
@@ -332,7 +336,7 @@ async def update_skill_enabled_route(
 @skills.get("/{slug}/tree")
 async def get_skill_tree_route(
     slug: str,
-    current_user: User = Depends(get_required_user),
+    current_user: User = Depends(require_permission("skills.read")),
     db: AsyncSession = Depends(get_db),
 ):
     try:
@@ -349,7 +353,7 @@ async def get_skill_tree_route(
 async def get_skill_file_route(
     slug: str,
     path: str = Query(..., description="相对 skill 根目录路径"),
-    current_user: User = Depends(get_required_user),
+    current_user: User = Depends(require_permission("skills.read")),
     db: AsyncSession = Depends(get_db),
 ):
     try:
@@ -366,7 +370,7 @@ async def get_skill_file_route(
 async def create_skill_file_route(
     slug: str,
     payload: SkillNodeCreateRequest,
-    current_user: User = Depends(get_required_user),
+    current_user: User = Depends(require_permission("skills.update")),
     db: AsyncSession = Depends(get_db),
 ):
     try:
@@ -391,7 +395,7 @@ async def create_skill_file_route(
 async def update_skill_file_route(
     slug: str,
     payload: SkillFileUpdateRequest,
-    current_user: User = Depends(get_required_user),
+    current_user: User = Depends(require_permission("skills.update")),
     db: AsyncSession = Depends(get_db),
 ):
     try:
@@ -415,7 +419,7 @@ async def update_skill_file_route(
 async def update_skill_dependencies_route(
     slug: str,
     payload: SkillDependenciesUpdateRequest,
-    current_user: User = Depends(get_required_user),
+    current_user: User = Depends(require_permission("skills.update")),
     db: AsyncSession = Depends(get_db),
 ):
     try:
@@ -439,7 +443,7 @@ async def update_skill_dependencies_route(
 async def delete_skill_file_route(
     slug: str,
     path: str = Query(..., description="相对 skill 根目录路径"),
-    current_user: User = Depends(get_required_user),
+    current_user: User = Depends(require_permission("skills.update")),
     db: AsyncSession = Depends(get_db),
 ):
     try:
@@ -457,7 +461,7 @@ async def delete_skill_file_route(
 async def export_skill_route(
     slug: str,
     background_tasks: BackgroundTasks,
-    current_user: User = Depends(get_required_user),
+    current_user: User = Depends(require_permission("skills.read")),
     db: AsyncSession = Depends(get_db),
 ):
     try:
@@ -475,7 +479,7 @@ async def export_skill_route(
 @skills.delete("/{slug}")
 async def delete_skill_route(
     slug: str,
-    current_user: User = Depends(get_required_user),
+    current_user: User = Depends(require_permission("skills.delete")),
     db: AsyncSession = Depends(get_db),
 ):
     try:
@@ -492,7 +496,7 @@ async def delete_skill_route(
 @skills.post("/delete-batch")
 async def delete_skills_batch_route(
     payload: SkillBatchDeleteRequest,
-    current_user: User = Depends(get_required_user),
+    current_user: User = Depends(require_permission("skills.delete")),
     db: AsyncSession = Depends(get_db),
 ):
     try:

@@ -13,7 +13,7 @@ from server.routers.dashboard_router import (
     get_tool_call_stats,
     get_user_activity_stats,
 )
-from server.utils.auth_middleware import get_superadmin_user
+from server.utils.auth_middleware import require_permission
 from yuxi.storage.postgres.models_business import Base, Conversation, Department, Message, ToolCall, User
 from yuxi.utils.datetime_utils import utc_now_naive
 
@@ -121,18 +121,19 @@ async def dashboard_session():
     await engine.dispose()
 
 
-async def test_dashboard_routes_require_superadmin_dependency():
+async def test_dashboard_routes_require_dashboard_read_permission():
     dashboard_routes = [route for route in dashboard.routes if isinstance(route, APIRoute)]
 
     assert dashboard_routes
     for route in dashboard_routes:
         dependency_calls = {dependency.call for dependency in route.dependant.dependencies}
-        assert get_superadmin_user in dependency_calls
+        assert any(getattr(call, "permission", None) == "dashboard.read" for call in dependency_calls)
 
 
-async def test_dashboard_dependency_rejects_department_admin(dashboard_session):
+async def test_dashboard_dependency_rejects_role_without_permission(dashboard_session):
+    dependency = require_permission("dashboard.read")
     with pytest.raises(HTTPException) as exc:
-        await get_superadmin_user(dashboard_session["admin_a"])
+        await dependency(dashboard_session["admin_a"])
 
     assert exc.value.status_code == 403
 

@@ -79,7 +79,14 @@ async def test_list_visible_skills_for_management_includes_owned_disabled_and_en
             _user("root", role="user"),
         ),
         (
-            Skill(slug="admin-disabled", name="admin-disabled", description="", created_by="other", enabled=False),
+            Skill(
+                slug="admin-disabled",
+                name="admin-disabled",
+                description="",
+                created_by="other",
+                enabled=False,
+                share_config={"access_level": "department", "department_ids": [1], "user_uids": []},
+            ),
             _user("root", role="admin"),
         ),
         (

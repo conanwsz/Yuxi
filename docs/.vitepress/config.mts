@@ -72,6 +72,7 @@ export default defineConfig({
           { text: '开发路线图', link: '/develop-guides/roadmap' },
           { text: '版本变更记录', link: '/develop-guides/changelog' },
           { text: '界面设计规范', link: '/develop-guides/design' },
+          { text: '权限与数据范围', link: '/develop-guides/authorization' },
           { text: '测试规范', link: '/develop-guides/testing-guidelines' },
         ]
       }

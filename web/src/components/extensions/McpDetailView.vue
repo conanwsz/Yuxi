@@ -18,6 +18,7 @@
       <div class="detail-actions">
         <a-space :size="8">
           <button
+            v-if="userStore.hasPermission('mcp.manage')"
             type="button"
             @click="handleTestServer"
             :disabled="testLoading"
@@ -27,6 +28,7 @@
             <span>测试</span>
           </button>
           <button
+            v-if="userStore.hasPermission('mcp.manage')"
             type="button"
             @click="startEdit"
             :disabled="isEditing || !server"
@@ -36,6 +38,7 @@
             <span>编辑</span>
           </button>
           <button
+            v-if="userStore.hasPermission('mcp.manage')"
             type="button"
             @click="handleDangerAction"
             :class="[
@@ -422,9 +425,11 @@ import {
 import { mcpApi } from '@/apis/mcp_api'
 import { formatFullDateTime } from '@/utils/time'
 import McpEnvEditor from '@/components/McpEnvEditor.vue'
+import { useUserStore } from '@/stores/user'
 
 const route = useRoute()
 const router = useRouter()
+const userStore = useUserStore()
 const slug = computed(() => decodeURIComponent(route.params.slug ?? route.params.name))
 
 const loading = ref(false)

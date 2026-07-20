@@ -7,7 +7,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from server.utils.auth_middleware import get_admin_user, get_db, get_required_user
+from server.utils.auth_middleware import get_db, get_required_user, require_permission
 from yuxi.agents.buildin import agent_manager
 from yuxi.agents.context import filter_config_by_role
 from yuxi.repositories.agent_repository import (
@@ -26,6 +26,7 @@ from yuxi.services.agent_run_service import (
 )
 from yuxi.services.input_message_service import build_chat_input_message
 from yuxi.storage.postgres.models_business import User
+from yuxi.services.permission_service import authorization_role
 
 agent_router = APIRouter(prefix="/agent", tags=["agent"])
 
@@ -91,12 +92,14 @@ async def _serialize_agent(
         include_configurable_items=include_configurable_items,
         backend_info_cache=backend_info_cache,
     )
-    data["config_json"] = _filter_agent_config_json(item.backend_id, data.get("config_json"), user.role)
+    data["config_json"] = _filter_agent_config_json(
+        item.backend_id, data.get("config_json"), authorization_role(user)
+    )
     return data
 
 
 @agent_router.get("/backends")
-async def list_agent_backends(current_user: User = Depends(get_required_user)):
+async def list_agent_backends(current_user: User = Depends(require_permission("agents.read"))):
     infos = await agent_manager.get_agents_info(include_configurable_items=False)
     return {"backends": [_backend_info(info) for info in infos]}
 
@@ -104,19 +107,19 @@ async def list_agent_backends(current_user: User = Depends(get_required_user)):
 @agent_router.get("/backends/{backend_id}")
 async def get_agent_backend(
     backend_id: str,
-    current_user: User = Depends(get_required_user),
+    current_user: User = Depends(require_permission("agents.read")),
     db: AsyncSession = Depends(get_db),
 ):
     backend = agent_manager.get_agent(backend_id)
     if not backend:
         raise HTTPException(status_code=404, detail=f"智能体后端 {backend_id} 不存在")
-    return _backend_info(await backend.get_info(user_role=current_user.role, db=db, user=current_user))
+    return _backend_info(await backend.get_info(user_role=authorization_role(current_user), db=db, user=current_user))
 
 
 @agent_router.get("")
 async def list_agents(
     include_subagents: bool = Query(False),
-    current_user: User = Depends(get_required_user),
+    current_user: User = Depends(require_permission("agents.read")),
     db: AsyncSession = Depends(get_db),
 ):
     repo = AgentRepository(db)
@@ -128,7 +131,9 @@ async def list_agents(
 
 
 @agent_router.get("/default")
-async def get_default_agent(current_user: User = Depends(get_required_user), db: AsyncSession = Depends(get_db)):
+async def get_default_agent(
+    current_user: User = Depends(require_permission("agents.read")), db: AsyncSession = Depends(get_db)
+):
     repo = AgentRepository(db)
     item = await repo.ensure_default_agent()
     if not item or not user_can_access_agent(current_user, item):
@@ -138,7 +143,9 @@ async def get_default_agent(current_user: User = Depends(get_required_user), db:
 
 @agent_router.post("")
 async def create_agent(
-    payload: AgentCreate, current_user: User = Depends(get_required_user), db: AsyncSession = Depends(get_db)
+    payload: AgentCreate,
+    current_user: User = Depends(require_permission("agents.create")),
+    db: AsyncSession = Depends(get_db),
 ):
     if not agent_manager.get_agent(payload.backend_id):
         raise HTTPException(status_code=404, detail=f"智能体后端 {payload.backend_id} 不存在")
@@ -154,7 +161,9 @@ async def create_agent(
             description=payload.description,
             icon=payload.icon,
             pics=payload.pics,
-            config_json=_filter_agent_config_json(payload.backend_id, payload.config_json, current_user.role),
+            config_json=_filter_agent_config_json(
+                payload.backend_id, payload.config_json, authorization_role(current_user)
+            ),
             share_config=payload.share_config,
             is_default=payload.set_default,
             is_subagent=payload.is_subagent,
@@ -167,7 +176,11 @@ async def create_agent(
 
 
 @agent_router.get("/{agent_id}")
-async def get_agent(agent_id: str, current_user: User = Depends(get_required_user), db: AsyncSession = Depends(get_db)):
+async def get_agent(
+    agent_id: str,
+    current_user: User = Depends(require_permission("agents.read")),
+    db: AsyncSession = Depends(get_db),
+):
     repo = AgentRepository(db)
     agent_slug = agent_id  # 兼容既有路径参数名；这里实际是 Agent.slug。
     item = await repo.get_visible_by_slug(slug=agent_slug, user=current_user, kind="any")
@@ -180,7 +193,7 @@ async def get_agent(agent_id: str, current_user: User = Depends(get_required_use
 async def update_agent(
     agent_id: str,
     payload: AgentUpdate,
-    current_user: User = Depends(get_required_user),
+    current_user: User = Depends(require_permission("agents.update")),
     db: AsyncSession = Depends(get_db),
 ):
     repo = AgentRepository(db)
@@ -204,7 +217,9 @@ async def update_agent(
             description=payload.description,
             icon=payload.icon,
             pics=payload.pics,
-            config_json=_filter_agent_config_json(item.backend_id, payload.config_json, current_user.role)
+            config_json=_filter_agent_config_json(
+                item.backend_id, payload.config_json, authorization_role(current_user)
+            )
             if payload.config_json is not None
             else None,
             share_config=payload.share_config,
@@ -219,7 +234,9 @@ async def update_agent(
 
 @agent_router.delete("/{agent_id}")
 async def delete_agent(
-    agent_id: str, current_user: User = Depends(get_required_user), db: AsyncSession = Depends(get_db)
+    agent_id: str,
+    current_user: User = Depends(require_permission("agents.delete")),
+    db: AsyncSession = Depends(get_db),
 ):
     repo = AgentRepository(db)
     agent_slug = agent_id  # 兼容既有路径参数名；这里实际是 Agent.slug。
@@ -237,7 +254,7 @@ async def delete_agent(
 @agent_router.post("/{agent_id}/set_default")
 async def set_agent_default(
     agent_id: str,
-    current_user: User = Depends(get_admin_user),
+    current_user: User = Depends(require_permission("agents.update")),
     db: AsyncSession = Depends(get_db),
 ):
     repo = AgentRepository(db)
