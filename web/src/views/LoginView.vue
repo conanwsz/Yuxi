@@ -510,12 +510,14 @@ const handleOIDCLogin = async () => {
     oidcLoading.value = true
     errorMessage.value = ''
 
+    // 保存并传递经校验的回跳路径，避免开放重定向
+    const redirectPath = sanitizeRedirect(
+      sessionStorage.getItem('redirect') || router.currentRoute.value.query.redirect
+    )
+
     // 获取 OIDC 登录 URL
-    const response = await authApi.getOIDCLoginUrl()
+    const response = await authApi.getOIDCLoginUrl(redirectPath)
     if (response.login_url) {
-      // 保存当前路径，以便登录后返回
-      const redirectPath =
-        sessionStorage.getItem('redirect') || router.currentRoute.value.query.redirect || '/'
       sessionStorage.setItem('oidc_redirect', redirectPath)
 
       // 跳转到 OIDC Provider
@@ -642,7 +644,10 @@ onMounted(async () => {
   // 检查 OIDC 配置完成后，尝试自动触发 OIDC 登录（跨系统跳转场景）
   const config = await checkOIDCConfig()
   if (config && config.enabled) {
-    const autoStarted = await tryAutoStartOIDC(async () => await authApi.getOIDCLoginUrl(), config)
+    const autoStarted = await tryAutoStartOIDC(
+      async (redirectPath) => await authApi.getOIDCLoginUrl(redirectPath),
+      config
+    )
     // 如果已发起 OIDC 跳转，页面会被重定向，不需要继续
     if (autoStarted) return
   }

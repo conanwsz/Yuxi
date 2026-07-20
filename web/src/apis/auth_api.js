@@ -43,6 +43,10 @@ async function getOIDCLoginUrl(redirectPath = '/') {
   return response.json()
 }
 
+async function getUserAccessOptions() {
+  return apiAdminGet('/api/auth/users/access-options')
+}
+
 /**
  * 使用一次性 code 交换 OIDC 登录结果
  * @param {string} code - 一次性登录 code
@@ -56,13 +60,10 @@ async function getOIDCLoginUrl(redirectPath = '/') {
  *   avatar: string | null,
  *   role: string,
  *   department_id: number | null,
- *   department_name: string | null
+ *   department_name: string | null,
+ *   redirect_path?: string
  * }>}
  */
-async function getUserAccessOptions() {
-  return apiAdminGet('/api/auth/users/access-options')
-}
-
 async function exchangeOIDCCode(code) {
   const response = await fetch('/api/auth/oidc/exchange-code', {
     method: 'POST',

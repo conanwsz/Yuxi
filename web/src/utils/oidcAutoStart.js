@@ -60,9 +60,10 @@ export async function tryAutoStartOIDC(getOIDCLoginUrl, config) {
   }
 
   // 5. 获取 OIDC 登录 URL 并跳转
+  const redirectPath = sanitizeRedirect(params.get('redirect'))
   let loginUrlResp
   try {
-    loginUrlResp = await getOIDCLoginUrl()
+    loginUrlResp = await getOIDCLoginUrl(redirectPath)
   } catch {
     return false
   }
@@ -72,7 +73,6 @@ export async function tryAutoStartOIDC(getOIDCLoginUrl, config) {
   }
 
   // 保存当前路径，登录后返回（安全校验）
-  const redirectPath = sanitizeRedirect(params.get('redirect'))
   sessionStorage.setItem('oidc_redirect', redirectPath)
 
   // 标记已尝试，防止下次再自动触发
