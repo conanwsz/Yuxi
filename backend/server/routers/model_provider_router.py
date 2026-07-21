@@ -22,6 +22,7 @@ from yuxi.storage.postgres.models_business import User
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.utils import logger
 from yuxi.services.permission_service import has_permission
+from yuxi.services.resource_access_runtime_service import filter_model_infos_for_user, hydrate_user_resource_access
 
 model_providers = APIRouter(prefix="/system/model-providers", tags=["model-providers"])
 
@@ -214,7 +215,7 @@ async def refresh_model_cache(
 @model_providers.get("/models/v2")
 async def get_v2_models(
     model_type: str = "chat",
-    _current_user: User = Depends(get_required_user),
+    current_user: User = Depends(get_required_user),
     db: AsyncSession = Depends(get_db),
 ):
     """获取 v2 格式的模型列表，按 provider 分组。
@@ -224,6 +225,7 @@ async def get_v2_models(
     """
     from yuxi.models.providers.cache import model_cache
 
+    await hydrate_user_resource_access(db, current_user)
     grouped = model_cache.get_specs_grouped_by_provider(model_type)
     providers = await get_all_model_providers(db)
     provider_name_by_id = {
@@ -232,6 +234,13 @@ async def get_v2_models(
 
     result = {}
     for provider_id, models in grouped.items():
+        visible_models = (
+            models
+            if has_permission(current_user, "models.manage")
+            else filter_model_infos_for_user(current_user, models, model_type=model_type)
+        )
+        if not visible_models:
+            continue
         result[provider_id] = {
             "provider_id": provider_id,
             "provider_display_name": provider_name_by_id.get(provider_id, provider_id),
@@ -243,7 +252,7 @@ async def get_v2_models(
                     "dimension": m.dimension,
                     "batch_size": m.batch_size,
                 }
-                for m in models
+                for m in visible_models
             ]
         }
 

@@ -7,14 +7,19 @@ import json
 import time
 from dataclasses import dataclass, field
 
+from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
+from yuxi.agents.buildin import agent_manager
 from yuxi.agents.mcp.service import ensure_builtin_mcp_servers_in_db
 from yuxi.agents.skills.service import init_builtin_skills
 from yuxi.config import config as sys_config
+from yuxi.repositories.agent_repository import AgentRepository
 from yuxi.repositories.agent_run_repository import TERMINAL_RUN_STATUSES, AgentRunRepository
+from yuxi.services.agent_run_service import resolve_agent_run_model_spec, validate_agent_context_resource_access
 from yuxi.services.chat_service import stream_agent_chat, stream_agent_resume
 from yuxi.services.input_message_service import restore_chat_input_message
+from yuxi.services.resource_access_runtime_service import hydrate_user_resource_access
 from yuxi.services.run_queue_service import (
     append_run_stream_event,
     clear_cancel_signal,
@@ -153,7 +158,34 @@ async def mark_run_terminal(run_id: str, status: str, error_type: str | None = N
 async def _load_user(uid: str):
     async with pg_manager.get_async_session_context() as db:
         result = await db.execute(select(User).where(User.uid == uid, User.is_deleted == 0))
-        return result.scalar_one_or_none()
+        user = result.scalar_one_or_none()
+        if user:
+            await hydrate_user_resource_access(db, user)
+        return user
+
+
+async def _validate_run_resource_access(*, db, user: User, run, payload: dict) -> None:
+    try:
+        agent_kind = "subagent" if run.run_type == "subagent" else "main"
+        agent_item = await AgentRepository(db).get_visible_by_slug(slug=run.agent_slug, user=user, kind=agent_kind)
+        if not agent_item:
+            raise NonRetryableRunError("智能体不存在或当前角色无权访问")
+
+        agent_backend = agent_manager.get_agent(agent_item.backend_id)
+        if not agent_backend:
+            raise NonRetryableRunError(f"智能体后端 {agent_item.backend_id} 不存在")
+
+        config_json = getattr(agent_item, "config_json", None) or {}
+        config_context = config_json.get("context") if isinstance(config_json, dict) else None
+        await validate_agent_context_resource_access(db=db, user=user, context=config_context)
+
+        model_spec = payload.get("model_spec")
+        if not isinstance(model_spec, str) or not model_spec.strip():
+            raise NonRetryableRunError("运行任务缺少模型快照")
+        resolve_agent_run_model_spec(model_spec, agent_item, agent_backend, user=user)
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, str) else json.dumps(exc.detail, ensure_ascii=False)
+        raise NonRetryableRunError(detail) from exc
 
 
 async def _is_cancel_requested(run_id: str) -> bool:
@@ -377,6 +409,7 @@ async def process_agent_run(ctx, run_id: str):
 
     try:
         async with pg_manager.get_async_session_context() as db:
+            await _validate_run_resource_access(db=db, user=user, run=run, payload=payload)
             if run_type == "resume":
                 stream = stream_agent_resume(
                     thread_id=thread_id,

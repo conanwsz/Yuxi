@@ -8,6 +8,8 @@ from urllib.parse import quote, unquote
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import StreamingResponse
 from yuxi import config
 from yuxi.knowledge.chunking.ragflow_like.presets import get_chunk_preset_options
@@ -33,13 +35,18 @@ from yuxi.knowledge.utils.url_fetcher import fetch_url_content
 from yuxi.models.providers.cache import model_cache
 from yuxi.services.task_service import TaskContext, tasker
 from yuxi.services.permission_service import has_permission
+from yuxi.services.resource_access_runtime_service import (
+    assert_model_spec_allowed,
+    hydrate_user_resource_access,
+)
 from yuxi.services.workspace_service import MAX_WORKSPACE_UPLOAD_SIZE_BYTES, resolve_workspace_file_path
 from yuxi.storage.minio.client import MinIOClient, StorageError, aupload_file_to_minio, get_minio_client
+from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_business import User
 from yuxi.utils import logger
 from yuxi.utils.upload_utils import MAX_UPLOAD_SIZE_BYTES, read_upload_with_limit, write_upload_to_path
 
-from server.utils.auth_middleware import get_required_user
+from server.utils.auth_middleware import get_db, get_required_user
 from server.utils.knowledge_auth import get_knowledge_user as get_admin_user
 
 knowledge = APIRouter(prefix="/knowledge", tags=["knowledge"])
@@ -199,6 +206,20 @@ async def _has_running_graph_build_task(kb_id: str) -> bool:
     )
 
 
+async def _assert_database_models_allowed(kb_id: str, current_user: User) -> dict:
+    database = await knowledge_base.get_database_info(kb_id)
+    if not database:
+        raise HTTPException(status_code=404, detail=f"知识库 {kb_id} 不存在")
+    for field_name, model_type in (
+        ("embedding_model_spec", "embedding"),
+        ("llm_model_spec", "chat"),
+    ):
+        model_spec = database.get(field_name)
+        if model_spec:
+            assert_model_spec_allowed(current_user, model_spec, model_type=model_type)
+    return database
+
+
 # =============================================================================
 # === 知识库管理分组 ===
 # =============================================================================
@@ -224,6 +245,7 @@ async def create_database(
     llm_model_spec: str | None = Body(None),
     share_config: dict | None = Body(None),
     current_user: User = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """创建知识库"""
     if share_config is not None and not has_permission(current_user, "knowledge.share"):
@@ -234,6 +256,11 @@ async def create_database(
             "department_ids": [],
             "user_uids": [str(current_user.uid)],
         }
+    await hydrate_user_resource_access(db, current_user)
+    if embedding_model_spec:
+        assert_model_spec_allowed(current_user, embedding_model_spec, model_type="embedding")
+    if llm_model_spec:
+        assert_model_spec_allowed(current_user, llm_model_spec, model_type="chat")
     logger.debug(
         f"Create database {database_name} with kb_type {kb_type}, "
         f"additional_params {additional_params}, llm_model_spec {llm_model_spec}, "
@@ -420,6 +447,7 @@ async def update_database_info(
     kb_id: str,
     data: UpdateDatabaseRequest,
     current_user: User = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """更新知识库信息"""
     if data.share_config is not None and not has_permission(current_user, "knowledge.share"):
@@ -428,6 +456,9 @@ async def update_database_info(
         f"[update_database_info] 接收到的参数: name={data.name}, llm_model_spec={data.llm_model_spec}, "
         f"additional_params={data.additional_params}, share_config={data.share_config}"
     )
+    await hydrate_user_resource_access(db, current_user)
+    if "llm_model_spec" in data.model_fields_set and data.llm_model_spec:
+        assert_model_spec_allowed(current_user, data.llm_model_spec, model_type="chat")
     try:
         update_llm_model_spec = "llm_model_spec" in data.model_fields_set
 
@@ -501,12 +532,18 @@ async def configure_graph_build(
     kb_id: str,
     data: dict = Body(...),
     current_user: User = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
 ):
+    await hydrate_user_resource_access(db, current_user)
+    await _assert_database_models_allowed(kb_id, current_user)
+    extractor_options = data.get("extractor_options") or {}
+    if extractor_options.get("model_spec"):
+        assert_model_spec_allowed(current_user, extractor_options["model_spec"], model_type="chat")
     try:
         config = await MilvusGraphService().configure(
             kb_id,
             extractor_type=data.get("extractor_type"),
-            extractor_options=data.get("extractor_options") or {},
+            extractor_options=extractor_options,
             created_by=current_user.uid,
         )
         return {"message": "图谱抽取配置已锁定", "status": "success", "config": config}
@@ -523,8 +560,11 @@ async def index_graph_build(
     kb_id: str,
     data: dict | None = Body(default=None),
     current_user: User = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
 ):
     data = data or {}
+    await hydrate_user_resource_access(db, current_user)
+    await _assert_database_models_allowed(kb_id, current_user)
     try:
         if await _has_running_graph_build_task(kb_id):
             raise HTTPException(status_code=409, detail="该知识库已有正在运行的图谱构建任务")
@@ -538,8 +578,25 @@ async def index_graph_build(
         graph_status = await service.get_status(kb_id)
         if not graph_status.get("locked"):
             raise HTTPException(status_code=400, detail="请先确认并锁定图谱抽取配置")
+        graph_model_spec = ((graph_status.get("config") or {}).get("extractor_options") or {}).get(
+            "model_spec"
+        )
+        if graph_model_spec:
+            assert_model_spec_allowed(current_user, graph_model_spec, model_type="chat")
+        operator_uid = current_user.uid
 
         async def run_graph_index(context: TaskContext):
+            async with pg_manager.get_async_session_context() as task_db:
+                result = await task_db.execute(
+                    select(User).where(User.uid == operator_uid, User.is_deleted == 0)
+                )
+                task_user = result.scalar_one_or_none()
+                if task_user is None:
+                    raise PermissionError("任务创建用户不存在或已停用")
+                await hydrate_user_resource_access(task_db, task_user)
+            await _assert_database_models_allowed(kb_id, task_user)
+            if graph_model_spec:
+                assert_model_spec_allowed(task_user, graph_model_spec, model_type="chat")
             await context.set_message("任务初始化")
             await context.set_progress(5.0, "准备构建图谱")
             result = await service.build_pending_chunks(kb_id, batch_size=batch_size, context=context)
@@ -1548,9 +1605,17 @@ async def download_document(kb_id: str, doc_id: str, current_user: User = Depend
 
 @knowledge.post("/databases/{kb_id}/query")
 async def query_knowledge_base(
-    kb_id: str, query: str = Body(...), meta: dict = Body(...), current_user: User = Depends(get_admin_user)
+    kb_id: str,
+    query: str = Body(...),
+    meta: dict = Body(...),
+    current_user: User = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """查询知识库"""
+    await hydrate_user_resource_access(db, current_user)
+    await _assert_database_models_allowed(kb_id, current_user)
+    if meta.get("reranker_model"):
+        assert_model_spec_allowed(current_user, meta["reranker_model"], model_type="rerank")
     logger.debug(f"Query knowledge base {kb_id}: {query}")
     try:
         result = await knowledge_base.aquery(query, kb_id=kb_id, **meta)
@@ -1562,9 +1627,17 @@ async def query_knowledge_base(
 
 @knowledge.post("/databases/{kb_id}/query-test")
 async def query_test(
-    kb_id: str, query: str = Body(...), meta: dict = Body(...), current_user: User = Depends(get_admin_user)
+    kb_id: str,
+    query: str = Body(...),
+    meta: dict = Body(...),
+    current_user: User = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """测试查询知识库"""
+    await hydrate_user_resource_access(db, current_user)
+    await _assert_database_models_allowed(kb_id, current_user)
+    if meta.get("reranker_model"):
+        assert_model_spec_allowed(current_user, meta["reranker_model"], model_type="rerank")
     logger.debug(f"Query test in {kb_id}: {query}")
     try:
         result = await knowledge_base.aquery(query, kb_id=kb_id, **meta)
@@ -1576,9 +1649,15 @@ async def query_test(
 
 @knowledge.put("/databases/{kb_id}/query-params")
 async def update_knowledge_base_query_params(
-    kb_id: str, params: dict = Body(...), current_user: User = Depends(get_admin_user)
+    kb_id: str,
+    params: dict = Body(...),
+    current_user: User = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """更新知识库查询参数配置"""
+    await hydrate_user_resource_access(db, current_user)
+    if params.get("reranker_model"):
+        assert_model_spec_allowed(current_user, params["reranker_model"], model_type="rerank")
     try:
         # 获取知识库实例
         kb_instance = await knowledge_base._get_kb_for_database(kb_id)

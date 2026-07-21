@@ -24,6 +24,14 @@ from yuxi.storage.postgres.models_business import Skill, User
 from yuxi.utils.logging_config import logger
 from yuxi.utils.share_config import SHARE_ACCESS_LEVELS, normalize_share_config
 from yuxi.services.permission_service import has_permission
+from yuxi.services.resource_access_runtime_service import (
+    assert_mcp_slugs_allowed,
+    assert_tool_slugs_allowed,
+    filter_resource_accessible_skills,
+    filter_tool_metadata_for_user,
+    hydrate_user_resource_access,
+    resolve_allowed_mcp_slugs,
+)
 
 SKILL_SLUG_PATTERN = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 SKILL_NAME_PATTERN = SKILL_SLUG_PATTERN
@@ -372,7 +380,12 @@ async def list_accessible_skills(
 ) -> list[Skill]:
     repo = SkillRepository(db)
     items = await repo.list_enabled() if require_enabled else await repo.list_all()
-    return [item for item in items if user_can_access_skill(user, item, require_enabled=require_enabled)]
+    visible = [item for item in items if user_can_access_skill(user, item, require_enabled=require_enabled)]
+    if not visible:
+        return []
+    await hydrate_user_resource_access(db, user)
+    enabled_mcps = await get_enabled_mcp_server_slugs(db=db)
+    return filter_resource_accessible_skills(user, visible, enabled_mcp_slugs=enabled_mcps)
 
 
 async def list_manageable_skills(db: AsyncSession, user: User) -> list[Skill]:
@@ -413,14 +426,16 @@ async def get_skill_dependency_options(
     from yuxi.agents.toolkits.service import get_tool_metadata
 
     def get_tools():
-        all_tools = get_tool_metadata()
+        all_tools = filter_tool_metadata_for_user(user, get_tool_metadata())
         return [{"slug": tool["slug"], "name": tool.get("name", tool["slug"])} for tool in all_tools]
 
-    skill_slugs, tool_list, mcp_names = await asyncio.gather(
+    await hydrate_user_resource_access(db, user)
+    skill_slugs, tool_list, enabled_mcps = await asyncio.gather(
         list_skill_slugs(db, user=user),
         asyncio.to_thread(get_tools),
         get_enabled_mcp_server_slugs(db=db),
     )
+    mcp_names = sorted(resolve_allowed_mcp_slugs(user, enabled_mcps))
     if slug:
         skill_slugs = [item for item in skill_slugs if item != slug]
 
@@ -485,6 +500,10 @@ async def update_skill_dependencies(
     skill_dependencies: list[str],
     operator: User,
 ) -> Skill:
+    await hydrate_user_resource_access(db, operator)
+    assert_tool_slugs_allowed(operator, tool_dependencies)
+    servers = await get_enabled_mcp_server_slugs(db=db)
+    assert_mcp_slugs_allowed(operator, mcp_dependencies, existing_slugs=servers, enabled_slugs=servers)
     item = await get_manageable_skill_or_raise(db, operator, slug)
     _ensure_non_builtin(item)
     repo = SkillRepository(db)

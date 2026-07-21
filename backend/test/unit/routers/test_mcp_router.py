@@ -28,12 +28,18 @@ def _build_app(*, allow_admin: bool = True) -> FastAPI:
         )
 
     async def fake_required_user():
-        return User(
+        user = User(
             username="admin" if allow_admin else "user",
             uid="admin" if allow_admin else "user",
             password_hash="x",
             role="admin" if allow_admin else "user",
         )
+        user.resource_access = {
+            "models": {"mode": "all", "allowed": [], "defaults": {}},
+            "tools": {"mode": "all", "allowed": []},
+            "mcp_servers": {"mode": "all", "allowed": []},
+        }
+        return user
 
     app.dependency_overrides[get_db] = fake_db
     app.dependency_overrides[get_admin_user] = fake_admin_user
@@ -83,6 +89,7 @@ def test_update_mcp_server_status_not_found(monkeypatch):
 def test_get_mcp_servers_normal_user_is_stripped(monkeypatch):
     class DummyServer:
         def __init__(self):
+            self.slug = "test-mcp"
             self.name = "test-mcp"
             self.description = "test mcp description"
             self.transport = "stdio"

@@ -92,6 +92,86 @@ async def test_role_api_rejects_unknown_permission_and_protects_system_roles(tes
     assert delete_response.status_code == 403, delete_response.text
 
 
+async def test_role_resource_access_catalog_and_crud(test_client, admin_headers):
+    await _require_superadmin(test_client, admin_headers)
+    suffix = uuid.uuid4().hex[:8]
+    role_key = f"resource_{suffix}"
+
+    resources_response = await test_client.get("/api/roles/resources", headers=admin_headers)
+    assert resources_response.status_code == 200, resources_response.text
+    resources = resources_response.json()
+    assert {"models", "tools", "mcp_servers"} <= set(resources)
+    assert resources["tools"], "expected at least one built-in tool in resource catalog"
+
+    selected_tool = resources["tools"][0]["key"]
+    selected_mcp = resources["mcp_servers"][0]["key"] if resources["mcp_servers"] else None
+    selected_chat_model = next((item for item in resources["models"] if item["type"] == "chat"), None)
+    if selected_chat_model is None:
+        pytest.skip("This test requires at least one chat model in /api/roles/resources.")
+
+    create_response = await test_client.post(
+        "/api/roles",
+        headers=admin_headers,
+        json={
+            "key": role_key,
+            "name": f"资源角色 {suffix}",
+            "permissions": [],
+            "resource_access": {
+                "models": {
+                    "mode": "selected",
+                    "allowed": [selected_chat_model["key"]],
+                    "defaults": {"chat": selected_chat_model["key"]},
+                },
+                "tools": {"mode": "selected", "allowed": [selected_tool]},
+                "mcp_servers": {
+                    "mode": "selected" if selected_mcp else "none",
+                    "allowed": [selected_mcp] if selected_mcp else [],
+                },
+            },
+        },
+    )
+    assert create_response.status_code == 201, create_response.text
+    assert create_response.json()["role"]["resource_access"]["models"]["defaults"]["chat"] == selected_chat_model["key"]
+
+    try:
+        invalid_update = await test_client.put(
+            f"/api/roles/{role_key}",
+            headers=admin_headers,
+            json={
+                "resource_access": {
+                    "models": {
+                        "mode": "selected",
+                        "allowed": [selected_chat_model["key"]],
+                        "defaults": {},
+                    },
+                    "tools": {"mode": "selected", "allowed": [selected_tool]},
+                    "mcp_servers": {"mode": "none", "allowed": []},
+                }
+            },
+        )
+        assert invalid_update.status_code == 422, invalid_update.text
+
+        unknown_tool_update = await test_client.put(
+            f"/api/roles/{role_key}",
+            headers=admin_headers,
+            json={
+                "resource_access": {
+                    "models": {
+                        "mode": "selected",
+                        "allowed": [selected_chat_model["key"]],
+                        "defaults": {"chat": selected_chat_model["key"]},
+                    },
+                    "tools": {"mode": "selected", "allowed": ["missing_tool"]},
+                    "mcp_servers": {"mode": "none", "allowed": []},
+                }
+            },
+        )
+        assert unknown_tool_update.status_code == 422, unknown_tool_update.text
+    finally:
+        delete_response = await test_client.delete(f"/api/roles/{role_key}", headers=admin_headers)
+        assert delete_response.status_code in {200, 404}, delete_response.text
+
+
 async def test_jwt_and_api_key_resolve_updated_role_permissions_on_every_request(test_client, admin_headers):
     await _require_superadmin(test_client, admin_headers)
     suffix = uuid.uuid4().hex[:8]

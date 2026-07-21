@@ -17,6 +17,7 @@ from yuxi.agents.mcp.service import (
 )
 from yuxi.storage.postgres.models_business import User
 from yuxi.services.permission_service import has_permission
+from yuxi.services.resource_access_runtime_service import filter_mcp_servers_for_user, hydrate_user_resource_access
 from yuxi.utils import logger
 from server.utils.auth_middleware import get_db, require_permission
 
@@ -92,10 +93,12 @@ async def get_mcp_servers(
 ):
     """获取所有 MCP 服务器配置（普通用户仅获取脱敏的基础信息）"""
     try:
+        await hydrate_user_resource_access(db, current_user)
         servers = await get_all_mcp_servers(db)
         if has_permission(current_user, "mcp.manage"):
             return {"success": True, "data": [s.to_dict() for s in servers]}
 
+        servers = filter_mcp_servers_for_user(current_user, servers)
         data = []
         for s in servers:
             data.append(
@@ -165,7 +168,12 @@ async def get_mcp_server_route(
 ):
     """获取单个 MCP 服务器配置"""
     try:
+        await hydrate_user_resource_access(db, current_user)
         server = await get_server_or_404(db, slug)
+        if not has_permission(current_user, "mcp.manage"):
+            allowed = {item.slug for item in filter_mcp_servers_for_user(current_user, [server]) if item.enabled}
+            if slug not in allowed:
+                raise HTTPException(status_code=403, detail="当前角色无权访问该 MCP 服务")
         return {"success": True, "data": server.to_dict()}
     except HTTPException:
         raise

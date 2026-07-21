@@ -187,8 +187,15 @@ def authorization_role(user: User) -> str:
 
 
 async def resolve_user_permissions(db: AsyncSession, user: User) -> User:
+    from yuxi.services.resource_access_service import default_resource_access_none, normalize_stored_resource_access
+
     result = await db.execute(select(Role).where(Role.key == user.role))
     role = result.scalar_one_or_none()
     user.permission_keys = set(role.permissions or []) if role else set()
+    user.resource_access = (
+        normalize_stored_resource_access(getattr(role, "resource_access", None))
+        if role
+        else default_resource_access_none()
+    )
     user.role_name = role.name if role else user.role
     return user

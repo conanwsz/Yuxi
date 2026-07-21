@@ -23,6 +23,7 @@ from yuxi.services.agent_run_service import (
     get_agent_run_result,
     get_agent_run_view,
     stream_agent_run_events,
+    validate_agent_context_resource_access,
 )
 from yuxi.services.input_message_service import build_chat_input_message
 from yuxi.storage.postgres.models_business import User
@@ -76,6 +77,22 @@ def _filter_agent_config_json(backend_id: str, config_json: dict | None, role: s
     backend = agent_manager.get_agent(backend_id)
     context_schema = backend.context_schema if backend else None
     return filter_config_by_role(config_json or {}, role, context_schema=context_schema)
+
+
+async def _validate_agent_config_resources(
+    *,
+    db: AsyncSession,
+    user: User,
+    backend_id: str,
+    config_json: dict | None,
+) -> dict:
+    filtered = _filter_agent_config_json(backend_id, config_json, authorization_role(user))
+    context = filtered.get("context") if isinstance(filtered, dict) else None
+    if not isinstance(context, dict):
+        return filtered
+
+    await validate_agent_context_resource_access(db=db, user=user, context=context)
+    return filtered
 
 
 async def _serialize_agent(
@@ -154,6 +171,12 @@ async def create_agent(
 
     repo = AgentRepository(db)
     try:
+        validated_config_json = await _validate_agent_config_resources(
+            db=db,
+            user=current_user,
+            backend_id=payload.backend_id,
+            config_json=payload.config_json,
+        )
         item = await repo.create(
             name=payload.name,
             slug=payload.slug,
@@ -161,9 +184,7 @@ async def create_agent(
             description=payload.description,
             icon=payload.icon,
             pics=payload.pics,
-            config_json=_filter_agent_config_json(
-                payload.backend_id, payload.config_json, authorization_role(current_user)
-            ),
+            config_json=validated_config_json,
             share_config=payload.share_config,
             is_default=payload.set_default,
             is_subagent=payload.is_subagent,
@@ -210,6 +231,16 @@ async def update_agent(
             item.description = None
         if "icon" in fields_set and payload.icon is None:
             item.icon = None
+        validated_config_json = (
+            await _validate_agent_config_resources(
+                db=db,
+                user=current_user,
+                backend_id=item.backend_id,
+                config_json=payload.config_json,
+            )
+            if payload.config_json is not None
+            else None
+        )
 
         updated = await repo.update(
             item,
@@ -217,11 +248,7 @@ async def update_agent(
             description=payload.description,
             icon=payload.icon,
             pics=payload.pics,
-            config_json=_filter_agent_config_json(
-                item.backend_id, payload.config_json, authorization_role(current_user)
-            )
-            if payload.config_json is not None
-            else None,
+            config_json=validated_config_json,
             share_config=payload.share_config,
             is_subagent=payload.is_subagent,
             updated_by=str(current_user.uid),

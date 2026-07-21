@@ -17,6 +17,12 @@ BaseContext = context_module.BaseContext
 filter_config_by_role = context_module.filter_config_by_role
 normalize_agent_context_config = context_module.normalize_agent_context_config
 
+ALL_RESOURCE_ACCESS = {
+    "models": {"mode": "all", "allowed": [], "defaults": {}},
+    "tools": {"mode": "all", "allowed": []},
+    "mcp_servers": {"mode": "all", "allowed": []},
+}
+
 
 @dataclass(kw_only=True)
 class ChatBotContext(BaseContext):
@@ -185,7 +191,9 @@ async def test_normalize_agent_context_config_expands_null_and_filters_explicit_
             "max_execution_steps": 50,
         },
         db=object(),
-        user=types.SimpleNamespace(role="user", uid="u1", department_id=None),
+        user=types.SimpleNamespace(
+            role="user", uid="u1", department_id=None, resource_access=ALL_RESOURCE_ACCESS
+        ),
         context_schema=ChatBotContext,
     )
 
@@ -203,7 +211,9 @@ async def test_normalize_agent_context_config_expands_null_and_filters_explicit_
     empty_subagents_normalized = await normalize_agent_context_config(
         {"tools": [], "knowledges": [], "mcps": [], "skills": [], "subagents": []},
         db=object(),
-        user=types.SimpleNamespace(role="user", uid="u1", department_id=None),
+        user=types.SimpleNamespace(
+            role="user", uid="u1", department_id=None, resource_access=ALL_RESOURCE_ACCESS
+        ),
         context_schema=ChatBotContext,
     )
 
@@ -251,7 +261,9 @@ async def test_prepare_agent_runtime_context_filters_resources_and_derives_runti
     class FakeUserRepository:
         async def get_by_uid_with_db(self, _db, uid):
             assert uid == "u1"
-            return types.SimpleNamespace(role="user", uid="u1", department_id=None)
+            return types.SimpleNamespace(
+                role="user", uid="u1", department_id=None, resource_access=ALL_RESOURCE_ACCESS
+            )
 
     class FakeAgentRepository:
         def __init__(self, _db):

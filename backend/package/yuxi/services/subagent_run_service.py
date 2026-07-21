@@ -224,6 +224,7 @@ class SubagentRunService:
             model_spec,
             scope.agent_item,
             scope.agent_backend,
+            user=scope.current_user,
         )
         runtime_payload = {
             "tool_call_id": tool_call_id,

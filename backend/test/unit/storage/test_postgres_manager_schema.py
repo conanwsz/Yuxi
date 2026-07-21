@@ -49,9 +49,28 @@ async def test_ensure_business_schema_creates_and_backfills_roles_before_adding_
 
     statements = "\n".join(connection.statements)
     assert "CREATE TABLE IF NOT EXISTS roles" in statements
-    assert "INSERT INTO roles (key, name, description, permissions, is_system" in statements
+    assert "resource_access JSONB NOT NULL DEFAULT" in statements
+    assert "ALTER TABLE IF EXISTS roles ADD COLUMN IF NOT EXISTS resource_access JSONB" in statements
+    assert "CREATE TABLE IF NOT EXISTS app_schema_migrations" in statements
+    assert "roles_resource_access_v1" in statements
+    assert "UPDATE roles SET resource_access" in statements
+    assert "ALTER TABLE IF EXISTS roles ALTER COLUMN resource_access SET DEFAULT" in statements
+    assert "ALTER TABLE IF EXISTS roles ALTER COLUMN resource_access SET NOT NULL" in statements
+    assert "INSERT INTO roles (key, name, description, permissions, resource_access, is_system" in statements
     assert "SELECT DISTINCT users.role" in statements
     assert "ADD CONSTRAINT fk_users_role_key" in statements
+    assert statements.index("ALTER TABLE IF EXISTS roles ADD COLUMN IF NOT EXISTS resource_access") < statements.index(
+        "UPDATE roles SET resource_access"
+    )
+    assert statements.index("UPDATE roles SET resource_access") < statements.index(
+        "ALTER TABLE IF EXISTS roles ALTER COLUMN resource_access SET DEFAULT"
+    )
+    assert statements.index("ALTER TABLE IF EXISTS roles ALTER COLUMN resource_access SET DEFAULT") < statements.index(
+        "ALTER TABLE IF EXISTS roles ALTER COLUMN resource_access SET NOT NULL"
+    )
+    assert statements.index("ALTER TABLE IF EXISTS roles ALTER COLUMN resource_access SET NOT NULL") < statements.index(
+        "SELECT DISTINCT users.role"
+    )
     assert statements.index("SELECT DISTINCT users.role") < statements.index("ADD CONSTRAINT fk_users_role_key")
 
 

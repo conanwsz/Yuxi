@@ -3,6 +3,8 @@ import re
 import uuid
 from typing import Any
 
+from sqlalchemy import select
+
 from yuxi.knowledge.eval.benchmark_generation import (
     dump_benchmark_item,
     iter_generated_benchmark_items,
@@ -15,7 +17,10 @@ from yuxi.repositories.evaluation_repository import EvaluationRepository
 from yuxi.repositories.knowledge_base_repository import KnowledgeBaseRepository
 from yuxi.repositories.knowledge_chunk_repository import KnowledgeChunkRepository
 from yuxi.repositories.task_repository import TaskRepository
+from yuxi.services.resource_access_runtime_service import assert_model_spec_allowed, hydrate_user_resource_access
 from yuxi.services.task_service import TaskContext, tasker
+from yuxi.storage.postgres.manager import pg_manager
+from yuxi.storage.postgres.models_business import User
 from yuxi.utils import logger
 from yuxi.utils.datetime_utils import format_utc_datetime, utc_now_naive
 
@@ -26,6 +31,38 @@ def build_evaluation_run_name(started_at=None, hash_value: str | None = None) ->
     if len(hash_part) < 6:
         hash_part = (hash_part + uuid.uuid4().hex)[:6]
     return f"eval-{date_part}-{hash_part}"
+
+
+async def _assert_task_model_resource_access(
+    *,
+    uid: str | None,
+    kb_id: str,
+    explicit_models: tuple[tuple[str | None, str], ...],
+) -> None:
+    """Recheck queued evaluation work against the caller's current role."""
+    if not uid or uid == "system":
+        return
+
+    async with pg_manager.get_async_session_context() as db:
+        result = await db.execute(select(User).where(User.uid == uid, User.is_deleted == 0))
+        user = result.scalar_one_or_none()
+        if user is None:
+            raise PermissionError("任务创建用户不存在或已停用")
+        await hydrate_user_resource_access(db, user)
+
+    database = await knowledge_base.get_database_info(kb_id)
+    if not database:
+        raise ValueError(f"Knowledge Base {kb_id} not found")
+    for field_name, model_type in (
+        ("embedding_model_spec", "embedding"),
+        ("llm_model_spec", "chat"),
+    ):
+        model_spec = database.get(field_name)
+        if model_spec:
+            assert_model_spec_allowed(user, model_spec, model_type=model_type)
+    for model_spec, model_type in explicit_models:
+        if model_spec:
+            assert_model_spec_allowed(user, model_spec, model_type=model_type)
 
 
 class EvaluationService:
@@ -385,6 +422,11 @@ class EvaluationService:
             )
 
         try:
+            await _assert_task_model_resource_access(
+                uid=payload.get("created_by"),
+                kb_id=kb_id,
+                explicit_models=((llm_model_spec, "chat"),),
+            )
             kb_instance = await knowledge_base.aget_kb(kb_id)
             if not kb_instance:
                 await report_progress(100, "知识库不存在")
@@ -514,6 +556,16 @@ class EvaluationService:
             kb_id = payload["kb_id"]
             dataset_id = payload["dataset_id"]
             retrieval_config = payload["retrieval_config"]
+
+            await _assert_task_model_resource_access(
+                uid=payload.get("created_by"),
+                kb_id=kb_id,
+                explicit_models=(
+                    (retrieval_config.get("answer_llm"), "chat"),
+                    (retrieval_config.get("judge_llm"), "chat"),
+                    (retrieval_config.get("reranker_model"), "rerank"),
+                ),
+            )
 
             await context.set_progress(5, "加载评估数据集")
             dataset_row = await self.eval_repo.get_dataset(dataset_id)

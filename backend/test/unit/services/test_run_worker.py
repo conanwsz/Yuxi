@@ -81,6 +81,7 @@ def _patch_common(monkeypatch: pytest.MonkeyPatch, run_obj: SimpleNamespace):
     monkeypatch.setattr(run_worker, "mark_run_running", fake_noop)
     monkeypatch.setattr(run_worker, "clear_cancel_signal", fake_noop)
     monkeypatch.setattr(run_worker, "stream_agent_chat", lambda **kwargs: object())
+    monkeypatch.setattr(run_worker, "_validate_run_resource_access", fake_noop)
     monkeypatch.setattr(run_worker.RunContext, "start", fake_noop)
     monkeypatch.setattr(run_worker.RunContext, "close", fake_noop)
     monkeypatch.setattr(run_worker.RunContext, "is_cancelled", fake_not_cancelled)
@@ -167,6 +168,37 @@ async def test_process_agent_run_non_retryable_error_marks_failed(monkeypatch: p
 
     assert "error" in events
     assert terminal_statuses == ["failed"]
+
+
+@pytest.mark.asyncio
+async def test_process_agent_run_resource_denial_is_non_retryable(monkeypatch: pytest.MonkeyPatch):
+    run_obj = _build_run()
+    _patch_common(monkeypatch, run_obj)
+
+    terminal_statuses: list[str] = []
+    seen_errors: list[str] = []
+
+    async def fake_append_event(run_id: str, event_type: str, payload: dict, **kwargs):
+        del run_id, kwargs
+        if event_type == "error":
+            seen_errors.append(payload["chunk"]["error_message"])
+
+    async def fake_mark_terminal(run_id: str, status: str, error_type=None, error_message=None):
+        del run_id, error_type, error_message
+        terminal_statuses.append(status)
+
+    async def fake_validate(**kwargs):
+        del kwargs
+        raise run_worker.NonRetryableRunError("当前角色无权使用模型: 'provider:model'")
+
+    monkeypatch.setattr(run_worker, "append_run_event", fake_append_event)
+    monkeypatch.setattr(run_worker, "mark_run_terminal", fake_mark_terminal)
+    monkeypatch.setattr(run_worker, "_validate_run_resource_access", fake_validate)
+
+    await run_worker.process_agent_run({"job_try": 1}, "run-1")
+
+    assert terminal_statuses == ["failed"]
+    assert seen_errors == ["当前角色无权使用模型: 'provider:model'"]
 
 
 @pytest.mark.asyncio

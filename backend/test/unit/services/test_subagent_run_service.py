@@ -280,6 +280,11 @@ def _patch_run_record_creation(
     monkeypatch.setattr(agent_run_service, "ConversationRepository", ConvRepo)
     monkeypatch.setattr(agent_run_service, "AgentRepository", AgentRepo)
     monkeypatch.setattr(agent_run_service, "AgentRunRepository", RunRepo)
+    monkeypatch.setattr(
+        agent_run_service,
+        "assert_model_spec_allowed",
+        lambda user, model_spec, model_type=None: SimpleNamespace(spec=model_spec, model_type=model_type or "chat"),
+    )
 
 
 def _fake_create_run_record(captured: dict[str, object], *, run_id: str = "child-run"):

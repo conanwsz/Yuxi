@@ -1342,11 +1342,35 @@ def _patch_agent_run_creation(
     async def fake_get_arq_pool():
         return Queue()
 
+    async def fake_hydrate_user_resource_access(db, user):
+        del db
+        return user
+
+    async def fake_validate_agent_context_resource_access(**kwargs):
+        del kwargs
+        return None
+
+    def fake_assert_model_spec_allowed(user, model_spec: str, model_type: str | None = None):
+        del user
+        return SimpleNamespace(spec=model_spec, model_type=model_type or "chat")
+
     monkeypatch.setattr(agent_run_service.agent_manager, "get_agent", lambda backend_id: _FakeBackend())
     monkeypatch.setattr(agent_run_service, "AgentRepository", AgentRepo)
     monkeypatch.setattr(agent_run_service, "ConversationRepository", ConvRepo)
     monkeypatch.setattr(agent_run_service, "AgentRunRepository", _CreateRunRepo)
     monkeypatch.setattr(agent_run_service, "get_arq_pool", fake_get_arq_pool)
+    monkeypatch.setattr(agent_run_service, "hydrate_user_resource_access", fake_hydrate_user_resource_access)
+    monkeypatch.setattr(
+        agent_run_service,
+        "resolve_role_default_model_spec",
+        lambda user, *, model_type, fallback=None: fallback,
+    )
+    monkeypatch.setattr(
+        agent_run_service,
+        "validate_agent_context_resource_access",
+        fake_validate_agent_context_resource_access,
+    )
+    monkeypatch.setattr(agent_run_service, "assert_model_spec_allowed", fake_assert_model_spec_allowed)
     return db
 
 
@@ -1421,7 +1445,11 @@ async def test_create_chat_run_snapshots_system_default_when_agent_model_empty(m
     monkeypatch.setattr(
         agent_run_service,
         "resolve_chat_model_spec",
-        lambda model_spec: str(model_spec).strip() if str(model_spec or "").strip() else "system-default-model",
+        lambda model_spec, fallback=None: (
+            str(model_spec).strip()
+            if str(model_spec or "").strip()
+            else str(fallback or "").strip() or "system-default-model"
+        ),
     )
     db = _patch_agent_run_creation(
         monkeypatch,
@@ -1454,6 +1482,13 @@ async def test_create_resume_run_inherits_parent_model_spec(monkeypatch: pytest.
             input_payload={"model_spec": "parent-model"},
         ),
     )
+    captured: list[tuple[str, str]] = []
+
+    def fake_assert_model_spec_allowed(user, model_spec: str, model_type: str | None = None):
+        captured.append((str(user.uid), model_spec))
+        return SimpleNamespace(spec=model_spec, model_type=model_type or "chat")
+
+    monkeypatch.setattr(agent_run_service, "assert_model_spec_allowed", fake_assert_model_spec_allowed)
 
     await agent_run_service.create_agent_run_view(
         input_message=None,
@@ -1468,6 +1503,7 @@ async def test_create_resume_run_inherits_parent_model_spec(monkeypatch: pytest.
     )
 
     assert db.created_run_kwargs["input_payload"]["model_spec"] == "parent-model"
+    assert captured == [("user-1", "parent-model")]
 
 
 def test_compact_stream_chunk_retains_compression_field():

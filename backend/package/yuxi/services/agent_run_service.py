@@ -27,7 +27,9 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from yuxi.agents.buildin import agent_manager
+from yuxi.agents.mcp.service import get_all_mcp_servers
 from yuxi.agents.models import resolve_chat_model_spec
+from yuxi.agents.skills.service import list_accessible_skills, normalize_string_list
 from yuxi.models.providers.cache import model_cache
 from yuxi.repositories.agent_repository import AgentRepository
 from yuxi.repositories.agent_run_repository import TERMINAL_RUN_STATUSES, AgentRunRepository
@@ -45,8 +47,15 @@ from yuxi.services.run_queue_service import (
     normalize_after_seq,
     publish_cancel_signal,
 )
+from yuxi.services.resource_access_runtime_service import (
+    assert_mcp_slugs_allowed,
+    assert_model_spec_allowed,
+    assert_tool_slugs_allowed,
+    hydrate_user_resource_access,
+    resolve_role_default_model_spec,
+)
 from yuxi.storage.postgres.manager import pg_manager
-from yuxi.storage.postgres.models_business import Message, User
+from yuxi.storage.postgres.models_business import Message, Skill, User
 from yuxi.utils.datetime_utils import utc_now_naive
 from yuxi.utils.hash_utils import hash_id
 from yuxi.utils.logging_config import logger
@@ -85,13 +94,65 @@ class AgentRunWaitTimeout(Exception):
         super().__init__(f"agent run {run_id} is still {status} after waiting")
 
 
-def resolve_agent_run_model_spec(model_spec: str | None, agent_item, agent_backend) -> str:
+async def _assert_selected_skill_slugs_accessible(db: AsyncSession, user: User, slugs: list[str] | None) -> None:
+    normalized = normalize_string_list(slugs)
+    if not normalized:
+        return
+
+    accessible = {item.slug for item in await list_accessible_skills(db, user) if item.slug}
+    enabled_result = await db.execute(select(Skill.slug).where(Skill.enabled.is_(True)))
+    enabled = {slug for slug in enabled_result.scalars().all() if isinstance(slug, str)}
+
+    unknown = [slug for slug in normalized if slug not in enabled]
+    if unknown:
+        raise HTTPException(status_code=422, detail=f"存在未知 Skill: {', '.join(unknown)}")
+
+    forbidden = [slug for slug in normalized if slug not in accessible]
+    if forbidden:
+        raise HTTPException(status_code=403, detail=f"当前角色无权使用 Skill: {', '.join(forbidden)}")
+
+
+async def validate_agent_context_resource_access(
+    *,
+    db: AsyncSession,
+    user: User,
+    context: dict | None,
+) -> None:
+    if not isinstance(context, dict):
+        return
+
+    await hydrate_user_resource_access(db, user)
+
+    model_spec = context.get("model")
+    if isinstance(model_spec, str) and model_spec.strip():
+        assert_model_spec_allowed(user, model_spec, model_type="chat")
+
+    if isinstance(context.get("tools"), list):
+        assert_tool_slugs_allowed(user, context.get("tools") or [])
+
+    if isinstance(context.get("mcps"), list):
+        servers = await get_all_mcp_servers(db)
+        assert_mcp_slugs_allowed(
+            user,
+            context.get("mcps") or [],
+            existing_slugs=[server.slug for server in servers if server.slug],
+            enabled_slugs=[server.slug for server in servers if server.enabled and server.slug],
+        )
+
+    if isinstance(context.get("skills"), list):
+        await _assert_selected_skill_slugs_accessible(db, user, context.get("skills") or [])
+
+
+def resolve_agent_run_model_spec(model_spec: str | None, agent_item, agent_backend, *, user: User | None = None) -> str:
     """解析本次 run 实际使用的模型：显式覆盖优先，否则配置模型，最后系统默认模型。"""
     normalized = model_spec.strip() if isinstance(model_spec, str) else None
     if normalized:
-        info = model_cache.get_model_info(normalized)
-        if not info or info.model_type != "chat":
-            raise HTTPException(status_code=422, detail=f"未找到可用聊天模型: '{normalized}'")
+        if user is not None:
+            assert_model_spec_allowed(user, normalized, model_type="chat")
+        else:
+            info = model_cache.get_model_info(normalized)
+            if not info or info.model_type != "chat":
+                raise HTTPException(status_code=422, detail=f"未找到可用聊天模型: '{normalized}'")
         return normalized
 
     context = agent_backend.context_schema()
@@ -100,7 +161,15 @@ def resolve_agent_run_model_spec(model_spec: str | None, agent_item, agent_backe
     if isinstance(config_context, dict):
         context.update_from_dict(config_context)
 
-    return resolve_chat_model_spec(getattr(context, "model", None))
+    fallback = resolve_role_default_model_spec(user, model_type="chat") if user is not None else None
+    resolved = resolve_chat_model_spec(getattr(context, "model", None), fallback=fallback)
+    if user is not None:
+        assert_model_spec_allowed(user, resolved, model_type="chat")
+    else:
+        info = model_cache.get_model_info(resolved)
+        if not info or info.model_type != "chat":
+            raise HTTPException(status_code=422, detail=f"未找到可用聊天模型: '{resolved}'")
+    return resolved
 
 
 def _build_run_response(run) -> dict:
@@ -394,8 +463,14 @@ async def create_agent_run_view(
 
     if run_type == "resume":
         resolved_model_spec = scope.parent_run.input_payload["model_spec"]
+        assert_model_spec_allowed(scope.current_user, resolved_model_spec, model_type="chat")
     else:
-        resolved_model_spec = resolve_agent_run_model_spec(model_spec, scope.agent_item, scope.agent_backend)
+        resolved_model_spec = resolve_agent_run_model_spec(
+            model_spec,
+            scope.agent_item,
+            scope.agent_backend,
+            user=scope.current_user,
+        )
 
     run_input_message = _prepare_run_input_message(
         run_type=run_type,
@@ -438,6 +513,7 @@ class AgentRunCreationScope:
     """run 创建前置校验后的数据库作用域，避免和 Agent runtime context 混淆。"""
 
     conversation: Any
+    current_user: User
     agent_item: Any
     agent_backend: Any
     existing_run: Any | None
@@ -621,6 +697,7 @@ async def prepare_agent_run_creation_scope(
     current_user = user_result.scalar_one_or_none()
     if not current_user:
         raise HTTPException(status_code=404, detail="用户不存在")
+    await hydrate_user_resource_access(db, current_user)
 
     agent_repo = AgentRepository(db)
     agent_item = await agent_repo.get_visible_by_slug(slug=agent_slug, user=current_user, kind=agent_kind)
@@ -659,6 +736,9 @@ async def prepare_agent_run_creation_scope(
             if not isinstance(parent_payload, dict) or not parent_payload.get("model_spec"):
                 raise HTTPException(status_code=409, detail="被恢复的运行任务缺少模型快照")
     if not existing:
+        config_json = getattr(agent_item, "config_json", None) or {}
+        config_context = config_json.get("context") if isinstance(config_json, dict) else None
+        await validate_agent_context_resource_access(db=db, user=current_user, context=config_context)
         active_run = await run_repo.get_active_run_by_thread_for_user(
             agent_slug=agent_slug,
             conversation_thread_id=conversation_thread_id,
@@ -672,6 +752,7 @@ async def prepare_agent_run_creation_scope(
             )
     return AgentRunCreationScope(
         conversation=conversation,
+        current_user=current_user,
         agent_item=agent_item,
         agent_backend=agent_backend,
         existing_run=existing,

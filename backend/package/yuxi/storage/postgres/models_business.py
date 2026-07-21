@@ -58,6 +58,7 @@ class Role(Base):
     name = Column(String(100), nullable=False, unique=True)
     description = Column(String(255), nullable=True)
     permissions = Column(JSON, nullable=False, default=list)
+    resource_access = Column(JSON, nullable=False, default=dict)
     is_system = Column(Boolean, nullable=False, default=False)
     created_by = Column(String(64), nullable=True)
     created_at = Column(DateTime, default=utc_now_naive)
@@ -66,11 +67,14 @@ class Role(Base):
     users = relationship("User", back_populates="role_definition")
 
     def to_dict(self) -> dict[str, Any]:
+        from yuxi.services.resource_access_service import normalize_stored_resource_access
+
         return {
             "key": self.key,
             "name": self.name,
             "description": self.description,
             "permissions": sorted(self.permissions or []),
+            "resource_access": normalize_stored_resource_access(self.resource_access),
             "is_system": bool(self.is_system),
             "created_by": self.created_by,
             "created_at": format_utc_datetime(self.created_at),

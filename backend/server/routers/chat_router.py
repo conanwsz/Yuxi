@@ -34,6 +34,11 @@ from yuxi.services.thread_files_service import (
     save_thread_artifact_to_workspace_view,
 )
 from yuxi.services.feedback_service import get_message_feedback_view, submit_message_feedback_view
+from yuxi.services.resource_access_runtime_service import (
+    assert_model_spec_allowed,
+    hydrate_user_resource_access,
+    resolve_role_default_model_spec,
+)
 from yuxi.utils.logging_config import logger
 from yuxi.utils.image_processor import process_uploaded_image
 from yuxi.utils.paths import VIRTUAL_PATH_PREFIX
@@ -59,7 +64,12 @@ chat = APIRouter(prefix="/chat", tags=["chat"])
 
 
 @chat.post("/call")
-async def call(query: str = Body(...), meta: dict = Body(None), current_user: User = Depends(get_required_user)):
+async def call(
+    query: str = Body(...),
+    meta: dict = Body(None),
+    current_user: User = Depends(get_required_user),
+    db: AsyncSession = Depends(get_db),
+):
     """调用模型进行简单问答（需要登录）"""
     meta = meta or {}
 
@@ -67,7 +77,19 @@ async def call(query: str = Body(...), meta: dict = Body(None), current_user: Us
     if "request_id" not in meta or not meta.get("request_id"):
         meta["request_id"] = str(uuid.uuid4())
 
-    model = select_model(model_spec=meta.get("model_spec") or meta.get("model") or conf.default_model)
+    await hydrate_user_resource_access(db, current_user)
+    requested_model_spec = meta.get("model_spec") or meta.get("model")
+    if isinstance(requested_model_spec, str) and requested_model_spec.strip():
+        resolved_model_spec = assert_model_spec_allowed(current_user, requested_model_spec, model_type="chat").spec
+    else:
+        resolved_model_spec = resolve_role_default_model_spec(
+            current_user,
+            model_type="chat",
+            fallback=conf.default_model,
+        )
+        resolved_model_spec = assert_model_spec_allowed(current_user, resolved_model_spec, model_type="chat").spec
+
+    model = select_model(model_spec=resolved_model_spec)
 
     response = await model.call(query)
     logger.debug({"query": query, "response": response.content})

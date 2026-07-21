@@ -22,7 +22,13 @@ def _build_zip(files: dict[str, str]) -> bytes:
 
 
 def _user(uid: str = "root", role: str = "admin") -> User:
-    return User(username=uid, uid=uid, password_hash="x", role=role, department_id=1)
+    user = User(username=uid, uid=uid, password_hash="x", role=role, department_id=1)
+    user.resource_access = {
+        "models": {"mode": "all", "allowed": [], "defaults": {}},
+        "tools": {"mode": "all", "allowed": []},
+        "mcp_servers": {"mode": "all", "allowed": []},
+    }
+    return user
 
 
 def test_allowed_skill_access_levels_by_role():
@@ -378,7 +384,7 @@ async def test_get_skill_dependency_options(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(svc, "get_enabled_mcp_server_slugs", fake_get_enabled_mcp_server_slugs)
 
-    user = SimpleNamespace(uid="user")
+    user = _user("user")
 
     async def fake_list_skill_slugs(_db, *, user):
         assert user.uid == "user"

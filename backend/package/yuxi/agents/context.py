@@ -423,6 +423,13 @@ async def resolve_agent_resource_options(
     if not fields_to_load:
         return {}
 
+    from yuxi.services.resource_access_runtime_service import (
+        filter_mcp_servers_for_user,
+        filter_tool_metadata_for_user,
+        hydrate_user_resource_access,
+    )
+
+    await hydrate_user_resource_access(db, user)
     options: dict[str, list[dict[str, str]]] = {}
 
     if "tools" in fields_to_load:
@@ -430,7 +437,7 @@ async def resolve_agent_resource_options(
 
         options["tools"] = [
             _resource_option(tool["slug"], tool.get("name"), tool.get("description"))
-            for tool in get_tool_metadata(category="buildin")
+            for tool in filter_tool_metadata_for_user(user, get_tool_metadata(category="buildin"))
             if tool.get("slug")
         ]
     if "knowledges" in fields_to_load:
@@ -445,7 +452,7 @@ async def resolve_agent_resource_options(
     if "mcps" in fields_to_load:
         from yuxi.agents.mcp.service import get_all_mcp_servers
 
-        servers = await get_all_mcp_servers(db)
+        servers = filter_mcp_servers_for_user(user, await get_all_mcp_servers(db))
         options["mcps"] = [
             _resource_option(server.slug, server.name, server.description)
             for server in servers

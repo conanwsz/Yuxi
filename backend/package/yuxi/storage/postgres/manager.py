@@ -377,14 +377,18 @@ class PostgresManager(metaclass=SingletonMeta):
         """确保业务 schema 包含后续新增字段（运行时 schema 演进）。"""
         self._check_initialized()
         from yuxi.services.permission_service import DEFAULT_ROLE_DEFINITIONS, DEFAULT_ROLE_PERMISSIONS
+        from yuxi.services.resource_access_service import default_resource_access_all, default_resource_access_none
 
         role_seed_statements = []
+        all_resource_access = json.dumps(default_resource_access_all(), ensure_ascii=False).replace("'", "''")
+        none_resource_access = json.dumps(default_resource_access_none(), ensure_ascii=False).replace("'", "''")
         for role_key, (role_name, role_description) in DEFAULT_ROLE_DEFINITIONS.items():
             permissions = json.dumps(sorted(DEFAULT_ROLE_PERMISSIONS[role_key]), ensure_ascii=False).replace("'", "''")
             role_seed_statements.append(
-                "INSERT INTO roles (key, name, description, permissions, is_system, created_at, updated_at) "
+                "INSERT INTO roles (key, name, description, permissions, resource_access, is_system, created_at, "
+                "updated_at) "
                 f"VALUES ('{role_key}', '{role_name}', '{role_description}', "
-                f"'{permissions}'::jsonb, TRUE, NOW(), NOW()) "
+                f"'{permissions}'::jsonb, '{all_resource_access}'::jsonb, TRUE, NOW(), NOW()) "
                 "ON CONFLICT (key) DO NOTHING"
             )
 
@@ -395,16 +399,45 @@ class PostgresManager(metaclass=SingletonMeta):
                 name VARCHAR(100) NOT NULL UNIQUE,
                 description VARCHAR(255),
                 permissions JSONB NOT NULL DEFAULT '[]'::jsonb,
+                resource_access JSONB NOT NULL DEFAULT
+                    '{"models":{"mode":"none","allowed":[],"defaults":{}},"tools":{"mode":"none","allowed":[]},"mcp_servers":{"mode":"none","allowed":[]}}'::jsonb,
                 is_system BOOLEAN NOT NULL DEFAULT FALSE,
                 created_by VARCHAR(64),
                 created_at TIMESTAMPTZ DEFAULT NOW(),
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             )
             """,
+            "ALTER TABLE IF EXISTS roles ADD COLUMN IF NOT EXISTS resource_access JSONB",
+            """
+            CREATE TABLE IF NOT EXISTS app_schema_migrations (
+                migration_key VARCHAR(128) PRIMARY KEY,
+                applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """,
+            f"""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM app_schema_migrations
+                    WHERE migration_key = 'roles_resource_access_v1'
+                ) THEN
+                    UPDATE roles SET resource_access = '{all_resource_access}'::jsonb;
+                    INSERT INTO app_schema_migrations (migration_key)
+                    VALUES ('roles_resource_access_v1');
+                END IF;
+            END $$
+            """,
+            (
+                "ALTER TABLE IF EXISTS roles ALTER COLUMN resource_access SET DEFAULT "
+                f"'{none_resource_access}'::jsonb"
+            ),
+            "ALTER TABLE IF EXISTS roles ALTER COLUMN resource_access SET NOT NULL",
             *role_seed_statements,
             """
-            INSERT INTO roles (key, name, description, permissions, is_system, created_at, updated_at)
-            SELECT DISTINCT users.role, users.role, '从历史用户数据迁移', '[]'::jsonb, FALSE, NOW(), NOW()
+            INSERT INTO roles (key, name, description, permissions, resource_access, is_system, created_at, updated_at)
+            SELECT DISTINCT users.role, users.role, '从历史用户数据迁移', '[]'::jsonb,
+                   '{"models":{"mode":"all","allowed":[],"defaults":{}},"tools":{"mode":"all","allowed":[]},"mcp_servers":{"mode":"all","allowed":[]}}'::jsonb,
+                   FALSE, NOW(), NOW()
             FROM users
             WHERE users.role IS NOT NULL
             ON CONFLICT (key) DO NOTHING

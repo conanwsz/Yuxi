@@ -4,17 +4,38 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from server.utils.auth_middleware import get_db
 from server.utils.knowledge_auth import get_knowledge_user as get_admin_user
 from yuxi.knowledge.eval.benchmark_generation import (
     DEFAULT_BENCHMARK_GENERATION_CONCURRENCY,
     MAX_BENCHMARK_GENERATION_CONCURRENCY,
 )
 from yuxi.knowledge.eval.service import EvaluationService
+from yuxi.knowledge.runtime import knowledge_base
+from yuxi.services.resource_access_runtime_service import (
+    assert_model_spec_allowed,
+    hydrate_user_resource_access,
+)
 from yuxi.storage.postgres.models_business import User
 from yuxi.utils import logger
 
 
 evaluation = APIRouter(prefix="/evaluation", tags=["evaluation"])
+
+
+async def _assert_database_models_allowed(kb_id: str, current_user: User) -> None:
+    database = await knowledge_base.get_database_info(kb_id)
+    if not database:
+        raise HTTPException(status_code=404, detail=f"知识库 {kb_id} 不存在")
+    for field_name, model_type in (
+        ("embedding_model_spec", "embedding"),
+        ("llm_model_spec", "chat"),
+    ):
+        model_spec = database.get(field_name)
+        if model_spec:
+            assert_model_spec_allowed(current_user, model_spec, model_type=model_type)
 
 
 class GenerateDatasetRequest(BaseModel):
@@ -144,9 +165,15 @@ async def delete_evaluation_dataset(dataset_id: str, current_user: User = Depend
 
 @evaluation.post("/databases/{kb_id}/datasets/generate")
 async def generate_evaluation_dataset(
-    kb_id: str, request: GenerateDatasetRequest, current_user: User = Depends(get_admin_user)
+    kb_id: str,
+    request: GenerateDatasetRequest,
+    current_user: User = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """自动生成评估数据集"""
+    await hydrate_user_resource_access(db, current_user)
+    await _assert_database_models_allowed(kb_id, current_user)
+    assert_model_spec_allowed(current_user, request.llm_model_spec, model_type="chat")
     try:
         service = EvaluationService()
         result = await service.generate_dataset(
@@ -170,8 +197,22 @@ async def generate_evaluation_dataset(
 
 
 @evaluation.post("/databases/{kb_id}/runs")
-async def run_evaluation(kb_id: str, request: RunEvaluationRequest, current_user: User = Depends(get_admin_user)):
+async def run_evaluation(
+    kb_id: str,
+    request: RunEvaluationRequest,
+    current_user: User = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
     """运行RAG评估"""
+    await hydrate_user_resource_access(db, current_user)
+    await _assert_database_models_allowed(kb_id, current_user)
+    for key, model_type in (
+        ("answer_llm", "chat"),
+        ("judge_llm", "chat"),
+        ("reranker_model", "rerank"),
+    ):
+        if request.retrieval_config.get(key):
+            assert_model_spec_allowed(current_user, request.retrieval_config[key], model_type=model_type)
     try:
         service = EvaluationService()
         run_id = await service.run_evaluation(
