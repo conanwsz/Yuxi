@@ -20,9 +20,7 @@
         <div class="brand-container" @click="goHome" style="cursor: pointer">
           <img v-if="brandLogo" :src="brandLogo" alt="logo" class="brand-logo" />
           <h1 class="brand-text">
-            <span v-if="brandOrgName" class="brand-org">{{ brandOrgName }}</span>
-            <span v-if="brandOrgName && brandName !== brandOrgName" class="brand-separator"></span>
-            <span class="brand-main">{{ brandName }}</span>
+            <span class="brand-org">{{ brandDisplayName }}</span>
           </h1>
         </div>
       </div>
@@ -118,30 +116,6 @@
                     />
                   </a-form-item>
 
-                  <a-form-item v-if="showAgreementConsent" class="agreement-form-item">
-                    <div class="agreement-row">
-                      <a-checkbox v-model:checked="agreementAccepted">
-                        登录即代表同意
-                        <a
-                          class="agreement-link"
-                          :href="userAgreementUrl"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          @click.stop
-                          >《用户协议》</a
-                        >
-                        <a
-                          class="agreement-link"
-                          :href="privacyPolicyUrl"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          @click.stop
-                          >《隐私协议》</a
-                        >
-                      </a-checkbox>
-                    </div>
-                  </a-form-item>
-
                   <a-form-item>
                     <a-button type="primary" html-type="submit" :loading="loading" block
                       >创建管理员账户</a-button
@@ -175,30 +149,6 @@
                         <lock-icon size="18" />
                       </template>
                     </a-input-password>
-                  </a-form-item>
-
-                  <a-form-item v-if="showAgreementConsent" class="agreement-form-item">
-                    <div class="agreement-row">
-                      <a-checkbox v-model:checked="agreementAccepted">
-                        登录即代表同意
-                        <a
-                          class="agreement-link"
-                          :href="userAgreementUrl"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          @click.stop
-                          >《用户协议》</a
-                        >
-                        <a
-                          class="agreement-link"
-                          :href="privacyPolicyUrl"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          @click.stop
-                          >《隐私协议》</a
-                        >
-                      </a-checkbox>
-                    </div>
                   </a-form-item>
 
                   <a-form-item>
@@ -254,17 +204,6 @@
       </div>
     </main>
 
-    <!-- 页面底部：版权信息等 -->
-    <footer class="page-footer">
-      <div class="footer-links">
-        <a href="https://github.com/xerrors" target="_blank">联系我们</a>
-        <span class="divider">|</span>
-        <a href="https://github.com/xerrors/Yuxi" target="_blank">使用帮助</a>
-      </div>
-      <div class="copyright">
-        &copy; {{ new Date().getFullYear() }} {{ brandName }}. All Rights Reserved.
-      </div>
-    </footer>
   </div>
 </template>
 
@@ -301,31 +240,14 @@ const brandLogo = computed(() => {
 const brandOrgName = computed(() => {
   return infoStore.organization?.name?.trim() || ''
 })
-const brandName = computed(() => {
-  const orgName = brandOrgName.value
-  const brandNameRaw = infoStore.branding?.name?.trim() || 'Yuxi'
-
-  if (orgName && brandNameRaw && orgName !== brandNameRaw) {
-    return brandNameRaw
-  }
-
-  return orgName || brandNameRaw
-})
-const userAgreementUrl = computed(() => {
-  return infoStore.footer?.user_agreement_url?.trim() || ''
-})
-const privacyPolicyUrl = computed(() => {
-  return infoStore.footer?.privacy_policy_url?.trim() || ''
-})
-const showAgreementConsent = computed(() => {
-  return Boolean(userAgreementUrl.value && privacyPolicyUrl.value)
+const brandDisplayName = computed(() => {
+  return brandOrgName.value || infoStore.branding?.name?.trim() || 'Yuxi'
 })
 
 // 状态
 const isFirstRun = ref(false)
 const loading = ref(false)
 const errorMessage = ref('')
-const agreementAccepted = ref(false)
 const serverStatus = ref('loading')
 const serverError = ref('')
 const healthChecking = ref(false)
@@ -412,25 +334,11 @@ const validateConfirmPassword = async (rule, value) => {
   }
 }
 
-const ensureAgreementAccepted = () => {
-  if (!showAgreementConsent.value || agreementAccepted.value) {
-    return true
-  }
-
-  const warningMessage = '请先阅读并同意《用户协议》《隐私协议》'
-  message.warning(warningMessage)
-  return false
-}
-
 // 处理登录
 const handleLogin = async () => {
   // 如果当前被锁定，不允许登录
   if (isLocked.value) {
     message.warning(`账户被锁定，请等待 ${formatTime(lockRemainingTime.value)}`)
-    return
-  }
-
-  if (!ensureAgreementAccepted()) {
     return
   }
 
@@ -502,10 +410,6 @@ const handleLogin = async () => {
 
 // 处理 OIDC 登录
 const handleOIDCLogin = async () => {
-  if (!ensureAgreementAccepted()) {
-    return
-  }
-
   try {
     oidcLoading.value = true
     errorMessage.value = ''
@@ -554,10 +458,6 @@ const checkOIDCConfig = async () => {
 
 // 处理初始化管理员
 const handleInitialize = async () => {
-  if (!ensureAgreementAccepted()) {
-    return
-  }
-
   try {
     loading.value = true
     errorMessage.value = ''
@@ -713,18 +613,6 @@ onUnmounted(() => {
     font-weight: 600;
   }
 
-  .brand-separator {
-    width: 4px;
-    height: 4px;
-    background-color: var(--gray-400);
-    border-radius: 50%;
-    font-weight: 600;
-  }
-
-  .brand-main {
-    color: var(--main-color);
-    font-weight: 600;
-  }
 }
 
 .brand-logo {
@@ -905,33 +793,6 @@ onUnmounted(() => {
   }
 }
 
-.agreement-form-item {
-  margin-bottom: 12px;
-}
-
-.agreement-row {
-  font-size: 13px;
-  color: var(--gray-600);
-  line-height: 1.6;
-
-  :deep(.ant-checkbox-wrapper) {
-    display: inline-flex;
-    align-items: flex-start;
-  }
-
-  :deep(.ant-checkbox + span) {
-    padding-inline-start: 8px;
-  }
-}
-
-.agreement-link {
-  color: var(--main-color);
-
-  &:hover {
-    text-decoration: underline;
-  }
-}
-
 .error-message {
   margin-top: 16px;
   padding: 10px 12px;
@@ -941,38 +802,6 @@ onUnmounted(() => {
   color: var(--color-error-700);
   font-size: 13px;
   text-align: center;
-}
-
-/* Page Footer */
-.page-footer {
-  padding: 24px;
-  text-align: center;
-}
-
-.footer-links {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  gap: 16px;
-  margin-bottom: 8px;
-
-  a {
-    color: var(--gray-500);
-    font-size: 13px;
-    &:hover {
-      color: var(--main-color);
-    }
-  }
-
-  .divider {
-    color: var(--gray-300);
-    font-size: 12px;
-  }
-}
-
-.copyright {
-  font-size: 12px;
-  color: var(--gray-400);
 }
 
 /* Server Status Alert */
