@@ -5,6 +5,7 @@
 
 import hashlib
 import os
+import re
 import secrets
 import time
 import urllib.parse
@@ -60,7 +61,7 @@ class OIDCConfig(BaseModel):
     username_claim: str = Field(default="preferred_username", description="用户名映射字段")
     email_claim: str = Field(default="email", description="邮箱映射字段")
     name_claim: str = Field(default="name", description="姓名映射字段")
-    use_raw_username: bool = Field(default=False, description="是否使用原始用户名（不带oidc前缀）")
+    use_raw_username: bool = Field(default=False, description="是否兼容使用原始用户名而非邮箱员工编号")
     fetch_department_info: bool = Field(default=False, description="是否从OIDC中获取部门信息")
     department_claim: str = Field(default="department", description="部门信息映射字段")
     force_prompt_login: bool = Field(default=False, description="是否强制用户重新登录（添加prompt=login参数）")
@@ -651,6 +652,17 @@ def normalize_oidc_email(value: Any) -> str | None:
     return email
 
 
+def extract_employee_uid_from_email(email: str) -> str | None:
+    """从 OIDC 邮箱中提取符合本地 UID 约束的员工编号。"""
+    normalized_email = normalize_oidc_email(email)
+    if normalized_email is None:
+        return None
+    employee_uid = normalized_email.partition("@")[0]
+    if not re.fullmatch(r"[a-zA-Z0-9_]{3,20}", employee_uid):
+        return None
+    return employee_uid
+
+
 async def find_external_identity_by_email(db, email: str) -> ExternalIdentity | None:
     result = await db.execute(select(ExternalIdentity).where(ExternalIdentity.email == email))
     return result.scalar_one_or_none()
@@ -850,7 +862,7 @@ async def create_oidc_user(
     sub = user_info["sub"]
     preferred_username = user_info["name"] or user_info["username"]
 
-    # 根据配置决定 uid 是否带 oidc 前缀
+    # 兼容模式沿用 OIDC username；标准模式使用邮箱中的员工编号。
     if oidc_config.use_raw_username:
         uid = user_info["username"]
         result = await db.execute(select(User).filter(User.uid == uid, User.is_deleted == 0))
@@ -880,8 +892,22 @@ async def create_oidc_user(
                     detail=f"UID {uid} 已存在且OIDC标识 {sub} 已绑定到其他账号，请联系管理员处理冲突",
                 )
     else:
-        identity_hash = hashlib.sha256(f"{issuer}\x1f{sub}".encode()).hexdigest()[:48]
-        uid = f"oidc:{identity_hash}"
+        uid = extract_employee_uid_from_email(email)
+        if uid is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="OIDC 邮箱中的员工编号必须为 3-20 位字母、数字或下划线",
+            )
+        result = await db.execute(select(User).filter(User.uid == uid))
+        existing_uid_user = result.scalar_one_or_none()
+        if existing_uid_user is not None:
+            existing_identity_user = await find_user_by_external_identity(db, issuer, sub)
+            if existing_identity_user and existing_identity_user.id == existing_uid_user.id:
+                return existing_identity_user
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"员工编号 {uid} 已被其他账号使用，请联系管理员处理冲突",
+            )
 
     random_password = secrets.token_urlsafe(32)
     password_hash = AuthUtils.hash_password(random_password)
@@ -924,6 +950,13 @@ async def create_oidc_user(
                 return existing_user
             if await find_external_identity_by_email(db, email):
                 raise OIDCIdentityConflict
+            if not oidc_config.use_raw_username:
+                result = await db.execute(select(User.id).filter(User.uid == uid))
+                if result.scalar_one_or_none() is not None:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=f"员工编号 {uid} 已被其他账号使用，请联系管理员处理冲突",
+                    )
             username = await build_unique_oidc_username(db, f"{preferred_username}-{retry_index + 2}", sub)
 
     raise HTTPException(
