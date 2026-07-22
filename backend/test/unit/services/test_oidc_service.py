@@ -441,24 +441,40 @@ async def test_legacy_sub_binding_requires_explicit_matching_issuer(oidc_session
     assert resolved.id == user.id
 
 
-async def test_created_oidc_user_uses_fixed_length_internal_uid(oidc_session, monkeypatch):
+async def test_created_oidc_user_uses_employee_number_from_email_as_uid(oidc_session, monkeypatch):
     monkeypatch.setattr(oidc_service.oidc_config, "use_raw_username", False)
     monkeypatch.setattr(oidc_service.oidc_config, "default_role", "user")
-    subject = "subject-" + "x" * 200
+    subject = "subject-123"
 
     user = await oidc_service.create_oidc_user(
         oidc_session,
-        {"sub": subject, "name": "Long Subject", "username": "long-subject"},
+        {"sub": subject, "name": "张三疯", "username": "zhang-sanfeng"},
         "https://issuer.example",
-        "long-subject@example.com",
+        "790100005580@cn-ne.cn",
     )
 
-    assert user.uid.startswith("oidc:")
-    assert len(user.uid) <= 64
+    assert user.uid == "790100005580"
     identity = await oidc_service.find_user_by_external_identity(
         oidc_session, "https://issuer.example", subject
     )
     assert identity.id == user.id
+
+
+async def test_create_oidc_user_rejects_employee_uid_owned_by_another_account(oidc_session, monkeypatch):
+    await _create_user(oidc_session, "790100005580")
+    monkeypatch.setattr(oidc_service.oidc_config, "use_raw_username", False)
+    monkeypatch.setattr(oidc_service.oidc_config, "default_role", "user")
+
+    with pytest.raises(oidc_service.HTTPException) as exc_info:
+        await oidc_service.create_oidc_user(
+            oidc_session,
+            {"sub": "new-subject", "name": "张三疯", "username": "zhang-sanfeng"},
+            "https://issuer.example",
+            "790100005580@cn-ne.cn",
+        )
+
+    assert exc_info.value.status_code == 409
+    assert "员工编号 790100005580 已被其他账号使用" in exc_info.value.detail
 
 
 async def test_oidc_issuer_base_url_takes_precedence(monkeypatch):
@@ -512,7 +528,7 @@ async def test_oidc_auto_create_rejects_missing_default_role(oidc_session, monke
             oidc_session,
             {"sub": "new-user", "name": "New User", "username": "new-user"},
             "https://issuer.example",
-            "new-user@example.com",
+            "new_user@example.com",
             department_id=1,
         )
 
