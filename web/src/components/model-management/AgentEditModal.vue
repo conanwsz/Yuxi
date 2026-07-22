@@ -40,9 +40,11 @@ const agentModalActiveTab = ref('basic')
 const agentIconUploading = ref(false)
 const saving = ref(false)
 const agentShareConfigFormRef = ref(null)
+const agentManageConfigFormRef = ref(null)
 const runtimeConfigFormRef = ref(null)
 const agentNameInputRef = ref(null)
 const agentShareConfig = ref({ access_level: 'user', department_ids: [], user_uids: [] })
+const agentManageConfig = ref({ access_level: 'user', department_ids: [], user_uids: [] })
 const agentForm = reactive({
   slug: '',
   name: '',
@@ -84,19 +86,23 @@ const getInitialShareConfig = () => ({
   user_uids: userStore.uid ? [userStore.uid] : []
 })
 
-const normalizeShareConfigForPayload = () => {
-  if (isBuiltinAgent({ id: editingAgentId.value })) {
+const normalizeShareConfigForPayload = (sourceConfig, builtin = false) => {
+  if (builtin) {
     return { access_level: 'global', department_ids: [], user_uids: [] }
   }
-  const config = agentShareConfig.value || getInitialShareConfig()
+  const config = sourceConfig || getInitialShareConfig()
   const accessLevel =
     userStore.hasPermission('agents.share') && userStore.userRole !== 'user'
       ? config.access_level
       : 'user'
   return {
     access_level: accessLevel,
+    ...(accessLevel === 'department' ? { org_scope_version: 2 } : {}),
     department_ids: accessLevel === 'department' ? config.department_ids || [] : [],
-    user_uids: accessLevel === 'user' ? config.user_uids || [] : []
+    excluded_department_ids:
+      accessLevel === 'department' ? config.excluded_department_ids || [] : [],
+    user_uids:
+      accessLevel === 'department' || accessLevel === 'user' ? config.user_uids || [] : []
   }
 }
 
@@ -134,6 +140,7 @@ const resetAgentForm = () => {
     icon: ''
   })
   agentShareConfig.value = getInitialShareConfig()
+  agentManageConfig.value = getInitialShareConfig()
 }
 
 const focusAgentNameInput = async () => {
@@ -175,6 +182,9 @@ const openEdit = async (agent) => {
   agentShareConfig.value = isBuiltinAgent(detail)
     ? { access_level: 'global', department_ids: [], user_uids: [] }
     : detail.share_config || getInitialShareConfig()
+  agentManageConfig.value = isBuiltinAgent(detail)
+    ? { access_level: 'global', department_ids: [], user_uids: [] }
+    : detail.manage_config || getInitialShareConfig()
   await agentStore.selectAgent(detail.id, { allowSubagent: true })
   showAgentModal.value = true
 }
@@ -220,11 +230,13 @@ const uploadAgentIcon = async (file) => {
 }
 
 const buildAgentPayload = () => {
+  const builtin = isBuiltinAgent({ id: editingAgentId.value })
   const payload = {
     name: agentForm.name.trim(),
     description: agentForm.description.trim() || null,
     icon: agentForm.icon.trim() || null,
-    share_config: normalizeShareConfigForPayload(),
+    share_config: normalizeShareConfigForPayload(agentShareConfig.value, builtin),
+    manage_config: normalizeShareConfigForPayload(agentManageConfig.value, builtin),
     is_subagent: isSubAgentBackend(agentForm.backend_id)
   }
 
@@ -249,6 +261,14 @@ const saveAgent = async () => {
   if (validation && !validation.valid) {
     agentModalActiveTab.value = 'basic'
     message.error(validation.message)
+    return
+  }
+  const manageValidation = canEditAgentShareConfig.value
+    ? agentManageConfigFormRef.value?.validate?.()
+    : null
+  if (manageValidation && !manageValidation.valid) {
+    agentModalActiveTab.value = 'basic'
+    message.error(`管理权限：${manageValidation.message}`)
     return
   }
 
@@ -431,13 +451,27 @@ defineExpose({
 
           <div v-if="canEditAgentShareConfig" class="share-config-block">
             <div class="section-heading">
-              <span>共享权限</span>
+              <span>使用权限</span>
             </div>
             <ShareConfigForm
               ref="agentShareConfigFormRef"
               v-model="agentShareConfig"
-              :auto-select-user-dept="true"
+              :auto-select-user-dept="false"
               :allowed-access-levels="getAgentShareAllowedLevels()"
+            />
+          </div>
+
+          <div v-if="canEditAgentShareConfig" class="share-config-block">
+            <div class="section-heading">
+              <span>管理权限</span>
+              <span class="section-heading-note">可编辑配置，但不能删除智能体</span>
+            </div>
+            <ShareConfigForm
+              ref="agentManageConfigFormRef"
+              v-model="agentManageConfig"
+              :auto-select-user-dept="false"
+              :allowed-access-levels="getAgentShareAllowedLevels()"
+              action-label="管理"
             />
           </div>
         </section>
@@ -656,6 +690,13 @@ defineExpose({
   color: var(--gray-900);
   font-size: 14px;
   font-weight: 600;
+}
+
+.section-heading-note {
+  margin-left: auto;
+  color: var(--gray-500);
+  font-size: 12px;
+  font-weight: 400;
 }
 
 .agent-profile-header {

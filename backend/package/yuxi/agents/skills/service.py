@@ -20,10 +20,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from yuxi import config as sys_config
 from yuxi.agents.mcp.service import get_enabled_mcp_server_slugs
 from yuxi.agents.skills.repository import SkillRepository
-from yuxi.storage.postgres.models_business import Skill, User
+from yuxi.storage.postgres.models_business import Department, DepartmentClosure, Skill, User
 from yuxi.utils.logging_config import logger
 from yuxi.utils.share_config import SHARE_ACCESS_LEVELS, normalize_share_config
 from yuxi.services.permission_service import has_permission
+from yuxi.services.organization_scope_service import share_config_allows_user
 from yuxi.services.resource_access_runtime_service import (
     assert_mcp_slugs_allowed,
     assert_tool_slugs_allowed,
@@ -151,20 +152,7 @@ def user_can_access_skill(user: User, skill: Skill, *, require_enabled: bool = T
     if user_uid and skill.created_by == user_uid:
         return True
 
-    share_config = skill.share_config or DEFAULT_SKILL_SHARE_CONFIG.copy()
-    access_level = share_config.get("access_level")
-    if access_level == "global":
-        return True
-    if access_level == "department":
-        if user.department_id is None:
-            return False
-        try:
-            return int(user.department_id) in [int(value) for value in share_config.get("department_ids") or []]
-        except (TypeError, ValueError):
-            return False
-    if access_level == "user":
-        return bool(user_uid and user_uid in (share_config.get("user_uids") or []))
-    return False
+    return share_config_allows_user(user, skill.share_config or DEFAULT_SKILL_SHARE_CONFIG.copy())
 
 
 def user_can_manage_skill(user: User, skill: Skill) -> bool:
@@ -175,7 +163,7 @@ def user_can_manage_skill(user: User, skill: Skill) -> bool:
     return user.role != "user" and user_can_access_skill(user, skill, require_enabled=False)
 
 
-def can_skill_depend_on(parent: Skill, dependency: Skill) -> bool:
+async def can_skill_depend_on(db: AsyncSession, parent: Skill, dependency: Skill) -> bool:
     if not dependency.enabled:
         return False
     if is_builtin_skill(dependency):
@@ -191,9 +179,36 @@ def can_skill_depend_on(parent: Skill, dependency: Skill) -> bool:
     if parent_level == "global":
         return False
     if parent_level == "department" and dep_level == "department":
-        parent_ids = {int(value) for value in parent_config.get("department_ids") or []}
-        dep_ids = {int(value) for value in dep_config.get("department_ids") or []}
-        return parent_ids.issubset(dep_ids)
+        result = await db.execute(
+            select(Department.id, DepartmentClosure.ancestor_id)
+            .join(DepartmentClosure, DepartmentClosure.descendant_id == Department.id)
+            .where(Department.status == "active")
+        )
+        paths: dict[int, set[int]] = {}
+        for department_id, ancestor_id in result.all():
+            paths.setdefault(int(department_id), set()).add(int(ancestor_id))
+
+        def allowed_departments(config: dict) -> set[int]:
+            return {
+                department_id
+                for department_id, ancestors in paths.items()
+                if share_config_allows_user(
+                    {
+                        "role": "user",
+                        "uid": "",
+                        "department_id": department_id,
+                        "organization_department_ids": [department_id],
+                        "organization_membership_paths": [ancestors],
+                    },
+                    config,
+                )
+            }
+
+        parent_user_uids = {str(value) for value in parent_config.get("user_uids") or []}
+        dependency_user_uids = {str(value) for value in dep_config.get("user_uids") or []}
+        departments_covered = allowed_departments(parent_config).issubset(allowed_departments(dep_config))
+        users_covered = parent_user_uids.issubset(dependency_user_uids)
+        return departments_covered and users_covered
     if parent_level == "user" and dep_level == "user":
         parent_uids = {str(value) for value in parent_config.get("user_uids") or []}
         dep_uids = {str(value) for value in dep_config.get("user_uids") or []}
@@ -456,6 +471,7 @@ def _get_all_tool_names() -> list[str]:
 
 async def _validate_dependencies(
     *,
+    db: AsyncSession,
     parent: Skill,
     tool_dependencies: list[str],
     mcp_dependencies: list[str],
@@ -484,7 +500,10 @@ async def _validate_dependencies(
     if parent.slug in skills:
         raise ValueError("skill_dependencies 不允许包含自身")
 
-    forbidden_skills = [name for name in skills if not can_skill_depend_on(parent, available_skills[name])]
+    forbidden_skills = []
+    for name in skills:
+        if not await can_skill_depend_on(db, parent, available_skills[name]):
+            forbidden_skills.append(name)
     if forbidden_skills:
         raise ValueError(f"存在权限范围不匹配的 skill 依赖: {', '.join(forbidden_skills)}")
 
@@ -510,6 +529,7 @@ async def update_skill_dependencies(
     skill_items = await list_accessible_skills(db, operator)
     available_skills = {skill.slug: skill for skill in skill_items}
     tools, mcps, skills = await _validate_dependencies(
+        db=db,
         parent=item,
         tool_dependencies=tool_dependencies,
         mcp_dependencies=mcp_dependencies,

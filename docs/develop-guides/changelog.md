@@ -15,6 +15,7 @@
 
 ### 开发记录
 
+- 部门升级为多主体组织树：支持多根、同主体层级移动、完整路径、节点停用、单一主部门与同主体兼职部门；组织成员身份与显式管理范围分离，管理节点自动覆盖全部后代。知识库、Agent 与 Skill 统一支持 v2 部门子树授权、排除子树和指定用户例外，同时保留历史 v1 精确部门语义；Agent 进一步拆分使用与管理范围，管理授权不包含删除，删除仅限所有者或超级管理员。默认部门继续作为不可移动、不可停用、不可删除的系统根节点。
 - 加固第三方 OIDC 接入协议：Yuxi 作为独立 Confidential Client 使用 Authorization Code + PKCE S256，并通过 Discovery 获取认证端点；统一 `OIDC_ISSUER_BASE_URL` 主配置与旧 `OIDC_ISSUER_URL` 兼容边界，要求精确 HTTPS 回调、服务端 state/nonce/PKCE 事务、固定 ID Token 算法白名单及 `issuer + sub` 身份键；外部身份落独立表，新建 OIDC 用户的内部 UID 使用规范化邮箱 `@` 前的员工编号，旧 issuer-less 绑定仅允许通过 `OIDC_LEGACY_ISSUER_URL` 受控迁移；明确 Client Secret 与认证 Token 不得进入前端、仓库、URL 或普通日志，当前退出仅清理本地 JWT，不宣称已退出统一认证。
 - 新增全局单角色 RBAC 权限矩阵：启动时幂等创建 `superadmin`、`admin`、`user` 系统角色并迁移历史角色，超级管理员可在设置中创建自定义角色、按资源与动作配置权限并分配给用户；JWT 与 API Key 每次请求解析角色当前权限。用户、部门、仪表盘、系统、模型、Tools、MCP、Agent、Skill 与知识库管理接口改用统一权限依赖，知识库按 ID 管理继续叠加创建者、部门与共享范围检查；登录和当前用户响应补充角色名称与权限列表，前端菜单、路由、页签和按钮按权限展示。
 - RBAC 增加角色数据权限：角色可按 `all/selected/none` 配置可调用的 chat、embedding、rerank 模型、内置 Tool 与 MCP 服务，并为受限模型类型指定角色默认模型；Agent 配置、共享 Agent、直接聊天、子智能体、知识库任务、JWT/API Key 与 Worker 执行均按实际用户当前角色复验，Skill 不得通过依赖隐式获得未授权 Tool/MCP；Agent 历史配置中不可用或依赖不完整的 Skill 会在运行上下文中被跳过，不再阻断整个 Run。历史角色升级后保持全资源兼容，新建自定义角色默认无资源权限，超级管理员继续拥有不可修改的全资源旁路。

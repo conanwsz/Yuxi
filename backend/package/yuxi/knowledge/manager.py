@@ -213,25 +213,9 @@ class KnowledgeBaseManager:
         if user_uid and db_info.get("created_by") == user_uid:
             return True
 
-        share_config = db_info.get("share_config") or DEFAULT_SHARE_CONFIG.copy()
-        access_level = share_config.get("access_level")
-        if access_level == "global":
-            return True
+        from yuxi.services.organization_scope_service import share_config_allows_user
 
-        if access_level == "department":
-            user_department_id = user.get("department_id")
-            if user_department_id is None:
-                return False
-            try:
-                department_ids = [int(dept_id) for dept_id in share_config.get("department_ids") or []]
-                return int(user_department_id) in department_ids
-            except (ValueError, TypeError):
-                return False
-
-        if access_level == "user":
-            return bool(user_uid and user_uid in (share_config.get("user_uids") or []))
-
-        return False
+        return share_config_allows_user(user, db_info.get("share_config") or DEFAULT_SHARE_CONFIG.copy())
 
     async def check_accessible(self, user: dict, kb_id: str) -> bool:
         """检查用户是否有权限访问数据库
@@ -281,10 +265,20 @@ class KnowledgeBaseManager:
         if isinstance(user, dict):
             user_info = user
         else:
+            if not hasattr(user, "organization_membership_paths"):
+                from yuxi.services.organization_scope_service import hydrate_user_organization_scope
+                from yuxi.storage.postgres.manager import pg_manager
+
+                async with pg_manager.get_async_session_context() as session:
+                    await hydrate_user_organization_scope(session, user)
             user_info = {
                 "uid": user.uid,
                 "role": user.role,
                 "department_id": user.department_id,
+                "organization_department_ids": list(getattr(user, "organization_department_ids", set())),
+                "organization_membership_paths": [
+                    list(path) for path in getattr(user, "organization_membership_paths", [])
+                ],
             }
 
         user_role = user_info.get("role")

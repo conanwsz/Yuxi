@@ -42,6 +42,18 @@ def normalize_share_config(
         department_ids = sorted(set(department_ids))
         if not department_ids:
             raise ValueError("部门共享至少需要选择一个部门")
+        org_scope_version = int(config.get("org_scope_version") or 1)
+        if org_scope_version >= 2:
+            excluded_department_ids = sorted(set(_normalize_department_ids(config.get("excluded_department_ids"))))
+            if set(department_ids) & set(excluded_department_ids):
+                raise ValueError("同一组织节点不能同时授权和排除")
+            return {
+                "access_level": "department",
+                "org_scope_version": 2,
+                "department_ids": department_ids,
+                "excluded_department_ids": excluded_department_ids,
+                "user_uids": sorted(set(_normalize_user_uids(config.get("user_uids")))),
+            }
         return {"access_level": "department", "department_ids": department_ids, "user_uids": []}
 
     user_uids = _normalize_user_uids(config.get("user_uids"))

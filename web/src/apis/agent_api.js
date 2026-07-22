@@ -37,9 +37,10 @@ export const agentApi = {
    * 获取智能体列表
    * @returns {Promise} - 智能体列表
    */
-  getAgents: ({ includeSubagents = false } = {}) => {
+  getAgents: ({ includeSubagents = false, manageableOnly = false } = {}) => {
     const params = new URLSearchParams()
     if (includeSubagents) params.set('include_subagents', 'true')
+    if (manageableOnly) params.set('manageable_only', 'true')
     const query = params.toString()
     return apiGet(query ? `/api/agent?${query}` : '/api/agent')
   },

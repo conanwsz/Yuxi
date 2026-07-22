@@ -14,6 +14,7 @@ from yuxi.repositories.agent_repository import (
     GENERAL_PURPOSE_AGENT_SLUG,
     SUB_AGENT_BACKEND_ID,
     user_can_access_agent,
+    user_can_delete_agent,
     user_can_manage_agent,
 )
 from yuxi.storage.postgres.models_business import Agent, User
@@ -143,6 +144,26 @@ async def test_create_agent_for_normal_user_forces_private_share(monkeypatch):
     assert db.added is agent
 
 
+@pytest.mark.asyncio
+async def test_manageable_agents_do_not_require_use_access():
+    manageable = Agent(
+        slug="manageable-only",
+        name="Manageable Only",
+        backend_id="ChatbotAgent",
+        created_by="owner",
+        share_config={"access_level": "user", "department_ids": [], "user_uids": []},
+        manage_config={"access_level": "user", "department_ids": [], "user_uids": ["manager"]},
+    )
+    db = FakeDb()
+    db.execute = AsyncMock(return_value=SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: [manageable])))
+    repo = AgentRepository(db)
+    user = User(username="manager", uid="manager", password_hash="x", role="admin", department_id=1)
+    user.permission_keys = {"agents.update"}
+
+    assert await repo.list_visible(user=user) == []
+    assert await repo.list_manageable(user=user) == [manageable]
+
+
 def test_shared_agent_is_accessible_but_not_manageable_for_normal_user():
     user = User(username="user", uid="user", password_hash="x", role="user", department_id=1)
     agent = Agent(
@@ -155,3 +176,52 @@ def test_shared_agent_is_accessible_but_not_manageable_for_normal_user():
 
     assert user_can_access_agent(user, agent) is True
     assert user_can_manage_agent(user, agent) is False
+
+
+def test_agent_use_manage_and_delete_scopes_are_independent():
+    user = User(username="manager", uid="manager", password_hash="x", role="user", department_id=3)
+    user.organization_department_ids = {3}
+    user.organization_membership_paths = [{1, 2, 3}]
+    agent = Agent(
+        slug="managed-bot",
+        name="Managed Bot",
+        backend_id="ChatbotAgent",
+        created_by="owner",
+        share_config={"access_level": "user", "department_ids": [], "user_uids": []},
+        manage_config={
+            "access_level": "department",
+            "org_scope_version": 2,
+            "department_ids": [1],
+            "excluded_department_ids": [],
+            "user_uids": [],
+        },
+    )
+
+    assert user_can_access_agent(user, agent) is False
+    assert user_can_manage_agent(user, agent) is True
+    assert user_can_delete_agent(user, agent) is False
+
+
+@pytest.mark.asyncio
+async def test_serialized_agent_exposes_independent_action_flags(monkeypatch):
+    from yuxi.agents.buildin import agent_manager
+
+    monkeypatch.setattr(agent_manager, "get_agent", lambda _backend_id: None)
+    db = FakeDb()
+    repo = AgentRepository(db)
+    user = User(username="manager", uid="manager", password_hash="x", role="admin", department_id=1)
+    user.permission_keys = {"agents.update", "agents.delete"}
+    agent = Agent(
+        slug="managed-bot",
+        name="Managed Bot",
+        backend_id="missing-backend",
+        created_by="owner",
+        share_config={"access_level": "user", "department_ids": [], "user_uids": []},
+        manage_config={"access_level": "user", "department_ids": [], "user_uids": ["manager"]},
+    )
+
+    data = await repo.serialize(agent, user=user)
+
+    assert data["can_access"] is False
+    assert data["can_manage"] is True
+    assert data["can_delete"] is False

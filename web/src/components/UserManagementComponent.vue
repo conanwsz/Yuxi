@@ -104,7 +104,8 @@
                   </span>
                   <span class="dept-text">
                     {{ user.role_name || roleName(user.role) }}
-                    <template v-if="user.department_name"> · {{ user.department_name }}</template>
+                    <template v-if="user.department_path"> · {{ user.department_path }}</template>
+                    <template v-else-if="user.department_name"> · {{ user.department_name }}</template>
                   </span>
                 </div>
               </template>
@@ -138,6 +139,12 @@
 
               <template #info>
                 <div class="card-content">
+                  <div class="info-item">
+                    <span class="info-label">兼职部门:</span>
+                    <span class="info-value part-time-text">
+                      {{ partTimeLabel(user) }}
+                    </span>
+                  </div>
                   <div class="info-item">
                     <span class="info-label">手机号:</span>
                     <span class="info-value phone-text">{{ user.phone_number || '-' }}</span>
@@ -244,18 +251,67 @@
           <div v-if="!userStore.isSuperAdmin" class="help-text">只有超级管理员可以修改角色</div>
         </a-form-item>
 
-        <!-- 部门选择器（仅超级管理员可见） -->
-        <a-form-item v-if="userStore.isSuperAdmin" label="部门" class="form-item">
-          <a-select v-model:value="userManagement.form.departmentId" placeholder="请选择部门">
+        <template v-if="userStore.isSuperAdmin">
+          <a-form-item label="主部门" required class="form-item">
+            <a-select
+              v-model:value="userManagement.form.primaryDepartmentId"
+              show-search
+              option-filter-prop="label"
+              placeholder="请选择唯一主部门"
+              @change="handlePrimaryDepartmentChange"
+            >
             <a-select-option
-              v-for="dept in departmentManagement.departments"
+              v-for="dept in activeDepartments"
               :key="dept.id"
               :value="dept.id"
+              :label="dept.path_label"
             >
-              {{ dept.name }}
+              {{ dept.path_label }}
             </a-select-option>
-          </a-select>
-        </a-form-item>
+            </a-select>
+          </a-form-item>
+
+          <a-form-item label="兼职部门" class="form-item">
+            <a-select
+              v-model:value="userManagement.form.partTimeDepartmentIds"
+              mode="multiple"
+              show-search
+              option-filter-prop="label"
+              :disabled="partTimeDepartmentOptions.length === 0"
+              placeholder="可选择同一主体下的兼职部门"
+            >
+              <a-select-option
+                v-for="dept in partTimeDepartmentOptions"
+                :key="dept.id"
+                :value="dept.id"
+                :label="dept.path_label"
+              >
+                {{ dept.path_label }}
+              </a-select-option>
+            </a-select>
+            <div class="help-text">兼职部门必须与主部门属于同一主体；默认部门用户不能设置兼职。</div>
+          </a-form-item>
+
+          <a-form-item label="可管理部门" class="form-item">
+            <a-select
+              v-model:value="userManagement.form.managedDepartmentIds"
+              mode="multiple"
+              show-search
+              option-filter-prop="label"
+              placeholder="留空表示不授予组织管理范围"
+            >
+              <a-select-option
+                v-for="dept in activeDepartments"
+                :key="dept.id"
+                :value="dept.id"
+                :label="dept.path_label"
+              >
+                {{ dept.path_label }}（含下级）
+              </a-select-option>
+            </a-select>
+            <div class="help-text">所选节点会覆盖整棵子树；员工归属不会自动授予管理权限。</div>
+          </a-form-item>
+        </template>
       </a-form>
     </a-modal>
   </div>
@@ -313,7 +369,9 @@ const userManagement = reactive({
     password: '',
     confirmPassword: '',
     role: 'user', // 默认角色
-    departmentId: null, // 部门ID
+    primaryDepartmentId: null,
+    partTimeDepartmentIds: [],
+    managedDepartmentIds: [],
     usernameError: '', // 用户名错误信息
     phoneError: '' // 手机号错误信息
   },
@@ -331,13 +389,31 @@ const departmentManagement = reactive({
   departments: []
 })
 
+const activeDepartments = computed(() =>
+  departmentManagement.departments.filter((dept) => dept.status === 'active')
+)
+
+const selectedPrimaryDepartment = computed(() =>
+  departmentManagement.departments.find(
+    (dept) => dept.id === userManagement.form.primaryDepartmentId
+  )
+)
+
+const partTimeDepartmentOptions = computed(() => {
+  const primary = selectedPrimaryDepartment.value
+  if (!primary || primary.is_system) return []
+  return activeDepartments.value.filter(
+    (dept) => dept.root_id === primary.root_id && dept.id !== primary.id
+  )
+})
+
 const departmentFilterOptions = computed(() => {
   const options = new Map()
 
   departmentManagement.departments.forEach((dept) => {
     options.set(String(dept.id), {
       value: String(dept.id),
-      label: dept.name
+      label: dept.path_label || dept.name
     })
   })
 
@@ -388,7 +464,6 @@ const paginatedUsers = computed(() => {
 
 // 获取部门列表
 const fetchDepartments = async () => {
-  if (!userStore.isSuperAdmin) return // 普通管理员不需要获取所有部门列表
   try {
     const departments = await departmentApi.getDepartments()
     departmentManagement.departments = departments
@@ -489,6 +564,12 @@ const formatTime = (timeStr) => formatDateTime(timeStr)
 
 const getUserDefaultAvatarSrc = (user) => (user.uid ? generatePixelAvatar(user.uid) : '')
 
+const partTimeLabel = (user) => {
+  const memberships = user.part_time_departments || []
+  if (!memberships.length) return '-'
+  return memberships.map((item) => item.path_label || item.name).join('、')
+}
+
 const isUserDeleteDisabled = (user) =>
   user.id === userStore.userId ||
   (user.role === 'superadmin' && userStore.userRole !== 'superadmin')
@@ -535,7 +616,9 @@ const showAddUserModal = () => {
     password: '',
     confirmPassword: '',
     role: 'user', // 默认角色为普通用户
-    departmentId: null,
+    primaryDepartmentId: activeDepartments.value.find((dept) => dept.is_system)?.id || null,
+    partTimeDepartmentIds: [],
+    managedDepartmentIds: [],
     usernameError: '',
     phoneError: ''
   }
@@ -544,7 +627,7 @@ const showAddUserModal = () => {
 }
 
 // 打开编辑用户模态框
-const showEditUserModal = (user) => {
+const showEditUserModal = async (user) => {
   userManagement.modalTitle = '编辑用户'
   userManagement.editMode = true
   userManagement.editUserId = user.id
@@ -555,12 +638,29 @@ const showEditUserModal = (user) => {
     password: '',
     confirmPassword: '',
     role: user.role,
-    departmentId: user.department_id || null,
+    primaryDepartmentId: user.department_id || null,
+    partTimeDepartmentIds: (user.part_time_departments || []).map((item) => item.department_id),
+    managedDepartmentIds: [...(user.managed_department_ids || [])],
     usernameError: '',
     phoneError: ''
   }
   userManagement.displayPasswordFields = false // 默认不显示密码字段
   userManagement.modalVisible = true
+  if (userStore.isSuperAdmin) {
+    try {
+      const scope = await userStore.getManagedDepartments(user.id)
+      userManagement.form.managedDepartmentIds = scope.department_ids || []
+    } catch (error) {
+      message.error(error.message || '获取管理范围失败')
+    }
+  }
+}
+
+const handlePrimaryDepartmentChange = () => {
+  const allowed = new Set(partTimeDepartmentOptions.value.map((dept) => dept.id))
+  userManagement.form.partTimeDepartmentIds = userManagement.form.partTimeDepartmentIds.filter(
+    (id) => allowed.has(id)
+  )
 }
 
 // 处理用户表单提交
@@ -599,6 +699,11 @@ const handleUserFormSubmit = async () => {
       }
     }
 
+    if (userStore.isSuperAdmin && !userManagement.form.primaryDepartmentId) {
+      message.error('请选择主部门')
+      return
+    }
+
     userManagement.loading = true
 
     // 根据模式决定创建还是更新用户
@@ -612,9 +717,9 @@ const handleUserFormSubmit = async () => {
         updateData.phone_number = userManagement.form.phoneNumber
       }
 
-      // 超级管理员可以修改部门
-      if (userStore.isSuperAdmin && userManagement.form.departmentId) {
-        updateData.department_id = userManagement.form.departmentId
+      if (userStore.isSuperAdmin) {
+        updateData.primary_department_id = userManagement.form.primaryDepartmentId
+        updateData.part_time_department_ids = userManagement.form.partTimeDepartmentIds
       }
 
       // 如果显示了密码字段并且填写了密码，才更新密码
@@ -623,6 +728,12 @@ const handleUserFormSubmit = async () => {
       }
 
       await userStore.updateUser(userManagement.editUserId, updateData)
+      if (userStore.isSuperAdmin) {
+        await userStore.updateManagedDepartments(
+          userManagement.editUserId,
+          userManagement.form.managedDepartmentIds
+        )
+      }
       message.success('用户更新成功')
     } else {
       // 创建新用户
@@ -632,9 +743,9 @@ const handleUserFormSubmit = async () => {
         role: userManagement.form.role
       }
 
-      // 超级管理员可以指定部门
-      if (userStore.isSuperAdmin && userManagement.form.departmentId) {
-        createData.department_id = userManagement.form.departmentId
+      if (userStore.isSuperAdmin) {
+        createData.primary_department_id = userManagement.form.primaryDepartmentId
+        createData.part_time_department_ids = userManagement.form.partTimeDepartmentIds
       }
 
       // 添加手机号字段（如果填写了）
@@ -642,7 +753,13 @@ const handleUserFormSubmit = async () => {
         createData.phone_number = userManagement.form.phoneNumber
       }
 
-      await userStore.createUser(createData)
+      const createdUser = await userStore.createUser(createData)
+      if (userStore.isSuperAdmin && userManagement.form.managedDepartmentIds.length) {
+        await userStore.updateManagedDepartments(
+          createdUser.id,
+          userManagement.form.managedDepartmentIds
+        )
+      }
       message.success('用户创建成功')
     }
 
@@ -839,8 +956,35 @@ onMounted(async () => {
         .user-card {
           cursor: default;
 
+          :deep(.info-card-header) {
+            display: grid;
+            grid-template-columns: 40px minmax(0, 1fr) 28px;
+            grid-template-rows: auto auto;
+            column-gap: 12px;
+            row-gap: 4px;
+          }
+
           :deep(.info-card-icon) {
+            grid-row: 1 / span 2;
             border-radius: 50%;
+          }
+
+          :deep(.info-card-info) {
+            grid-column: 2;
+            grid-row: 1;
+          }
+
+          :deep(.info-card-status) {
+            grid-column: 2;
+            grid-row: 2;
+            min-width: 0;
+            max-width: 100%;
+            justify-self: start;
+          }
+
+          :deep(.card-more-action-corner) {
+            grid-column: 3;
+            grid-row: 1 / span 2;
           }
 
           :deep(.info-card-body) {
@@ -859,6 +1003,8 @@ onMounted(async () => {
             display: inline-flex;
             align-items: center;
             gap: 4px;
+            min-width: 0;
+            max-width: 100%;
             padding: 2px 8px 2px 4px;
             background: var(--gray-50);
             border-radius: 4px;
@@ -882,9 +1028,13 @@ onMounted(async () => {
             }
 
             .dept-text {
+              min-width: 0;
               font-size: 12px;
               color: var(--gray-700);
               font-weight: 500;
+              overflow: hidden;
+              text-overflow: ellipsis;
+              white-space: nowrap;
             }
           }
 

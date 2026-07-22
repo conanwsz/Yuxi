@@ -414,6 +414,149 @@ class PostgresManager(metaclass=SingletonMeta):
                 applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
             """,
+            "ALTER TABLE IF EXISTS departments ADD COLUMN IF NOT EXISTS parent_id INTEGER",
+            "ALTER TABLE IF EXISTS departments ADD COLUMN IF NOT EXISTS status VARCHAR(16) DEFAULT 'active'",
+            "ALTER TABLE IF EXISTS departments ADD COLUMN IF NOT EXISTS sort_order INTEGER DEFAULT 0",
+            "ALTER TABLE IF EXISTS departments ADD COLUMN IF NOT EXISTS is_system BOOLEAN DEFAULT FALSE",
+            "ALTER TABLE IF EXISTS departments ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()",
+            "ALTER TABLE IF EXISTS departments ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ",
+            "UPDATE departments SET status = 'active' WHERE status IS NULL",
+            "UPDATE departments SET sort_order = 0 WHERE sort_order IS NULL",
+            "UPDATE departments SET is_system = FALSE WHERE is_system IS NULL",
+            "ALTER TABLE IF EXISTS departments ALTER COLUMN status SET NOT NULL",
+            "ALTER TABLE IF EXISTS departments ALTER COLUMN sort_order SET NOT NULL",
+            "ALTER TABLE IF EXISTS departments ALTER COLUMN is_system SET NOT NULL",
+            "UPDATE departments SET is_system = TRUE WHERE id = 1",
+            """
+            DO $$
+            DECLARE constraint_name TEXT;
+            BEGIN
+                SELECT constraint_info.conname INTO constraint_name
+                FROM pg_constraint constraint_info
+                JOIN pg_attribute attribute_info
+                  ON attribute_info.attrelid = constraint_info.conrelid
+                 AND attribute_info.attnum = ANY(constraint_info.conkey)
+                WHERE constraint_info.contype = 'u'
+                  AND constraint_info.conrelid = 'departments'::regclass
+                  AND attribute_info.attname = 'name'
+                  AND array_length(constraint_info.conkey, 1) = 1
+                LIMIT 1;
+                IF constraint_name IS NOT NULL THEN
+                    EXECUTE format('ALTER TABLE departments DROP CONSTRAINT %I', constraint_name);
+                END IF;
+            END $$
+            """,
+            """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'fk_departments_parent'
+                      AND conrelid = 'departments'::regclass
+                ) THEN
+                    ALTER TABLE departments
+                    ADD CONSTRAINT fk_departments_parent
+                    FOREIGN KEY (parent_id) REFERENCES departments(id) ON DELETE RESTRICT;
+                END IF;
+            END $$
+            """,
+            "CREATE INDEX IF NOT EXISTS ix_departments_parent_id ON departments(parent_id)",
+            "CREATE INDEX IF NOT EXISTS ix_departments_status ON departments(status)",
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_departments_root_name
+            ON departments (LOWER(name))
+            WHERE parent_id IS NULL
+            """,
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_departments_sibling_name
+            ON departments (parent_id, LOWER(name))
+            WHERE parent_id IS NOT NULL
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS department_closure (
+                ancestor_id INTEGER NOT NULL REFERENCES departments(id) ON DELETE CASCADE,
+                descendant_id INTEGER NOT NULL REFERENCES departments(id) ON DELETE CASCADE,
+                depth INTEGER NOT NULL CHECK (depth >= 0),
+                PRIMARY KEY (ancestor_id, descendant_id)
+            )
+            """,
+            """
+            INSERT INTO department_closure (ancestor_id, descendant_id, depth)
+            SELECT id, id, 0 FROM departments
+            ON CONFLICT (ancestor_id, descendant_id) DO NOTHING
+            """,
+            "CREATE INDEX IF NOT EXISTS ix_department_closure_descendant "
+            "ON department_closure(descendant_id, ancestor_id)",
+            """
+            CREATE TABLE IF NOT EXISTS user_department_memberships (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                department_id INTEGER NOT NULL REFERENCES departments(id) ON DELETE RESTRICT,
+                membership_type VARCHAR(16) NOT NULL,
+                status VARCHAR(16) NOT NULL DEFAULT 'active',
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW(),
+                CONSTRAINT uq_user_department_membership UNIQUE (user_id, department_id),
+                CONSTRAINT ck_user_department_membership_type
+                    CHECK (membership_type IN ('primary', 'part_time')),
+                CONSTRAINT ck_user_department_membership_status
+                    CHECK (status IN ('active', 'inactive'))
+            )
+            """,
+            """
+            UPDATE users SET department_id = 1
+            WHERE department_id IS NULL AND EXISTS (SELECT 1 FROM departments WHERE id = 1)
+            """,
+            """
+            INSERT INTO user_department_memberships (user_id, department_id, membership_type, status)
+            SELECT id, department_id, 'primary', 'active'
+            FROM users
+            WHERE department_id IS NOT NULL AND is_deleted = 0
+            ON CONFLICT (user_id, department_id) DO NOTHING
+            """,
+            """
+            UPDATE user_department_memberships AS membership
+            SET status = 'inactive', updated_at = NOW()
+            FROM users
+            WHERE users.id = membership.user_id AND users.is_deleted <> 0
+            """,
+            "CREATE INDEX IF NOT EXISTS ix_user_department_memberships_user ON user_department_memberships(user_id)",
+            "CREATE INDEX IF NOT EXISTS ix_user_department_memberships_department "
+            "ON user_department_memberships(department_id)",
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_user_primary_department
+            ON user_department_memberships(user_id)
+            WHERE membership_type = 'primary' AND status = 'active'
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS department_admin_assignments (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                department_id INTEGER NOT NULL REFERENCES departments(id) ON DELETE RESTRICT,
+                status VARCHAR(16) NOT NULL DEFAULT 'active',
+                granted_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW(),
+                CONSTRAINT uq_department_admin_assignment UNIQUE (user_id, department_id),
+                CONSTRAINT ck_department_admin_assignment_status CHECK (status IN ('active', 'inactive'))
+            )
+            """,
+            """
+            INSERT INTO department_admin_assignments (user_id, department_id, status)
+            SELECT id, department_id, 'active'
+            FROM users
+            WHERE role = 'admin' AND department_id IS NOT NULL AND is_deleted = 0
+            ON CONFLICT (user_id, department_id) DO NOTHING
+            """,
+            """
+            UPDATE department_admin_assignments AS assignment
+            SET status = 'inactive', updated_at = NOW()
+            FROM users
+            WHERE users.id = assignment.user_id AND users.is_deleted <> 0
+            """,
+            "CREATE INDEX IF NOT EXISTS ix_department_admin_assignments_user ON department_admin_assignments(user_id)",
+            "CREATE INDEX IF NOT EXISTS ix_department_admin_assignments_department "
+            "ON department_admin_assignments(department_id)",
             f"""
             DO $$
             BEGIN
@@ -427,10 +570,7 @@ class PostgresManager(metaclass=SingletonMeta):
                 END IF;
             END $$
             """,
-            (
-                "ALTER TABLE IF EXISTS roles ALTER COLUMN resource_access SET DEFAULT "
-                f"'{none_resource_access}'::jsonb"
-            ),
+            (f"ALTER TABLE IF EXISTS roles ALTER COLUMN resource_access SET DEFAULT '{none_resource_access}'::jsonb"),
             "ALTER TABLE IF EXISTS roles ALTER COLUMN resource_access SET NOT NULL",
             *role_seed_statements,
             """
@@ -522,6 +662,7 @@ class PostgresManager(metaclass=SingletonMeta):
                 pics JSONB NOT NULL DEFAULT '[]'::jsonb,
                 config_json JSONB NOT NULL DEFAULT '{}'::jsonb,
                 share_config JSONB NOT NULL DEFAULT '{}'::jsonb,
+                manage_config JSONB NOT NULL DEFAULT '{}'::jsonb,
                 is_default BOOLEAN NOT NULL DEFAULT FALSE,
                 is_subagent BOOLEAN NOT NULL DEFAULT FALSE,
                 created_by VARCHAR(64),
@@ -532,6 +673,20 @@ class PostgresManager(metaclass=SingletonMeta):
             """,
             "ALTER TABLE IF EXISTS agents ADD COLUMN IF NOT EXISTS backend_id VARCHAR(64)",
             "ALTER TABLE IF EXISTS agents ADD COLUMN IF NOT EXISTS share_config JSONB NOT NULL DEFAULT '{}'::jsonb",
+            "ALTER TABLE IF EXISTS agents ADD COLUMN IF NOT EXISTS manage_config JSONB NOT NULL DEFAULT '{}'::jsonb",
+            """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM app_schema_migrations
+                    WHERE migration_key = 'agent_manage_config_v1'
+                ) THEN
+                    UPDATE agents SET manage_config = share_config;
+                    INSERT INTO app_schema_migrations (migration_key)
+                    VALUES ('agent_manage_config_v1');
+                END IF;
+            END $$
+            """,
             "ALTER TABLE IF EXISTS agents ADD COLUMN IF NOT EXISTS is_subagent BOOLEAN NOT NULL DEFAULT FALSE",
             "ALTER TABLE IF EXISTS user_config ADD COLUMN IF NOT EXISTS enable_memory BOOLEAN NOT NULL DEFAULT FALSE",
             """

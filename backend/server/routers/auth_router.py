@@ -5,11 +5,17 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request, status, Up
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuxi.storage.postgres.manager import pg_manager
-from yuxi.storage.postgres.models_business import APIKey, User, Department
+from yuxi.storage.postgres.models_business import (
+    APIKey,
+    Department,
+    DepartmentAdminAssignment,
+    User,
+    UserDepartmentMembership,
+)
 from yuxi.repositories.user_repository import UserRepository
 from yuxi.repositories.department_repository import DepartmentRepository
 from yuxi.repositories.role_repository import RoleRepository
@@ -33,6 +39,8 @@ from yuxi.services.auth_service import (
 from yuxi.storage.minio import upload_image_to_minio
 from yuxi.utils.datetime_utils import utc_now_naive
 from yuxi.services.permission_service import resolve_user_permissions
+from yuxi.services.organization_scope_service import user_can_manage_department
+from yuxi.services.organization_service import OrganizationService
 
 # OIDC 认证相关导入
 from yuxi.services.oidc_service import (
@@ -68,6 +76,8 @@ class UserCreate(BaseModel):
     role: str = "user"
     phone_number: str | None = None
     department_id: int | None = None
+    primary_department_id: int | None = None
+    part_time_department_ids: list[int] = Field(default_factory=list)
 
 
 class UserUpdate(BaseModel):
@@ -77,6 +87,8 @@ class UserUpdate(BaseModel):
     phone_number: str | None = None
     avatar: str | None = None
     department_id: int | None = None
+    primary_department_id: int | None = None
+    part_time_department_ids: list[int] | None = None
 
 
 class UserProfileUpdate(BaseModel):
@@ -95,6 +107,10 @@ class UserResponse(BaseModel):
     permissions: list[str] = Field(default_factory=list)
     department_id: int | None = None
     department_name: str | None = None  # 部门名称
+    department_path: str | None = None
+    primary_department: dict | None = None
+    part_time_departments: list[dict] = Field(default_factory=list)
+    managed_department_ids: list[int] = Field(default_factory=list)
     created_at: str
     last_login: str | None = None
 
@@ -105,6 +121,11 @@ class UserAccessOption(BaseModel):
     role: str
     department_id: int | None = None
     department_name: str | None = None
+    department_path: str | None = None
+
+
+class ManagedDepartmentsUpdate(BaseModel):
+    department_ids: list[int] = Field(default_factory=list)
 
 
 class InitializeAdmin(BaseModel):
@@ -443,16 +464,94 @@ async def initialize_admin(admin_data: InitializeAdmin, db: AsyncSession = Depen
 # =============================================================================
 
 
+async def _serialize_user(db: AsyncSession, user: User, *, role_name: str | None = None) -> dict:
+    data = user.to_dict()
+    if role_name is None:
+        role = await RoleRepository(db).get(user.role)
+        role_name = role.name if role else user.role
+    data["role_name"] = role_name
+    memberships = await OrganizationService.user_memberships(db, user.id)
+    primary = next((item for item in memberships if item["membership_type"] == "primary"), None)
+    part_time = [item for item in memberships if item["membership_type"] == "part_time"]
+    if primary:
+        data["department_id"] = primary["department_id"]
+        data["department_name"] = primary["name"]
+        data["department_path"] = primary["path_label"]
+    else:
+        data["department_name"] = None
+        data["department_path"] = None
+    data["primary_department"] = primary
+    data["part_time_departments"] = part_time
+    data["managed_department_ids"] = await OrganizationService.admin_assignments(db, user.id)
+    return data
+
+
+async def _serialize_users(db: AsyncSession, users: list[User]) -> list[dict]:
+    if not users:
+        return []
+    user_ids = [user.id for user in users]
+    departments = {item["id"]: item for item in await OrganizationService.list_departments(db)}
+    membership_result = await db.execute(
+        select(UserDepartmentMembership).where(
+            UserDepartmentMembership.user_id.in_(user_ids), UserDepartmentMembership.status == "active"
+        )
+    )
+    membership_map: dict[int, list] = {}
+    for membership in membership_result.scalars().all():
+        membership_map.setdefault(membership.user_id, []).append(membership)
+    assignment_result = await db.execute(
+        select(DepartmentAdminAssignment.user_id, DepartmentAdminAssignment.department_id).where(
+            DepartmentAdminAssignment.user_id.in_(user_ids), DepartmentAdminAssignment.status == "active"
+        )
+    )
+    assignment_map: dict[int, list[int]] = {}
+    for user_id, department_id in assignment_result.all():
+        assignment_map.setdefault(int(user_id), []).append(int(department_id))
+    role_names = {role.key: role.name for role in await RoleRepository(db).list_all()}
+
+    result: list[dict] = []
+    for user in users:
+        data = user.to_dict()
+        data["role_name"] = role_names.get(user.role, user.role)
+        relations = []
+        for membership in membership_map.get(user.id, []):
+            department = departments.get(membership.department_id, {})
+            relations.append(
+                {
+                    "department_id": membership.department_id,
+                    "name": department.get("name"),
+                    "path": department.get("path", []),
+                    "path_label": department.get("path_label"),
+                    "membership_type": membership.membership_type,
+                }
+            )
+        primary = next((item for item in relations if item["membership_type"] == "primary"), None)
+        data["primary_department"] = primary
+        data["part_time_departments"] = [item for item in relations if item["membership_type"] == "part_time"]
+        data["department_name"] = primary["name"] if primary else None
+        data["department_path"] = primary["path_label"] if primary else None
+        data["managed_department_ids"] = assignment_map.get(user.id, [])
+        result.append(data)
+    return result
+
+
 @auth.get("/me", response_model=UserResponse)
 async def read_users_me(current_user: User = Depends(get_required_user), db: AsyncSession = Depends(get_db)):
     """获取当前登录用户的个人信息"""
-    user_dict = current_user.to_dict()
+    return await _serialize_user(db, current_user)
 
-    if current_user.department_id:
-        result = await db.execute(select(Department.name).filter(Department.id == current_user.department_id))
-        user_dict["department_name"] = result.scalar_one_or_none()
 
-    return user_dict
+@auth.get("/me/management-scope")
+async def read_my_management_scope(
+    current_user: User = Depends(require_permission("departments.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    department_ids = sorted(getattr(current_user, "managed_department_ids", set()))
+    departments = await OrganizationService.list_departments(db)
+    return {
+        "department_ids": department_ids,
+        "departments": [item for item in departments if item["id"] in department_ids],
+    }
 
 
 # 路由：更新个人资料
@@ -514,7 +613,7 @@ async def update_profile(
     if update_details:
         await log_operation(db, current_user.id, "更新个人资料", f"更新个人资料: {', '.join(update_details)}", request)
 
-    return current_user.to_dict()
+    return await _serialize_user(db, current_user)
 
 
 # 路由：创建新用户（管理员权限）
@@ -531,39 +630,19 @@ async def create_user(
     db: AsyncSession = Depends(get_db),
 ):
     """创建新用户（管理员权限）"""
-    user_repo = UserRepository()
-
-    # 验证用户名
     is_valid, error_msg = validate_username(user_data.username)
     if not is_valid:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=error_msg,
-        )
-
-    # 检查用户名是否已存在
-    users = await user_repo.list_users()
-    if any(u.username == user_data.username for u in users):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="用户名已存在",
-        )
-
-    # 检查手机号是否已存在（如果提供了）
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error_msg)
+    if (await db.execute(select(User.id).where(User.username == user_data.username))).scalar_one_or_none():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="用户名已存在")
     if user_data.phone_number:
-        if await user_repo.exists_by_phone(user_data.phone_number):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="手机号已存在",
-            )
+        if not is_valid_phone_number(user_data.phone_number):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="手机号格式不正确")
+        if (await db.execute(select(User.id).where(User.phone_number == user_data.phone_number))).scalar_one_or_none():
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="手机号已存在")
 
-    # 生成唯一的 uid
-    existing_uids = await user_repo.get_all_uids()
+    existing_uids = list((await db.execute(select(User.uid))).scalars().all())
     uid = generate_unique_uid(user_data.username, existing_uids)
-
-    # 创建新用户
-    hashed_password = AuthUtils.hash_password(user_data.password)
-
     role = await RoleRepository(db).get(user_data.role)
     if not role:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="角色不存在")
@@ -575,50 +654,46 @@ async def create_user(
             detail="管理员只能创建普通用户账户",
         )
 
-    # 部门分配逻辑
+    requested_primary = user_data.primary_department_id or user_data.department_id
     if current_user.role == "superadmin":
-        # 超级管理员创建用户时，使用指定的部门或默认部门
-        department_id = user_data.department_id
-        if department_id is None:
-            # 获取默认部门
-            dept_repo = DepartmentRepository()
-            departments = await dept_repo.list_departments()
-            default_dept = next((d for d in departments if d.name == "默认部门"), None)
-            department_id = default_dept.id if default_dept else None
+        if requested_primary is None:
+            default_department = await db.get(Department, 1)
+            if default_department is None:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="默认部门不存在")
+            requested_primary = default_department.id
     else:
-        # 普通管理员创建用户时，自动继承该管理员的部门
-        department_id = current_user.department_id
-        if department_id is None:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="管理员必须属于部门才能创建用户",
-            )
-        # 非超级管理员不能指定部门
-        if user_data.department_id is not None:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="普通管理员不能指定部门",
-            )
+        requested_primary = requested_primary or current_user.department_id
+        target_ids = [requested_primary, *user_data.part_time_department_ids]
+        if requested_primary is None or any(
+            not user_can_manage_department(current_user, int(department_id)) for department_id in target_ids
+        ):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="只能在授权管理的组织范围内创建用户")
 
-    new_user = await user_repo.create(
-        {
-            "username": user_data.username,
-            "uid": uid,
-            "phone_number": user_data.phone_number,
-            "password_hash": hashed_password,
-            "role": user_data.role,
-            "department_id": department_id,
-        }
+    new_user = User(
+        username=user_data.username,
+        uid=uid,
+        phone_number=user_data.phone_number,
+        password_hash=AuthUtils.hash_password(user_data.password),
+        role=user_data.role,
+        department_id=requested_primary,
     )
+    db.add(new_user)
+    await db.flush()
+    try:
+        await OrganizationService.set_user_memberships(
+            db,
+            user=new_user,
+            primary_department_id=int(requested_primary),
+            part_time_department_ids=user_data.part_time_department_ids,
+        )
+    except ValueError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
-    # 记录操作
     await log_operation(
         db, current_user.id, "创建用户", f"创建用户: {user_data.username}, 角色: {user_data.role}", request
     )
-
-    user_dict = new_user.to_dict()
-    user_dict["role_name"] = role.name
-    return user_dict
+    return await _serialize_user(db, new_user, role_name=role.name)
 
 
 # 路由：获取所有用户（管理员权限）
@@ -633,31 +708,32 @@ async def read_users(
 
     # 部门隔离逻辑
     if current_user.role == "superadmin":
-        # 超级管理员可以看到所有用户
         users_with_dept = await user_repo.list_with_department(skip=skip, limit=limit)
     else:
-        # 普通管理员只能看到本部门用户
         users_with_dept = await user_repo.list_with_department(
-            skip=skip, limit=limit, department_id=current_user.department_id
+            skip=skip,
+            limit=limit,
+            department_ids=set(getattr(current_user, "managed_department_ids", set())),
         )
-
-    users = []
-    role_names = {role.key: role.name for role in await RoleRepository(db).list_all()}
-    for user, dept_name in users_with_dept:
-        user_dict = user.to_dict()
-        user_dict["role_name"] = role_names.get(user.role, user.role)
-        user_dict["department_name"] = dept_name
-        users.append(user_dict)
-    return users
+    return await _serialize_users(db, [user for user, _ in users_with_dept])
 
 
-def _ensure_user_in_current_department(current_user: User, target_user: User) -> None:
+async def _ensure_user_in_current_department(db: AsyncSession, current_user: User, target_user: User) -> None:
     if current_user.role == "superadmin":
         return
-    if target_user.department_id != current_user.department_id:
+    manageable_membership = await db.execute(
+        select(UserDepartmentMembership.id)
+        .where(
+            UserDepartmentMembership.user_id == target_user.id,
+            UserDepartmentMembership.department_id.in_(set(getattr(current_user, "managed_department_ids", set()))),
+            UserDepartmentMembership.status == "active",
+        )
+        .limit(1)
+    )
+    if manageable_membership.scalar_one_or_none() is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="只能管理本部门用户",
+            detail="只能管理授权组织范围内的用户",
         )
 
 
@@ -666,23 +742,28 @@ async def read_user_access_options(
     skip: int = 0,
     limit: int = 1000,
     current_user: User = Depends(require_permission("users.read")),
+    db: AsyncSession = Depends(get_db),
 ):
     user_repo = UserRepository()
     if current_user.role == "superadmin":
         users_with_dept = await user_repo.list_with_department(skip=skip, limit=limit)
     else:
         users_with_dept = await user_repo.list_with_department(
-            skip=skip, limit=limit, department_id=current_user.department_id
+            skip=skip,
+            limit=limit,
+            department_ids=set(getattr(current_user, "managed_department_ids", set())),
         )
+    serialized = await _serialize_users(db, [user for user, _ in users_with_dept])
     return [
         {
-            "uid": user.uid,
-            "username": user.username,
-            "role": user.role,
-            "department_id": user.department_id,
-            "department_name": dept_name,
+            "uid": item["uid"],
+            "username": item["username"],
+            "role": item["role"],
+            "department_id": item["department_id"],
+            "department_name": item["department_name"],
+            "department_path": item["department_path"],
         }
-        for user, dept_name in users_with_dept
+        for item in serialized
     ]
 
 
@@ -700,11 +781,58 @@ async def read_user(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="用户不存在",
         )
-    _ensure_user_in_current_department(current_user, user)
-    user_dict = user.to_dict()
-    role = await RoleRepository(db).get(user.role)
-    user_dict["role_name"] = role.name if role else user.role
-    return user_dict
+    await _ensure_user_in_current_department(db, current_user, user)
+    return await _serialize_user(db, user)
+
+
+@auth.get("/users/{user_id}/managed-departments")
+async def read_managed_departments(
+    user_id: int,
+    current_user: User = Depends(require_permission("users.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    target = await db.get(User, user_id)
+    if target is None or target.is_deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
+    await _ensure_user_in_current_department(db, current_user, target)
+    department_ids = await OrganizationService.admin_assignments(db, target.id)
+    departments = await OrganizationService.list_departments(db)
+    return {
+        "department_ids": department_ids,
+        "departments": [item for item in departments if item["id"] in department_ids],
+    }
+
+
+@auth.put("/users/{user_id}/managed-departments")
+async def update_managed_departments(
+    user_id: int,
+    payload: ManagedDepartmentsUpdate,
+    request: Request,
+    current_user: User = Depends(require_permission("users.update")),
+    db: AsyncSession = Depends(get_db),
+):
+    if current_user.role != "superadmin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="只有超级管理员可以配置组织管理范围")
+    target = await db.get(User, user_id)
+    if target is None or target.is_deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
+    try:
+        await OrganizationService.set_admin_assignments(
+            db,
+            user=target,
+            department_ids=payload.department_ids,
+            granted_by=current_user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    await log_operation(
+        db,
+        current_user.id,
+        "更新组织管理范围",
+        f"用户 {target.uid} 管理节点: {sorted(set(payload.department_ids))}",
+        request,
+    )
+    return {"department_ids": await OrganizationService.admin_assignments(db, target.id)}
 
 
 # 路由：更新用户信息（管理员权限）
@@ -724,7 +852,7 @@ async def update_user(
             detail="用户不存在",
         )
 
-    _ensure_user_in_current_department(current_user, user)
+    await _ensure_user_in_current_department(db, current_user, user)
 
     # 检查权限
     if user.role == "superadmin" and current_user.role != "superadmin":
@@ -767,16 +895,6 @@ async def update_user(
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="角色不存在")
         if user_data.role == "superadmin" and user.role != "superadmin":
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不能新增超级管理员账户")
-        # 检查是否将管理员降级为普通用户
-        if user.role == "admin" and user_data.role == "user" and user.department_id is not None:
-            admin_count = await UserRepository().get_admin_count_in_department(
-                user.department_id, exclude_user_id=user_id
-            )
-            if admin_count <= 1:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="不能将管理员降级为普通用户，因为该用户是当前部门的唯一管理员",
-                )
         old_role = user.role
         user.role = user_data.role
         update_details.append(f"角色: {old_role} -> {user_data.role}")
@@ -789,37 +907,53 @@ async def update_user(
         user.avatar = user_data.avatar
         update_details.append(f"头像: {user_data.avatar or '已清空'}")
 
-    # 部门修改权限控制（只有超级管理员可以修改用户部门）
-    if user_data.department_id is not None and user_data.department_id != user.department_id:
-        if current_user.role != "superadmin":
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="只有超级管理员才能修改用户部门",
+    membership_fields = user_data.model_fields_set & {
+        "department_id",
+        "primary_department_id",
+        "part_time_department_ids",
+    }
+    if membership_fields:
+        existing_memberships = await OrganizationService.user_memberships(db, user.id)
+        existing_part_time_ids = [
+            item["department_id"] for item in existing_memberships if item["membership_type"] == "part_time"
+        ]
+        primary_department_id = (
+            user_data.primary_department_id
+            if "primary_department_id" in user_data.model_fields_set
+            else user_data.department_id
+            if "department_id" in user_data.model_fields_set
+            else user.department_id
+        )
+        part_time_department_ids = (
+            user_data.part_time_department_ids
+            if "part_time_department_ids" in user_data.model_fields_set
+            else existing_part_time_ids
+        )
+        if primary_department_id is None:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="用户必须设置主部门")
+        if current_user.role != "superadmin" and any(
+            not user_can_manage_department(current_user, int(department_id))
+            for department_id in [primary_department_id, *(part_time_department_ids or [])]
+        ):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="只能分配授权管理范围内的组织")
+        try:
+            await OrganizationService.set_user_memberships(
+                db,
+                user=user,
+                primary_department_id=int(primary_department_id),
+                part_time_department_ids=part_time_department_ids or [],
             )
-
-        # 检查该用户是否是当前部门的唯一管理员
-        if user.role == "admin" and user.department_id is not None:
-            admin_count = await UserRepository().get_admin_count_in_department(
-                user.department_id, exclude_user_id=user_id
-            )
-            if admin_count <= 1:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="不能修改该用户的部门，因为该用户是当前部门的唯一管理员",
-                )
-
-        user.department_id = user_data.department_id
-        update_details.append(f"部门ID: {user_data.department_id}")
+        except ValueError as exc:
+            await db.rollback()
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        update_details.append(f"主部门ID: {primary_department_id}")
 
     await db.commit()
 
     # 记录操作
     await log_operation(db, current_user.id, "更新用户", f"更新用户ID {user_id}: {', '.join(update_details)}", request)
 
-    user_dict = user.to_dict()
-    role = await RoleRepository(db).get(user.role)
-    user_dict["role_name"] = role.name if role else user.role
-    return user_dict
+    return await _serialize_user(db, user)
 
 
 # 路由：删除用户（管理员权限）
@@ -838,7 +972,7 @@ async def delete_user(
             detail="用户不存在",
         )
 
-    _ensure_user_in_current_department(current_user, user)
+    await _ensure_user_in_current_department(db, current_user, user)
 
     # 不能删除超级管理员账户
     if user.role == "superadmin":
@@ -852,20 +986,6 @@ async def delete_user(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="管理员只能删除普通用户账户",
         )
-
-    # 检查是否是部门的唯一管理员
-    if user.role == "admin" and current_user.role != "superadmin":
-        result = await db.execute(
-            select(func.count(User.id)).filter(
-                User.department_id == user.department_id, User.role == "admin", User.is_deleted == 0
-            )
-        )
-        admin_count = result.scalar()
-        if admin_count <= 1:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="不能删除部门唯一的管理员",
-            )
 
     # 不能删除自己的账户
     if user.id == current_user.id:
@@ -892,6 +1012,16 @@ async def delete_user(
     api_key_result = await db.execute(select(APIKey).filter(APIKey.user_id == user.id))
     for api_key in api_key_result.scalars().all():
         api_key.is_enabled = False
+    await db.execute(
+        update(UserDepartmentMembership)
+        .where(UserDepartmentMembership.user_id == user.id)
+        .values(status="inactive", updated_at=utc_now_naive())
+    )
+    await db.execute(
+        update(DepartmentAdminAssignment)
+        .where(DepartmentAdminAssignment.user_id == user.id)
+        .values(status="inactive", updated_at=utc_now_naive())
+    )
 
     await db.commit()
 

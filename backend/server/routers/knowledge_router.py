@@ -35,6 +35,7 @@ from yuxi.knowledge.utils.url_fetcher import fetch_url_content
 from yuxi.models.providers.cache import model_cache
 from yuxi.services.task_service import TaskContext, tasker
 from yuxi.services.permission_service import has_permission
+from yuxi.services.organization_scope_service import validate_v2_share_config
 from yuxi.services.resource_access_runtime_service import (
     assert_model_spec_allowed,
     hydrate_user_resource_access,
@@ -256,6 +257,11 @@ async def create_database(
             "department_ids": [],
             "user_uids": [str(current_user.uid)],
         }
+    if share_config is not None:
+        try:
+            await validate_v2_share_config(db, share_config)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     await hydrate_user_resource_access(db, current_user)
     if embedding_model_spec:
         assert_model_spec_allowed(current_user, embedding_model_spec, model_type="embedding")
@@ -452,6 +458,11 @@ async def update_database_info(
     """更新知识库信息"""
     if data.share_config is not None and not has_permission(current_user, "knowledge.share"):
         raise HTTPException(status_code=403, detail="缺少权限: knowledge.share")
+    if data.share_config is not None:
+        try:
+            await validate_v2_share_config(db, data.share_config)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     logger.debug(
         f"[update_database_info] 接收到的参数: name={data.name}, llm_model_spec={data.llm_model_spec}, "
         f"additional_params={data.additional_params}, share_config={data.share_config}"
@@ -578,18 +589,14 @@ async def index_graph_build(
         graph_status = await service.get_status(kb_id)
         if not graph_status.get("locked"):
             raise HTTPException(status_code=400, detail="请先确认并锁定图谱抽取配置")
-        graph_model_spec = ((graph_status.get("config") or {}).get("extractor_options") or {}).get(
-            "model_spec"
-        )
+        graph_model_spec = ((graph_status.get("config") or {}).get("extractor_options") or {}).get("model_spec")
         if graph_model_spec:
             assert_model_spec_allowed(current_user, graph_model_spec, model_type="chat")
         operator_uid = current_user.uid
 
         async def run_graph_index(context: TaskContext):
             async with pg_manager.get_async_session_context() as task_db:
-                result = await task_db.execute(
-                    select(User).where(User.uid == operator_uid, User.is_deleted == 0)
-                )
+                result = await task_db.execute(select(User).where(User.uid == operator_uid, User.is_deleted == 0))
                 task_user = result.scalar_one_or_none()
                 if task_user is None:
                     raise PermissionError("任务创建用户不存在或已停用")

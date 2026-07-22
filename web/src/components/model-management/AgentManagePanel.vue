@@ -71,10 +71,11 @@ const agentStats = computed(() => ({
     .length
 }))
 const canManageAgent = (agent) => !!agent?.can_manage
+const canUseAgent = (agent) => !!agent?.can_access
 const canEditAgent = (agent) =>
   userStore.hasPermission('agents.update') && canManageAgent(agent)
 const canDeleteAgent = (agent) =>
-  userStore.hasPermission('agents.delete') && canManageAgent(agent) && !isBuiltinAgent(agent)
+  userStore.hasPermission('agents.delete') && !!agent?.can_delete && !isBuiltinAgent(agent)
 const getAgentDefaultIconSrc = (agent) => (agent.id ? generatePixelAvatar(agent.id) : '')
 
 // ============ Agent Operations ============
@@ -93,7 +94,7 @@ const loadAgentBackends = async () => {
 const loadAgents = async () => {
   agentLoading.value = true
   try {
-    const response = await agentApi.getAgents({ includeSubagents: true })
+    const response = await agentApi.getAgents({ includeSubagents: true, manageableOnly: true })
     managedAgents.value = (response.agents || []).map(normalizeAgent)
   } catch (error) {
     message.error(error.message || '加载智能体失败')
@@ -234,7 +235,7 @@ defineExpose({
               </a-menu>
             </template>
 
-            <template v-if="group.key === 'agents'" #tags>
+            <template v-if="group.key === 'agents' && canUseAgent(agent)" #tags>
               <div class="agent-card-actions">
                 <a-button
                   type="primary"

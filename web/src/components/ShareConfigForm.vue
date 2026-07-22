@@ -4,7 +4,7 @@
       class="share-mode-cards"
       :class="`active-${config.access_level}`"
       role="radiogroup"
-      aria-label="共享设置"
+      :aria-label="`${actionLabel}权限设置`"
     >
       <div
         v-for="option in shareModeOptions"
@@ -47,7 +47,11 @@
                   <div class="selection-dropdown" @mousedown.stop @click.stop>
                     <div class="selection-dropdown-header">
                       <div class="selection-dropdown-title">
-                        {{ option.value === 'department' ? '可访问部门' : '可访问用户' }}
+                        {{
+                          option.value === 'department'
+                            ? `可${actionLabel}部门`
+                            : `可${actionLabel}用户`
+                        }}
                       </div>
                       <div class="selection-dropdown-subtitle">
                         {{ getAccessSummary(option.value) }}
@@ -124,6 +128,56 @@
         </div>
       </div>
     </div>
+    <div v-if="config.access_level === 'department'" class="organization-scope-options">
+      <div class="scope-option">
+        <div class="scope-option-title">排除子部门</div>
+        <div class="scope-option-description">
+          被排除部门及其整棵子树不再继承{{ actionLabel }}权限。
+        </div>
+        <a-select
+          v-model:value="config.excluded_department_ids"
+          mode="multiple"
+          show-search
+          option-filter-prop="label"
+          :disabled="disabled"
+          placeholder="可选；用于取消部分子树的权限"
+          class="scope-select"
+        >
+          <a-select-option
+            v-for="item in exclusionOptions"
+            :key="item.value"
+            :value="item.value"
+            :label="item.label"
+          >
+            {{ item.label }}
+          </a-select-option>
+        </a-select>
+      </div>
+      <div class="scope-option">
+        <div class="scope-option-title">指定用户例外</div>
+        <div class="scope-option-description">
+          即使所在部门被排除，这些用户仍可{{ actionLabel }}。
+        </div>
+        <a-select
+          v-model:value="config.user_uids"
+          mode="multiple"
+          show-search
+          option-filter-prop="label"
+          :disabled="disabled"
+          placeholder="可选；添加跨部门或排除范围内的用户"
+          class="scope-select"
+        >
+          <a-select-option
+            v-for="item in userOptions"
+            :key="item.value"
+            :value="item.value"
+            :label="item.label"
+          >
+            {{ item.label }}
+          </a-select-option>
+        </a-select>
+      </div>
+    </div>
     <a-alert
       v-if="disabled && disabledReason"
       type="info"
@@ -146,34 +200,15 @@ const departments = ref([])
 const users = ref([])
 const syncingFromProps = ref(false)
 
-const baseShareModeOptions = [
-  {
-    value: 'global',
-    title: '全局共享',
-    description: '所有用户都可以访问',
-    icon: Globe
-  },
-  {
-    value: 'department',
-    title: '部门共享',
-    description: '选中的部门成员可以访问',
-    icon: Building2
-  },
-  {
-    value: 'user',
-    title: '指定人',
-    description: '选中的用户可以访问',
-    icon: Users
-  }
-]
-
 const props = defineProps({
   modelValue: {
     type: Object,
     required: true,
     default: () => ({
       access_level: 'global',
+      org_scope_version: 2,
       department_ids: [],
+      excluded_department_ids: [],
       user_uids: []
     })
   },
@@ -192,6 +227,10 @@ const props = defineProps({
   allowedAccessLevels: {
     type: Array,
     default: () => ['global', 'department', 'user']
+  },
+  actionLabel: {
+    type: String,
+    default: '访问'
   }
 })
 
@@ -199,7 +238,9 @@ const emit = defineEmits(['update:modelValue'])
 
 const config = reactive({
   access_level: 'global',
+  org_scope_version: 2,
   department_ids: [],
+  excluded_department_ids: [],
   user_uids: []
 })
 
@@ -220,17 +261,35 @@ const normalizedAllowedAccessLevels = computed(() => {
   )
   return allowed.length ? allowed : ['global']
 })
+const actionLabel = computed(() => props.actionLabel.trim() || '访问')
 const shareModeOptions = computed(() =>
-  baseShareModeOptions.filter((option) =>
-    normalizedAllowedAccessLevels.value.includes(option.value)
-  )
+  [
+    {
+      value: 'global',
+      title: '全局共享',
+      description: `所有用户都可以${actionLabel.value}`,
+      icon: Globe
+    },
+    {
+      value: 'department',
+      title: '部门共享',
+      description: `选中部门及其全部下级可以${actionLabel.value}`,
+      icon: Building2
+    },
+    {
+      value: 'user',
+      title: '指定人',
+      description: `选中的用户可以${actionLabel.value}`,
+      icon: Users
+    }
+  ].filter((option) => normalizedAllowedAccessLevels.value.includes(option.value))
 )
 
 const departmentOptions = computed(() =>
   departments.value.map((dept) => {
     const value = Number(dept.id)
     return {
-      label: dept.name,
+      label: dept.path_label || dept.name,
       value,
       disabled: value === currentDepartmentId.value
     }
@@ -239,7 +298,11 @@ const departmentOptions = computed(() =>
 
 const userOptions = computed(() =>
   users.value.map((user) => ({
-    label: user.department_name ? `${user.username}（${user.department_name}）` : user.username,
+    label: user.department_path
+      ? `${user.username}（${user.department_path}）`
+      : user.department_name
+        ? `${user.username}（${user.department_name}）`
+        : user.username,
     value: user.uid,
     disabled: user.uid === currentUserUid.value
   }))
@@ -250,6 +313,20 @@ const normalizeDepartmentIds = (ids) =>
 
 const normalizeUserUids = (uids) =>
   Array.from(new Set((uids || []).map((uid) => String(uid).trim()).filter(Boolean)))
+
+const exclusionOptions = computed(() => {
+  const included = new Set(config.department_ids)
+  const byId = new Map(departments.value.map((dept) => [Number(dept.id), dept]))
+  return departmentOptions.value.filter((option) => {
+    if (included.has(option.value)) return false
+    let parentId = byId.get(option.value)?.parent_id
+    while (parentId != null) {
+      if (included.has(Number(parentId))) return true
+      parentId = byId.get(Number(parentId))?.parent_id
+    }
+    return false
+  })
+})
 
 const ensureCurrentDepartment = () => {
   if (!props.autoSelectUserDept || !currentDepartmentId.value) return
@@ -268,18 +345,25 @@ const ensureCurrentUser = () => {
 const normalizeActiveConfig = () => {
   if (config.access_level === 'global') {
     config.department_ids = []
+    config.excluded_department_ids = []
     config.user_uids = []
     return
   }
 
   if (config.access_level === 'department') {
+    config.org_scope_version = 2
     config.department_ids = normalizeDepartmentIds(config.department_ids)
-    config.user_uids = []
+    const allowedExclusions = new Set(exclusionOptions.value.map((item) => item.value))
+    config.excluded_department_ids = normalizeDepartmentIds(
+      config.excluded_department_ids
+    ).filter((id) => allowedExclusions.has(id))
+    config.user_uids = normalizeUserUids(config.user_uids)
     ensureCurrentDepartment()
     return
   }
 
   config.department_ids = []
+  config.excluded_department_ids = []
   config.user_uids = normalizeUserUids(config.user_uids)
   ensureCurrentUser()
 }
@@ -295,6 +379,9 @@ const initConfig = () => {
     ? requestedAccessLevel
     : normalizedAllowedAccessLevels.value[0]
   config.department_ids = normalizeDepartmentIds(props.modelValue?.department_ids)
+  config.excluded_department_ids = normalizeDepartmentIds(
+    props.modelValue?.excluded_department_ids
+  )
   config.user_uids = normalizeUserUids(props.modelValue?.user_uids)
   normalizeActiveConfig()
   nextTick(() => {
@@ -305,9 +392,17 @@ const initConfig = () => {
 const emitConfig = () => {
   emit('update:modelValue', {
     access_level: config.access_level,
+    ...(config.access_level === 'department' ? { org_scope_version: 2 } : {}),
     department_ids:
       config.access_level === 'department' ? normalizeDepartmentIds(config.department_ids) : [],
-    user_uids: config.access_level === 'user' ? normalizeUserUids(config.user_uids) : []
+    excluded_department_ids:
+      config.access_level === 'department'
+        ? normalizeDepartmentIds(config.excluded_department_ids)
+        : [],
+    user_uids:
+      config.access_level === 'user' || config.access_level === 'department'
+        ? normalizeUserUids(config.user_uids)
+        : []
   })
 }
 
@@ -319,10 +414,14 @@ const setAccessLevel = (accessLevel) => {
 }
 
 const getAccessSummary = (accessLevel) => {
-  if (accessLevel === 'global') return '所有用户可访问'
-  if (accessLevel === 'department') return `${config.department_ids.length} 个部门可访问`
-  if (accessLevel === 'user' && config.user_uids.length === 1) return '仅自己可访问'
-  return `${config.user_uids.length} 个用户可访问`
+  if (accessLevel === 'global') return `所有用户可${actionLabel.value}`
+  if (accessLevel === 'department') {
+    return `${config.department_ids.length} 棵部门子树可${actionLabel.value}`
+  }
+  if (accessLevel === 'user' && config.user_uids.length === 1) {
+    return `仅自己可${actionLabel.value}`
+  }
+  return `${config.user_uids.length} 个用户可${actionLabel.value}`
 }
 
 const getAccessCount = (accessLevel) => {
@@ -417,11 +516,14 @@ const validate = () => {
   }
 
   if (config.access_level === 'department') {
-    if (!currentDepartmentId.value) {
+    if (props.autoSelectUserDept && !currentDepartmentId.value) {
       return { valid: false, message: '您不属于任何部门，无法使用部门共享模式' }
     }
-    if (!config.department_ids.includes(currentDepartmentId.value)) {
+    if (props.autoSelectUserDept && !config.department_ids.includes(currentDepartmentId.value)) {
       return { valid: false, message: '您所在的部门必须在可访问部门范围内' }
+    }
+    if (!config.department_ids.length) {
+      return { valid: false, message: '部门共享至少需要选择一个组织节点' }
     }
     return { valid: true, message: '' }
   }
@@ -462,6 +564,39 @@ defineExpose({
 
   .share-disabled-alert {
     margin-top: 10px;
+  }
+
+  .organization-scope-options {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    padding: 14px;
+    margin-top: 12px;
+    border: 1px solid var(--gray-150);
+    border-radius: 10px;
+    background: var(--gray-25);
+
+    @media (max-width: 768px) {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  .scope-option-title {
+    color: var(--gray-800);
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .scope-option-description {
+    min-height: 34px;
+    margin: 3px 0 8px;
+    color: var(--gray-600);
+    font-size: 12px;
+    line-height: 1.4;
+  }
+
+  .scope-select {
+    width: 100%;
   }
 
   &.disabled .share-mode-card {

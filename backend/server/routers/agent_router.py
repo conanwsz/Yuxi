@@ -14,6 +14,7 @@ from yuxi.repositories.agent_repository import (
     AgentRepository,
     is_builtin_agent,
     user_can_access_agent,
+    user_can_delete_agent,
     user_can_manage_agent,
 )
 from yuxi.services.agent_run_service import (
@@ -28,6 +29,7 @@ from yuxi.services.agent_run_service import (
 from yuxi.services.input_message_service import build_chat_input_message
 from yuxi.storage.postgres.models_business import User
 from yuxi.services.permission_service import authorization_role
+from yuxi.services.organization_scope_service import validate_v2_share_config
 
 agent_router = APIRouter(prefix="/agent", tags=["agent"])
 
@@ -41,6 +43,7 @@ class AgentCreate(BaseModel):
     pics: list[str] | None = None
     config_json: dict | None = None
     share_config: dict | None = None
+    manage_config: dict | None = None
     is_subagent: bool | None = None
     set_default: bool = False
 
@@ -52,6 +55,7 @@ class AgentUpdate(BaseModel):
     pics: list[str] | None = None
     config_json: dict | None = None
     share_config: dict | None = None
+    manage_config: dict | None = None
     is_subagent: bool | None = None
 
 
@@ -109,9 +113,7 @@ async def _serialize_agent(
         include_configurable_items=include_configurable_items,
         backend_info_cache=backend_info_cache,
     )
-    data["config_json"] = _filter_agent_config_json(
-        item.backend_id, data.get("config_json"), authorization_role(user)
-    )
+    data["config_json"] = _filter_agent_config_json(item.backend_id, data.get("config_json"), authorization_role(user))
     return data
 
 
@@ -136,12 +138,17 @@ async def get_agent_backend(
 @agent_router.get("")
 async def list_agents(
     include_subagents: bool = Query(False),
+    manageable_only: bool = Query(False),
     current_user: User = Depends(require_permission("agents.read")),
     db: AsyncSession = Depends(get_db),
 ):
     repo = AgentRepository(db)
     await repo.ensure_default_agent()
-    items = await repo.list_visible(user=current_user, include_subagent_definitions=include_subagents)
+    items = (
+        await repo.list_manageable(user=current_user, include_subagent_definitions=include_subagents)
+        if manageable_only
+        else await repo.list_visible(user=current_user, include_subagent_definitions=include_subagents)
+    )
     backend_info_cache: dict[tuple[str, bool, str], dict] = {}
     agents = [await _serialize_agent(repo, item, current_user, backend_info_cache=backend_info_cache) for item in items]
     return {"agents": agents}
@@ -177,6 +184,10 @@ async def create_agent(
             backend_id=payload.backend_id,
             config_json=payload.config_json,
         )
+        if payload.share_config:
+            await validate_v2_share_config(db, payload.share_config)
+        if payload.manage_config:
+            await validate_v2_share_config(db, payload.manage_config)
         item = await repo.create(
             name=payload.name,
             slug=payload.slug,
@@ -186,6 +197,7 @@ async def create_agent(
             pics=payload.pics,
             config_json=validated_config_json,
             share_config=payload.share_config,
+            manage_config=payload.manage_config,
             is_default=payload.set_default,
             is_subagent=payload.is_subagent,
             created_by=str(current_user.uid),
@@ -204,8 +216,8 @@ async def get_agent(
 ):
     repo = AgentRepository(db)
     agent_slug = agent_id  # 兼容既有路径参数名；这里实际是 Agent.slug。
-    item = await repo.get_visible_by_slug(slug=agent_slug, user=current_user, kind="any")
-    if not item:
+    item = await repo.get_by_slug(agent_slug)
+    if not item or not (user_can_access_agent(current_user, item) or user_can_manage_agent(current_user, item)):
         raise HTTPException(status_code=404, detail="智能体不存在")
     return {"agent": await _serialize_agent(repo, item, current_user, include_configurable_items=True)}
 
@@ -219,7 +231,7 @@ async def update_agent(
 ):
     repo = AgentRepository(db)
     agent_slug = agent_id  # 兼容既有路径参数名；这里实际是 Agent.slug。
-    item = await repo.get_visible_by_slug(slug=agent_slug, user=current_user, kind="any")
+    item = await repo.get_by_slug(agent_slug)
     if not item:
         raise HTTPException(status_code=404, detail="智能体不存在")
     if not user_can_manage_agent(current_user, item):
@@ -241,6 +253,10 @@ async def update_agent(
             if payload.config_json is not None
             else None
         )
+        if payload.share_config:
+            await validate_v2_share_config(db, payload.share_config)
+        if payload.manage_config:
+            await validate_v2_share_config(db, payload.manage_config)
 
         updated = await repo.update(
             item,
@@ -250,6 +266,7 @@ async def update_agent(
             pics=payload.pics,
             config_json=validated_config_json,
             share_config=payload.share_config,
+            manage_config=payload.manage_config,
             is_subagent=payload.is_subagent,
             updated_by=str(current_user.uid),
             updater=current_user,
@@ -267,10 +284,10 @@ async def delete_agent(
 ):
     repo = AgentRepository(db)
     agent_slug = agent_id  # 兼容既有路径参数名；这里实际是 Agent.slug。
-    item = await repo.get_visible_by_slug(slug=agent_slug, user=current_user, kind="any")
+    item = await repo.get_by_slug(agent_slug)
     if not item:
         raise HTTPException(status_code=404, detail="智能体不存在")
-    if not user_can_manage_agent(current_user, item):
+    if not user_can_delete_agent(current_user, item):
         raise HTTPException(status_code=403, detail="不能删除非自己创建的智能体")
     if is_builtin_agent(item):
         raise HTTPException(status_code=409, detail="内置智能体不能删除")

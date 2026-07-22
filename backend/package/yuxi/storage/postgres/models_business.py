@@ -6,6 +6,7 @@ from typing import Any
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     Column,
     DateTime,
     Float,
@@ -15,6 +16,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
@@ -33,19 +35,42 @@ class Department(Base):
     __tablename__ = "departments"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    name = Column(String(50), nullable=False, unique=True, index=True)
+    name = Column(String(50), nullable=False, index=True)
     description = Column(String(255), nullable=True)
+    parent_id = Column(Integer, ForeignKey("departments.id", ondelete="RESTRICT"), nullable=True, index=True)
+    status = Column(String(16), nullable=False, default="active", index=True)
+    sort_order = Column(Integer, nullable=False, default=0)
+    is_system = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime, default=utc_now_naive)
+    updated_at = Column(DateTime, default=utc_now_naive, onupdate=utc_now_naive)
+    archived_at = Column(DateTime, nullable=True)
 
     # 关联关系
-    users = relationship("User", back_populates="department", cascade="all, delete-orphan")
+    parent = relationship("Department", remote_side=[id], back_populates="children")
+    children = relationship("Department", back_populates="parent")
+    users = relationship("User", back_populates="department")
+    memberships = relationship("UserDepartmentMembership", back_populates="department", cascade="all, delete-orphan")
+    admin_assignments = relationship(
+        "DepartmentAdminAssignment", back_populates="department", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        CheckConstraint("parent_id IS NULL OR parent_id <> id", name="ck_departments_not_self_parent"),
+        CheckConstraint("status IN ('active', 'inactive')", name="ck_departments_status"),
+    )
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "name": self.name,
             "description": self.description,
+            "parent_id": self.parent_id,
+            "status": self.status,
+            "sort_order": self.sort_order,
+            "is_system": bool(self.is_system),
             "created_at": format_utc_datetime(self.created_at),
+            "updated_at": format_utc_datetime(self.updated_at),
+            "archived_at": format_utc_datetime(self.archived_at),
         }
 
 
@@ -112,6 +137,15 @@ class User(Base):
 
     # 关联部门
     department = relationship("Department", back_populates="users")
+    department_memberships = relationship(
+        "UserDepartmentMembership", back_populates="user", cascade="all, delete-orphan"
+    )
+    department_admin_assignments = relationship(
+        "DepartmentAdminAssignment",
+        foreign_keys="DepartmentAdminAssignment.user_id",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
     role_definition = relationship("Role", back_populates="users")
 
     # 关联 API Keys
@@ -171,6 +205,70 @@ class User(Base):
         self.login_failed_count = 0
         self.last_failed_login = None
         self.login_locked_until = None
+
+
+class DepartmentClosure(Base):
+    """组织节点祖先与后代的传递闭包。"""
+
+    __tablename__ = "department_closure"
+
+    ancestor_id = Column(Integer, ForeignKey("departments.id", ondelete="CASCADE"), primary_key=True)
+    descendant_id = Column(Integer, ForeignKey("departments.id", ondelete="CASCADE"), primary_key=True)
+    depth = Column(Integer, nullable=False)
+
+    __table_args__ = (CheckConstraint("depth >= 0", name="ck_department_closure_depth"),)
+
+
+class UserDepartmentMembership(Base):
+    """用户主部门与兼职部门关系。"""
+
+    __tablename__ = "user_department_memberships"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    department_id = Column(Integer, ForeignKey("departments.id", ondelete="RESTRICT"), nullable=False, index=True)
+    membership_type = Column(String(16), nullable=False)
+    status = Column(String(16), nullable=False, default="active")
+    created_at = Column(DateTime, default=utc_now_naive)
+    updated_at = Column(DateTime, default=utc_now_naive, onupdate=utc_now_naive)
+
+    user = relationship("User", back_populates="department_memberships")
+    department = relationship("Department", back_populates="memberships")
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "department_id", name="uq_user_department_membership"),
+        CheckConstraint("membership_type IN ('primary', 'part_time')", name="ck_user_department_membership_type"),
+        CheckConstraint("status IN ('active', 'inactive')", name="ck_user_department_membership_status"),
+        Index(
+            "uq_user_primary_department",
+            "user_id",
+            unique=True,
+            postgresql_where=text("membership_type = 'primary' AND status = 'active'"),
+        ),
+    )
+
+
+class DepartmentAdminAssignment(Base):
+    """用户对组织子树的显式管理范围。"""
+
+    __tablename__ = "department_admin_assignments"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    department_id = Column(Integer, ForeignKey("departments.id", ondelete="RESTRICT"), nullable=False, index=True)
+    status = Column(String(16), nullable=False, default="active")
+    granted_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime, default=utc_now_naive)
+    updated_at = Column(DateTime, default=utc_now_naive, onupdate=utc_now_naive)
+
+    user = relationship("User", foreign_keys=[user_id], back_populates="department_admin_assignments")
+    department = relationship("Department", back_populates="admin_assignments")
+    grantor = relationship("User", foreign_keys=[granted_by])
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "department_id", name="uq_department_admin_assignment"),
+        CheckConstraint("status IN ('active', 'inactive')", name="ck_department_admin_assignment_status"),
+    )
 
 
 class ExternalIdentity(Base):
@@ -253,6 +351,7 @@ class Agent(Base):
     pics = Column(JSON, nullable=False, default=list)
     config_json = Column(JSON, nullable=False, default=dict)
     share_config = Column(JSON, nullable=False, default=dict)
+    manage_config = Column(JSON, nullable=False, default=dict)
 
     is_default = Column(Boolean, nullable=False, default=False, index=True)
     is_subagent = Column(Boolean, nullable=False, default=False, index=True)
@@ -276,6 +375,7 @@ class Agent(Base):
             "pics": self.pics or [],
             "config_json": self.config_json or {},
             "share_config": self.share_config or {},
+            "manage_config": self.manage_config or {},
             "is_default": bool(self.is_default),
             "is_subagent": bool(self.is_subagent),
             "created_by": self.created_by,

@@ -1,72 +1,107 @@
-"""
-部门管理路由
-提供部门的增删改查接口，仅超级管理员可访问
-"""
+"""组织架构管理路由。"""
 
-import re
+from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status, Request
-from pydantic import BaseModel
-from sqlalchemy import delete as sqlalchemy_delete, select, func
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from pydantic import BaseModel, Field
+from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from yuxi.storage.postgres.models_business import APIKey, Department, User
-from yuxi.repositories.department_repository import DepartmentRepository
-from yuxi.repositories.user_repository import UserRepository
 from server.utils.auth_middleware import get_db, require_permission
-from yuxi.utils.auth_utils import AuthUtils
 from yuxi.services.operation_log_service import log_operation
-from yuxi.services.user_identity_service import is_valid_phone_number
+from yuxi.services.organization_scope_service import user_can_manage_department
+from yuxi.services.organization_service import OrganizationService
+from yuxi.storage.postgres.models_business import (
+    APIKey,
+    Department,
+    DepartmentAdminAssignment,
+    DepartmentClosure,
+    User,
+    UserDepartmentMembership,
+)
 
-# 创建路由器
 department = APIRouter(prefix="/departments", tags=["department"])
 
 
-# =============================================================================
-# === 请求和响应模型 ===
-# =============================================================================
-
-
 class DepartmentCreate(BaseModel):
-    """创建部门请求"""
-
     name: str
     description: str | None = None
-    # 必需的管理员信息
-    admin_uid: str
-    admin_password: str
-    admin_phone: str | None = None
+    parent_id: int | None = None
+    sort_order: int = 0
 
 
 class DepartmentUpdate(BaseModel):
-    """更新部门请求"""
-
     name: str | None = None
     description: str | None = None
+    sort_order: int | None = None
+
+
+class DepartmentMove(BaseModel):
+    parent_id: int = Field(..., gt=0)
 
 
 class DepartmentResponse(BaseModel):
-    """部门响应"""
-
     id: int
     name: str
     description: str | None = None
-    created_at: str
+    parent_id: int | None = None
+    root_id: int
+    depth: int
+    path: list[str]
+    path_label: str
+    status: str
+    sort_order: int
+    is_system: bool
+    created_at: str | None
+    updated_at: str | None
+    archived_at: str | None
+    direct_user_count: int = 0
+    total_user_count: int = 0
     user_count: int = 0
 
 
-# =============================================================================
-# === 部门管理路由 ===
-# =============================================================================
+def _visible_departments(current_user: User, items: list[dict]) -> list[dict]:
+    if current_user.role == "superadmin":
+        return items
+    managed_ids = set(getattr(current_user, "managed_department_ids", set()))
+    return [item for item in items if item["id"] in managed_ids]
+
+
+async def _get_department_or_404(db: AsyncSession, department_id: int) -> Department:
+    item = await db.get(Department, department_id)
+    if item is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="组织节点不存在")
+    return item
+
+
+def _ensure_manage_scope(current_user: User, department_id: int) -> None:
+    if not user_can_manage_department(current_user, department_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权管理该组织节点")
 
 
 @department.get("", response_model=list[DepartmentResponse])
 async def get_departments(
-    current_user: User = Depends(require_permission("departments.read")), db: AsyncSession = Depends(get_db)
+    current_user: User = Depends(require_permission("departments.read")),
+    db: AsyncSession = Depends(get_db),
 ):
-    """获取所有部门列表（管理员可访问）"""
-    dept_repo = DepartmentRepository()
-    return await dept_repo.list_with_user_count()
+    return _visible_departments(current_user, await OrganizationService.list_departments(db))
+
+
+@department.get("/tree")
+async def get_department_tree(
+    current_user: User = Depends(require_permission("departments.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    visible = _visible_departments(current_user, await OrganizationService.list_departments(db))
+    nodes = {item["id"]: {**item, "children": []} for item in visible}
+    roots: list[dict] = []
+    for node in nodes.values():
+        parent = nodes.get(node["parent_id"])
+        if parent is None:
+            roots.append(node)
+        else:
+            parent["children"].append(node)
+    return roots
 
 
 @department.get("/{department_id}", response_model=DepartmentResponse)
@@ -75,174 +110,165 @@ async def get_department(
     current_user: User = Depends(require_permission("departments.read")),
     db: AsyncSession = Depends(get_db),
 ):
-    """获取指定部门详情"""
-    result = await db.execute(select(Department).filter(Department.id == department_id))
-    department = result.scalar_one_or_none()
-
-    if not department:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="部门不存在")
-
-    # 获取部门下用户数量
-    user_count_result = await db.execute(
-        select(func.count(User.id)).filter(User.department_id == department_id, User.is_deleted == 0)
-    )
-    user_count = user_count_result.scalar()
-
-    return {**department.to_dict(), "user_count": user_count}
+    _ensure_manage_scope(current_user, department_id)
+    items = await OrganizationService.list_departments(db)
+    item = next((value for value in items if value["id"] == department_id), None)
+    if item is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="组织节点不存在")
+    return item
 
 
 @department.post("", response_model=DepartmentResponse, status_code=status.HTTP_201_CREATED)
 async def create_department(
-    department_data: DepartmentCreate,
+    payload: DepartmentCreate,
     request: Request,
     current_user: User = Depends(require_permission("departments.create")),
     db: AsyncSession = Depends(get_db),
 ):
-    """创建新部门，同时创建该部门的管理员"""
-    dept_repo = DepartmentRepository()
-    user_repo = UserRepository()
-
-    # 检查部门名称是否已存在
-    if await dept_repo.exists_by_name(department_data.name):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="部门名称已存在")
-
-    # 验证管理员 uid 格式
-    admin_uid = department_data.admin_uid
-    if not re.match(r"^[a-zA-Z0-9_]+$", admin_uid):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="用户ID只能包含字母、数字和下划线",
+    if payload.parent_id is None and current_user.role != "superadmin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="只有超级管理员可以创建根主体")
+    if payload.parent_id is not None:
+        _ensure_manage_scope(current_user, payload.parent_id)
+    try:
+        item = await OrganizationService.create_department(
+            db,
+            name=payload.name,
+            description=payload.description,
+            parent_id=payload.parent_id,
+            sort_order=payload.sort_order,
         )
-
-    if len(admin_uid) < 3 or len(admin_uid) > 20:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="用户ID长度必须在3-20个字符之间",
-        )
-
-    # 检查 uid 是否已存在
-    if await user_repo.exists_by_uid(admin_uid):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="用户ID已存在",
-        )
-
-    # 检查手机号是否已存在（如果提供了）
-    admin_phone = department_data.admin_phone
-    if admin_phone:
-        if not is_valid_phone_number(admin_phone):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="手机号格式不正确")
-        if await user_repo.exists_by_phone(admin_phone):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="手机号已存在",
-            )
-
-    # 创建部门
-    new_department = await dept_repo.create(
-        {
-            "name": department_data.name,
-            "description": department_data.description,
-        }
-    )
-
-    # 创建管理员用户
-    hashed_password = AuthUtils.hash_password(department_data.admin_password)
-    await user_repo.create(
-        {
-            "username": admin_uid,
-            "uid": admin_uid,
-            "phone_number": admin_phone,
-            "password_hash": hashed_password,
-            "role": "admin",
-            "department_id": new_department.id,
-        }
-    )
-
-    # 记录操作
-    await log_operation(
-        db, current_user.id, "创建部门", f"创建部门: {department_data.name}，并创建管理员: {admin_uid}", request
-    )
-
-    return {**new_department.to_dict(), "user_count": 1}
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    await log_operation(db, current_user.id, "创建组织节点", f"创建组织节点: {item.name}", request)
+    return next(value for value in await OrganizationService.list_departments(db) if value["id"] == item.id)
 
 
 @department.put("/{department_id}", response_model=DepartmentResponse)
 async def update_department(
     department_id: int,
-    department_data: DepartmentUpdate,
+    payload: DepartmentUpdate,
     request: Request,
     current_user: User = Depends(require_permission("departments.update")),
     db: AsyncSession = Depends(get_db),
 ):
-    """更新部门信息"""
-    result = await db.execute(select(Department).filter(Department.id == department_id))
-    department = result.scalar_one_or_none()
-
-    if not department:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="部门不存在")
-
-    # 如果要修改名称，检查新名称是否已存在
-    if department_data.name and department_data.name != department.name:
-        result = await db.execute(select(Department).filter(Department.name == department_data.name))
-        existing = result.scalar_one_or_none()
-        if existing:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="部门名称已存在")
-        department.name = department_data.name
-
-    if department_data.description is not None:
-        department.description = department_data.description
-
-    await db.commit()
-    await db.refresh(department)
-
-    # 记录操作
-    await log_operation(db, current_user.id, "更新部门", f"更新部门: {department.name}", request)
-
-    # 获取部门下用户数量
-    user_count_result = await db.execute(
-        select(func.count(User.id)).filter(User.department_id == department_id, User.is_deleted == 0)
-    )
-    user_count = user_count_result.scalar()
-
-    return {**department.to_dict(), "user_count": user_count}
+    _ensure_manage_scope(current_user, department_id)
+    item = await _get_department_or_404(db, department_id)
+    try:
+        await OrganizationService.update_department(
+            db,
+            item,
+            name=payload.name,
+            description=payload.description,
+            sort_order=payload.sort_order,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    await log_operation(db, current_user.id, "更新组织节点", f"更新组织节点: {item.name}", request)
+    return next(value for value in await OrganizationService.list_departments(db) if value["id"] == item.id)
 
 
-@department.delete("/{department_id}", status_code=status.HTTP_200_OK)
+@department.post("/{department_id}/move", response_model=DepartmentResponse)
+async def move_department(
+    department_id: int,
+    payload: DepartmentMove,
+    request: Request,
+    current_user: User = Depends(require_permission("departments.update")),
+    db: AsyncSession = Depends(get_db),
+):
+    _ensure_manage_scope(current_user, department_id)
+    _ensure_manage_scope(current_user, payload.parent_id)
+    item = await _get_department_or_404(db, department_id)
+    try:
+        await OrganizationService.move_department(db, item, payload.parent_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    await log_operation(db, current_user.id, "移动组织节点", f"移动组织节点: {item.name}", request)
+    return next(value for value in await OrganizationService.list_departments(db) if value["id"] == item.id)
+
+
+@department.post("/{department_id}/archive", response_model=DepartmentResponse)
+async def archive_department(
+    department_id: int,
+    request: Request,
+    current_user: User = Depends(require_permission("departments.delete")),
+    db: AsyncSession = Depends(get_db),
+):
+    _ensure_manage_scope(current_user, department_id)
+    item = await _get_department_or_404(db, department_id)
+    try:
+        await OrganizationService.archive_department(db, item)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    await log_operation(db, current_user.id, "停用组织节点", f"停用组织节点: {item.name}", request)
+    return next(value for value in await OrganizationService.list_departments(db) if value["id"] == item.id)
+
+
+@department.post("/{department_id}/restore", response_model=DepartmentResponse)
+async def restore_department(
+    department_id: int,
+    request: Request,
+    current_user: User = Depends(require_permission("departments.update")),
+    db: AsyncSession = Depends(get_db),
+):
+    _ensure_manage_scope(current_user, department_id)
+    item = await _get_department_or_404(db, department_id)
+    try:
+        await OrganizationService.restore_department(db, item)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    await log_operation(db, current_user.id, "恢复组织节点", f"恢复组织节点: {item.name}", request)
+    return next(value for value in await OrganizationService.list_departments(db) if value["id"] == item.id)
+
+
+@department.delete("/{department_id}")
 async def delete_department(
     department_id: int,
     request: Request,
     current_user: User = Depends(require_permission("departments.delete")),
     db: AsyncSession = Depends(get_db),
 ):
-    """删除部门"""
-    # 检查部门是否存在
-    result = await db.execute(select(Department).filter(Department.id == department_id))
-    department = result.scalar_one_or_none()
-
-    if not department:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="部门不存在")
-
-    if department.id == 1:  # 默认部门的ID为1
+    if current_user.role != "superadmin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="只有超级管理员可以物理删除组织节点")
+    item = await _get_department_or_404(db, department_id)
+    if item.is_system:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="默认部门不允许删除")
+    reference_checks = [
+        select(Department.id).where(Department.parent_id == department_id).limit(1),
+        select(UserDepartmentMembership.id).where(UserDepartmentMembership.department_id == department_id).limit(1),
+        select(DepartmentAdminAssignment.id).where(DepartmentAdminAssignment.department_id == department_id).limit(1),
+        select(APIKey.id).where(APIKey.department_id == department_id).limit(1),
+    ]
+    for query in reference_checks:
+        if (await db.execute(query)).scalar_one_or_none() is not None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="组织节点仍有下级或业务引用，不能物理删除")
 
-    department_name = department.name
-    result = await db.execute(select(User).filter(User.department_id == department_id))
-    department_users = result.scalars().all()
+    resource_reference = await db.execute(
+        text(
+            """
+            SELECT 1 FROM (
+                SELECT share_config::jsonb AS share_config FROM agents
+                UNION ALL SELECT manage_config::jsonb FROM agents
+                UNION ALL SELECT share_config::jsonb FROM skills
+                UNION ALL SELECT share_config::jsonb FROM knowledge_bases
+            ) resources
+            WHERE COALESCE(resources.share_config, '{}'::jsonb) @>
+                  jsonb_build_object('department_ids', jsonb_build_array(CAST(:department_id AS INTEGER)))
+               OR COALESCE(resources.share_config, '{}'::jsonb) @>
+                  jsonb_build_object(
+                      'excluded_department_ids',
+                      jsonb_build_array(CAST(:department_id AS INTEGER))
+                  )
+            LIMIT 1
+            """
+        ),
+        {"department_id": department_id},
+    )
+    if resource_reference.scalar_one_or_none() is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="组织节点仍被资源授权引用，不能物理删除")
 
-    if department_users:
-        for user in department_users:
-            user.department_id = 1  # 将被删除部门的用户移至默认部门
-
-    await db.execute(sqlalchemy_delete(APIKey).where(APIKey.department_id == department_id))
-    await db.delete(department)
+    name = item.name
+    await db.execute(delete(DepartmentClosure).where(DepartmentClosure.descendant_id == department_id))
+    await db.delete(item)
     await db.commit()
-
-    # 记录操作
-    if department_users:
-        detail = f"删除部门: {department_name}，迁移 {len(department_users)} 个用户到默认部门"
-    else:
-        detail = f"删除部门: {department_name}"
-    await log_operation(db, current_user.id, "删除部门", detail, request)
-
-    return {"success": True, "message": "部门已删除"}
+    await log_operation(db, current_user.id, "删除组织节点", f"物理删除组织节点: {name}", request)
+    return {"success": True, "message": "组织节点已删除"}

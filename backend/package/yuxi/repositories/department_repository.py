@@ -5,7 +5,7 @@ from typing import Any
 from sqlalchemy import func, select
 
 from yuxi.storage.postgres.manager import pg_manager
-from yuxi.storage.postgres.models_business import Department
+from yuxi.storage.postgres.models_business import Department, DepartmentClosure
 
 
 class DepartmentRepository:
@@ -54,6 +54,8 @@ class DepartmentRepository:
         async with pg_manager.get_async_session_context() as session:
             department = Department(**data)
             session.add(department)
+            await session.flush()
+            session.add(DepartmentClosure(ancestor_id=department.id, descendant_id=department.id, depth=0))
         return department
 
     async def update(self, id: int, data: dict[str, Any]) -> Department | None:

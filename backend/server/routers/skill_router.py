@@ -39,6 +39,7 @@ from yuxi.agents.skills.service import (
 )
 from yuxi.agents.skills.remote_install import list_remote_skills, search_remote_skills
 from yuxi.storage.postgres.models_business import User
+from yuxi.services.organization_scope_service import validate_v2_share_config
 from yuxi.utils.logging_config import logger
 
 skills = APIRouter(prefix="/system/skills", tags=["skills"])
@@ -207,6 +208,8 @@ async def confirm_skill_install_draft_route(
     db: AsyncSession = Depends(get_db),
 ):
     try:
+        if payload.share_config is not None:
+            await validate_v2_share_config(db, payload.share_config)
         results = await confirm_skill_install_draft(
             db,
             draft_id=draft_id,
@@ -307,6 +310,8 @@ async def update_skill_share_config_route(
     db: AsyncSession = Depends(get_db),
 ):
     try:
+        if payload.share_config is not None:
+            await validate_v2_share_config(db, payload.share_config)
         item = await update_skill_share_config(db, slug=slug, share_config=payload.share_config, operator=current_user)
         return {"success": True, "data": _serialize_skill_for_user(item, current_user)}
     except ValueError as e:

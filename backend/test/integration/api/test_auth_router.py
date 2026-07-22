@@ -27,16 +27,31 @@ async def _create_department_with_admin(test_client, headers, label: str) -> dic
         json={
             "name": f"pytest_{label}_{suffix}",
             "description": "pytest managed department",
-            "admin_uid": admin_uid,
-            "admin_password": admin_password,
         },
         headers=headers,
     )
     assert response.status_code == 201, response.text
 
+    admin_response = await test_client.post(
+        "/api/auth/users",
+        json={
+            "username": admin_uid,
+            "password": admin_password,
+            "role": "admin",
+            "primary_department_id": response.json()["id"],
+        },
+        headers=headers,
+    )
+    assert admin_response.status_code == 200, admin_response.text
+    managed_response = await test_client.put(
+        f"/api/auth/users/{admin_response.json()['id']}/managed-departments",
+        json={"department_ids": [response.json()["id"]]},
+        headers=headers,
+    )
+    assert managed_response.status_code == 200, managed_response.text
+
     login_response = await test_client.post(
-        "/api/auth/token",
-        data={"username": admin_uid, "password": admin_password},
+        "/api/auth/token", data={"username": admin_response.json()["uid"], "password": admin_password}
     )
     assert login_response.status_code == 200, login_response.text
 
@@ -69,8 +84,10 @@ async def _cleanup_user(test_client, headers, user_id: int) -> None:
 
 
 async def _cleanup_department(test_client, headers, department_id: int) -> None:
+    archive = await test_client.post(f"/api/departments/{department_id}/archive", headers=headers)
+    assert archive.status_code in {200, 404}, archive.text
     response = await test_client.delete(f"/api/departments/{department_id}", headers=headers)
-    assert response.status_code in {200, 404}, response.text
+    assert response.status_code in {200, 404, 409}, response.text
 
 
 async def test_login_with_invalid_credentials(test_client):

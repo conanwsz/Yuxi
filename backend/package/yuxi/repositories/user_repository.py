@@ -4,11 +4,16 @@ from datetime import UTC
 from datetime import datetime as dt
 from typing import Annotated, Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuxi.storage.postgres.manager import pg_manager
-from yuxi.storage.postgres.models_business import APIKey, User
+from yuxi.storage.postgres.models_business import (
+    APIKey,
+    DepartmentAdminAssignment,
+    User,
+    UserDepartmentMembership,
+)
 
 
 def _utc_now() -> dt:
@@ -60,7 +65,12 @@ class UserRepository:
             return list(result.scalars().all())
 
     async def list_with_department(
-        self, skip: int = 0, limit: int = 100, department_id: int | None = None, role: str | None = None
+        self,
+        skip: int = 0,
+        limit: int = 100,
+        department_id: int | None = None,
+        department_ids: set[int] | None = None,
+        role: str | None = None,
     ) -> Annotated[list[tuple[User, str | None]], "用户列表，包含部门名称"]:
         """获取用户列表，包含部门名称"""
         async with pg_manager.get_async_session_context() as session:
@@ -73,6 +83,12 @@ class UserRepository:
             )
             if department_id is not None:
                 query = query.where(User.department_id == department_id)
+            if department_ids is not None:
+                membership_user_ids = select(UserDepartmentMembership.user_id).where(
+                    UserDepartmentMembership.department_id.in_(department_ids),
+                    UserDepartmentMembership.status == "active",
+                )
+                query = query.where(User.id.in_(membership_user_ids))
             if role is not None:
                 query = query.where(User.role == role)
             query = query.order_by(User.id.asc()).offset(skip).limit(limit)
@@ -84,6 +100,16 @@ class UserRepository:
         async with pg_manager.get_async_session_context() as session:
             user = User(**data)
             session.add(user)
+            await session.flush()
+            if user.department_id is not None:
+                session.add(
+                    UserDepartmentMembership(
+                        user_id=user.id,
+                        department_id=user.department_id,
+                        membership_type="primary",
+                        status="active",
+                    )
+                )
             await session.commit()
             await session.refresh(user)
         return user
@@ -120,6 +146,16 @@ class UserRepository:
             api_key_result = await session.execute(select(APIKey).where(APIKey.user_id == user.id))
             for api_key in api_key_result.scalars().all():
                 api_key.is_enabled = False
+            await session.execute(
+                update(UserDepartmentMembership)
+                .where(UserDepartmentMembership.user_id == user.id)
+                .values(status="inactive", updated_at=_utc_now())
+            )
+            await session.execute(
+                update(DepartmentAdminAssignment)
+                .where(DepartmentAdminAssignment.user_id == user.id)
+                .values(status="inactive", updated_at=_utc_now())
+            )
         return True
 
     async def exists_by_uid(self, uid: str) -> bool:

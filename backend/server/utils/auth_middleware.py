@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_business import APIKey, User
 from yuxi.services.permission_service import has_permission, resolve_user_permissions
+from yuxi.services.organization_scope_service import hydrate_user_organization_scope
 from yuxi.utils.datetime_utils import utc_now_naive
 
 from yuxi.utils.auth_utils import AuthUtils
@@ -77,6 +78,7 @@ async def get_current_user(
             api_key_obj.last_used_at = utc_now_naive()
             await db.commit()
             await resolve_user_permissions(db, user)
+            await hydrate_user_organization_scope(db, user)
         return user
 
     # JWT Token 认证
@@ -103,7 +105,8 @@ async def get_current_user(
             headers={"X-Lock-Remaining": str(user.get_remaining_lock_time())},
         )
 
-    return await resolve_user_permissions(db, user)
+    await resolve_user_permissions(db, user)
+    return await hydrate_user_organization_scope(db, user)
 
 
 # 获取已登录用户（抛出401如果未登录）

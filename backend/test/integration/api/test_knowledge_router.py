@@ -30,14 +30,23 @@ async def _create_test_department(test_client, admin_headers, prefix="pytest_dep
         json={
             "name": f"{prefix}_{suffix}",
             "description": "pytest department",
-            "admin_uid": admin_uid,
-            "admin_password": admin_password,
         },
         headers=admin_headers,
     )
     assert response.status_code == 201, response.text
     payload = response.json()
-    payload["admin_uid"] = admin_uid
+    admin = await test_client.post(
+        "/api/auth/users",
+        json={
+            "username": admin_uid,
+            "password": admin_password,
+            "role": "admin",
+            "primary_department_id": payload["id"],
+        },
+        headers=admin_headers,
+    )
+    assert admin.status_code == 200, admin.text
+    payload["admin_uid"] = admin.json()["uid"]
     payload["admin_password"] = admin_password
     return payload
 
@@ -84,8 +93,10 @@ async def _delete_department_with_admin(test_client, admin_headers, department):
     admin_user_id = await _find_user_id_by_uid(test_client, admin_headers, department["admin_uid"])
     if admin_user_id:
         await _delete_user_by_id(test_client, admin_headers, admin_user_id)
+    archive = await test_client.post(f"/api/departments/{department['id']}/archive", headers=admin_headers)
+    assert archive.status_code in (200, 404), archive.text
     response = await test_client.delete(f"/api/departments/{department['id']}", headers=admin_headers)
-    assert response.status_code in (200, 404), response.text
+    assert response.status_code in (200, 404, 409), response.text
 
 
 async def _create_test_database(test_client, admin_headers, share_config=None):
@@ -595,9 +606,7 @@ async def test_user_share_config_filters_accessible_databases(test_client, admin
         await _delete_department_with_admin(test_client, admin_headers, department_b)
 
 
-async def test_department_admin_cannot_manage_other_department_knowledge_by_id(
-    test_client, admin_headers
-):
+async def test_department_admin_cannot_manage_other_department_knowledge_by_id(test_client, admin_headers):
     department_a = await _create_test_department(test_client, admin_headers, "pytest_scope_a")
     department_b = await _create_test_department(test_client, admin_headers, "pytest_scope_b")
     database = None
@@ -630,28 +639,20 @@ async def test_department_admin_cannot_manage_other_department_knowledge_by_id(
                 json={"name": "forbidden-update"},
                 headers=department_a_headers,
             ),
-            await test_client.delete(
-                f"/api/knowledge/databases/{kb_id}", headers=department_a_headers
-            ),
-            await test_client.get(
-                f"/api/knowledge/databases/{kb_id}/documents", headers=department_a_headers
-            ),
+            await test_client.delete(f"/api/knowledge/databases/{kb_id}", headers=department_a_headers),
+            await test_client.get(f"/api/knowledge/databases/{kb_id}/documents", headers=department_a_headers),
             await test_client.get(
                 f"/api/knowledge/databases/{kb_id}/graph-build/status",
                 headers=department_a_headers,
             ),
-            await test_client.get(
-                f"/api/evaluation/databases/{kb_id}/datasets", headers=department_a_headers
-            ),
+            await test_client.get(f"/api/evaluation/databases/{kb_id}/datasets", headers=department_a_headers),
         ]
         assert all(response.status_code == 404 for response in attempts), [
             (response.status_code, response.text) for response in attempts
         ]
     finally:
         if database:
-            await test_client.delete(
-                f"/api/knowledge/databases/{database['kb_id']}", headers=admin_headers
-            )
+            await test_client.delete(f"/api/knowledge/databases/{database['kb_id']}", headers=admin_headers)
         await _delete_department_with_admin(test_client, admin_headers, department_a)
         await _delete_department_with_admin(test_client, admin_headers, department_b)
 

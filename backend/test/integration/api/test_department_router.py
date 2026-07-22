@@ -1,6 +1,4 @@
-"""
-Integration tests for department management API routes.
-"""
+"""组织架构 API 集成测试。"""
 
 from __future__ import annotations
 
@@ -11,89 +9,116 @@ import pytest
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 
-async def test_superadmin_can_delete_department_with_users(test_client, admin_headers):
+async def _create_department(test_client, headers, *, name, parent_id=None):
+    response = await test_client.post(
+        "/api/departments",
+        json={"name": name, "parent_id": parent_id},
+        headers=headers,
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+async def _archive_and_delete(test_client, headers, department_id):
+    archive = await test_client.post(f"/api/departments/{department_id}/archive", headers=headers)
+    if archive.status_code not in {200, 409, 404}:
+        pytest.fail(archive.text)
+    if archive.status_code != 404:
+        deleted = await test_client.delete(f"/api/departments/{department_id}", headers=headers)
+        assert deleted.status_code in {200, 404, 409}, deleted.text
+
+
+async def test_organization_hierarchy_memberships_and_archive_rules(test_client, admin_headers):
     suffix = uuid.uuid4().hex[:8]
-    department_payload = {
-        "name": f"pytest_department_{suffix}",
-        "description": "integration test department",
-        "admin_uid": f"pta_{suffix}",
-        "admin_password": "RouterDept123!",
-    }
-    user_payload = {
-        "username": f"dept_user_{suffix}",
-        "password": "RouterUser123!",
-        "role": "user",
-    }
-
-    department_id = None
-    created_user_id = None
-    department_admin_id = None
-
+    root_a = root_b = child_a = child_b = same_a = same_b = None
+    user_id = None
     try:
-        create_department_response = await test_client.post(
-            "/api/departments",
-            json=department_payload,
-            headers=admin_headers,
-        )
-        assert create_department_response.status_code == 201, create_department_response.text
-        department_id = create_department_response.json()["id"]
+        root_a = await _create_department(test_client, admin_headers, name=f"公司A-{suffix}")
+        root_b = await _create_department(test_client, admin_headers, name=f"公司B-{suffix}")
+        child_a = await _create_department(test_client, admin_headers, name=f"研发-{suffix}", parent_id=root_a["id"])
+        child_b = await _create_department(test_client, admin_headers, name=f"产品-{suffix}", parent_id=root_a["id"])
+        same_a = await _create_department(test_client, admin_headers, name="同名部门", parent_id=child_a["id"])
+        same_b = await _create_department(test_client, admin_headers, name="同名部门", parent_id=root_b["id"])
 
-        create_user_response = await test_client.post(
+        tree_response = await test_client.get("/api/departments/tree", headers=admin_headers)
+        assert tree_response.status_code == 200, tree_response.text
+        roots = tree_response.json()
+        root_a_tree = next(item for item in roots if item["id"] == root_a["id"])
+        assert {item["id"] for item in root_a_tree["children"]} >= {child_a["id"], child_b["id"]}
+        assert same_a["path_label"].endswith(f"研发-{suffix} / 同名部门")
+        assert same_b["path_label"].endswith(f"公司B-{suffix} / 同名部门")
+
+        user_response = await test_client.post(
             "/api/auth/users",
-            json={**user_payload, "department_id": department_id},
+            json={
+                "username": f"组织用户-{suffix}",
+                "password": "RouterUser123!",
+                "role": "user",
+                "primary_department_id": child_a["id"],
+                "part_time_department_ids": [child_b["id"]],
+            },
             headers=admin_headers,
         )
-        assert create_user_response.status_code == 200, create_user_response.text
-        created_user_id = create_user_response.json()["id"]
+        assert user_response.status_code == 200, user_response.text
+        user = user_response.json()
+        user_id = user["id"]
+        assert user["primary_department"]["department_id"] == child_a["id"]
+        assert [item["department_id"] for item in user["part_time_departments"]] == [child_b["id"]]
 
-        list_users_response = await test_client.get("/api/auth/users", headers=admin_headers)
-        assert list_users_response.status_code == 200, list_users_response.text
-        users_before_delete = list_users_response.json()
-        department_admin = next((user for user in users_before_delete if user["uid"] == department_payload["admin_uid"]), None)
-        assert department_admin is not None
-        department_admin_id = department_admin["id"]
-
-        delete_department_response = await test_client.delete(f"/api/departments/{department_id}", headers=admin_headers)
-        assert delete_department_response.status_code == 200, delete_department_response.text
-        assert delete_department_response.json()["success"] is True
-        department_id = None
-
-        deleted_department_response = await test_client.get(
-            f"/api/departments/{create_department_response.json()['id']}",
+        cross_root_membership = await test_client.put(
+            f"/api/auth/users/{user_id}",
+            json={"part_time_department_ids": [same_b["id"]]},
             headers=admin_headers,
         )
-        assert deleted_department_response.status_code == 404, deleted_department_response.text
+        assert cross_root_membership.status_code == 422, cross_root_membership.text
 
-        list_users_after_delete_response = await test_client.get("/api/auth/users", headers=admin_headers)
-        assert list_users_after_delete_response.status_code == 200, list_users_after_delete_response.text
-        users_after_delete = list_users_after_delete_response.json()
+        cross_root_move = await test_client.post(
+            f"/api/departments/{child_a['id']}/move",
+            json={"parent_id": root_b["id"]},
+            headers=admin_headers,
+        )
+        assert cross_root_move.status_code == 422, cross_root_move.text
 
-        # 删除部门后用户迁移到默认部门（代码中默认部门固定为 id=1，其名称可被用户修改）
-        migrated_admin = next((user for user in users_after_delete if user["id"] == department_admin_id), None)
-        assert migrated_admin is not None
-        assert migrated_admin["department_id"] == 1
+        archive_with_member = await test_client.post(f"/api/departments/{child_a['id']}/archive", headers=admin_headers)
+        assert archive_with_member.status_code == 409, archive_with_member.text
 
-        migrated_user = next((user for user in users_after_delete if user["id"] == created_user_id), None)
-        assert migrated_user is not None
-        assert migrated_user["department_id"] == 1
+        move_user = await test_client.put(
+            f"/api/auth/users/{user_id}",
+            json={
+                "primary_department_id": child_b["id"],
+                "part_time_department_ids": [],
+            },
+            headers=admin_headers,
+        )
+        assert move_user.status_code == 200, move_user.text
+
+        # 仍有启用中的子节点时不能停用父节点。
+        archive_with_child = await test_client.post(f"/api/departments/{child_a['id']}/archive", headers=admin_headers)
+        assert archive_with_child.status_code == 409, archive_with_child.text
+
+        await _archive_and_delete(test_client, admin_headers, same_a["id"])
+        same_a = None
+        archive = await test_client.post(f"/api/departments/{child_a['id']}/archive", headers=admin_headers)
+        assert archive.status_code == 200, archive.text
+        assert archive.json()["status"] == "inactive"
+        restore = await test_client.post(f"/api/departments/{child_a['id']}/restore", headers=admin_headers)
+        assert restore.status_code == 200, restore.text
+        assert restore.json()["status"] == "active"
     finally:
-        if department_admin_id is not None:
-            await test_client.delete(f"/api/auth/users/{department_admin_id}", headers=admin_headers)
-        if created_user_id is not None:
-            await test_client.delete(f"/api/auth/users/{created_user_id}", headers=admin_headers)
-        if department_id is not None:
-            await test_client.delete(f"/api/departments/{department_id}", headers=admin_headers)
+        if user_id is not None:
+            await test_client.delete(f"/api/auth/users/{user_id}", headers=admin_headers)
+        for item in [same_a, same_b, child_a, child_b, root_a, root_b]:
+            if item is not None:
+                await _archive_and_delete(test_client, admin_headers, item["id"])
 
 
-async def test_superadmin_cannot_delete_default_department(test_client, admin_headers):
+async def test_default_department_is_protected(test_client, admin_headers):
     departments_response = await test_client.get("/api/departments", headers=admin_headers)
     assert departments_response.status_code == 200, departments_response.text
-    departments = departments_response.json()
+    default_department = next(item for item in departments_response.json() if item["is_system"])
 
-    # 默认部门在代码中固定为 id=1（受保护不可删除），其名称可被用户修改，故按 id 定位
-    default_department = next((department for department in departments if department["id"] == 1), None)
-    assert default_department is not None
+    archive = await test_client.post(f"/api/departments/{default_department['id']}/archive", headers=admin_headers)
+    assert archive.status_code == 409, archive.text
 
-    delete_response = await test_client.delete(f"/api/departments/{default_department['id']}", headers=admin_headers)
-    assert delete_response.status_code == 400, delete_response.text
-    assert delete_response.json()["detail"] == "默认部门不允许删除"
+    deleted = await test_client.delete(f"/api/departments/{default_department['id']}", headers=admin_headers)
+    assert deleted.status_code == 400, deleted.text

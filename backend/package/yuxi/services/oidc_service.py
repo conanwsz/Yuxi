@@ -24,7 +24,13 @@ from sqlalchemy.exc import IntegrityError
 from yuxi.repositories.role_repository import RoleRepository
 from yuxi.services.operation_log_service import log_operation
 from yuxi.services.permission_service import resolve_user_permissions
-from yuxi.storage.postgres.models_business import Department, ExternalIdentity, User
+from yuxi.storage.postgres.models_business import (
+    Department,
+    DepartmentClosure,
+    ExternalIdentity,
+    User,
+    UserDepartmentMembership,
+)
 from yuxi.utils.auth_utils import AuthUtils
 from yuxi.utils.datetime_utils import utc_now_naive
 from yuxi.utils.logging_config import logger
@@ -605,6 +611,8 @@ async def get_or_create_oidc_department(
     )
     db.add(dept)
     try:
+        await db.flush()
+        db.add(DepartmentClosure(ancestor_id=dept.id, descendant_id=dept.id, depth=0))
         await db.commit()
         await db.refresh(dept)
         logger.info(f"Created OIDC department: {final_dept_name}")
@@ -855,9 +863,7 @@ async def build_unique_oidc_username(db, preferred_username: str, sub: str) -> s
     )
 
 
-async def create_oidc_user(
-    db, user_info: dict, issuer: str, email: str, department_id: int | None = None
-) -> User:
+async def create_oidc_user(db, user_info: dict, issuer: str, email: str, department_id: int | None = None) -> User:
     """创建 OIDC 用户"""
     sub = user_info["sub"]
     preferred_username = user_info["name"] or user_info["username"]
@@ -935,6 +941,15 @@ async def create_oidc_user(
             )
             db.add(new_user)
             await db.flush()
+            if department_id is not None:
+                db.add(
+                    UserDepartmentMembership(
+                        user_id=new_user.id,
+                        department_id=department_id,
+                        membership_type="primary",
+                        status="active",
+                    )
+                )
             db.add(ExternalIdentity(issuer=issuer, subject=sub, user_id=new_user.id, email=email))
             await db.commit()
             await db.refresh(new_user)

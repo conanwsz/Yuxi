@@ -251,6 +251,33 @@ export const useUserStore = defineStore('user', () => {
     }
   }
 
+  async function getManagedDepartments(userId) {
+    const response = await fetch(`/api/auth/users/${userId}/managed-departments`, {
+      headers: { ...getAuthHeaders() }
+    })
+    if (!response.ok) {
+      const error = await response.json()
+      throw new Error(error.detail || '获取管理范围失败')
+    }
+    return await response.json()
+  }
+
+  async function updateManagedDepartments(userId, departmentIds) {
+    const response = await fetch(`/api/auth/users/${userId}/managed-departments`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        ...getAuthHeaders()
+      },
+      body: JSON.stringify({ department_ids: departmentIds })
+    })
+    if (!response.ok) {
+      const error = await response.json()
+      throw new Error(error.detail || '更新管理范围失败')
+    }
+    return await response.json()
+  }
+
   async function deleteUser(userId) {
     try {
       const response = await fetch(`/api/auth/users/${userId}`, {
@@ -424,6 +451,8 @@ export const useUserStore = defineStore('user', () => {
     getUsers,
     createUser,
     updateUser,
+    getManagedDepartments,
+    updateManagedDepartments,
     deleteUser,
     validateUsernameAndGenerateUid,
     uploadAvatar,

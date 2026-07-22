@@ -4,9 +4,8 @@
 
 import {
   apiAdminGet,
-  apiSuperAdminGet,
-  apiSuperAdminPost,
-  apiSuperAdminPut,
+  apiAdminPost,
+  apiAdminPut,
   apiSuperAdminDelete
 } from './base'
 
@@ -20,13 +19,17 @@ export const getDepartments = () => {
   return apiAdminGet(BASE_URL)
 }
 
+export const getDepartmentTree = () => {
+  return apiAdminGet(`${BASE_URL}/tree`)
+}
+
 /**
  * 获取部门详情
  * @param {number} departmentId - 部门ID
  * @returns {Promise<Object>} 部门详情
  */
 export const getDepartment = (departmentId) => {
-  return apiSuperAdminGet(`${BASE_URL}/${departmentId}`)
+  return apiAdminGet(`${BASE_URL}/${departmentId}`)
 }
 
 /**
@@ -37,7 +40,7 @@ export const getDepartment = (departmentId) => {
  * @returns {Promise<Object>} 创建的部门
  */
 export const createDepartment = (data) => {
-  return apiSuperAdminPost(BASE_URL, data)
+  return apiAdminPost(BASE_URL, data)
 }
 
 /**
@@ -49,7 +52,19 @@ export const createDepartment = (data) => {
  * @returns {Promise<Object>} 更新后的部门
  */
 export const updateDepartment = (departmentId, data) => {
-  return apiSuperAdminPut(`${BASE_URL}/${departmentId}`, data)
+  return apiAdminPut(`${BASE_URL}/${departmentId}`, data)
+}
+
+export const moveDepartment = (departmentId, parentId) => {
+  return apiAdminPost(`${BASE_URL}/${departmentId}/move`, { parent_id: parentId })
+}
+
+export const archiveDepartment = (departmentId) => {
+  return apiAdminPost(`${BASE_URL}/${departmentId}/archive`)
+}
+
+export const restoreDepartment = (departmentId) => {
+  return apiAdminPost(`${BASE_URL}/${departmentId}/restore`)
 }
 
 /**
@@ -63,8 +78,12 @@ export const deleteDepartment = (departmentId) => {
 
 export const departmentApi = {
   getDepartments,
+  getDepartmentTree,
   getDepartment,
   createDepartment,
   updateDepartment,
+  moveDepartment,
+  archiveDepartment,
+  restoreDepartment,
   deleteDepartment
 }
