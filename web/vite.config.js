@@ -13,7 +13,7 @@ export default defineConfig(({ mode }) => {
       }
     },
     server: {
-      allowedHosts: [/\.cn-np\.com$/],
+      allowedHosts: ['superchuchu.t.cn-np.com', /\.cn-np\.com$/],
       proxy: {
         '^/api': {
           target: env.VITE_API_URL || 'http://api:5050',
