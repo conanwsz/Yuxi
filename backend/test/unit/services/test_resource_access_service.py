@@ -6,12 +6,14 @@ import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from yuxi.services.resource_access_service import (
+    KNOWLEDGE_BASE_TOOL_SLUGS,
     ResourceAccessValidationError,
     attach_user_resource_access,
     build_resource_catalog,
     default_resource_access_all,
     get_default_model_for_type,
     normalize_resource_access,
+    normalize_stored_resource_access,
     resolve_user_resource_access,
 )
 from yuxi.storage.postgres.models_business import Base, MCPServer, ModelProvider, Role, User
@@ -34,7 +36,16 @@ async def resource_access_session():
 async def test_build_resource_catalog_lists_models_tools_and_mcp(resource_access_session, monkeypatch):
     monkeypatch.setattr(
         "yuxi.services.resource_access_service.get_tool_metadata",
-        lambda: [{"slug": "search_web", "name": "搜索网络", "description": "desc", "category": "buildin", "tags": []}],
+        lambda: [
+            {"slug": "search_web", "name": "搜索网络", "description": "desc", "category": "buildin", "tags": []},
+            {
+                "slug": "find_kb_document",
+                "name": "find_kb_document",
+                "description": "knowledge tool",
+                "category": "knowledge",
+                "tags": ["知识库"],
+            },
+        ],
     )
     resource_access_session.add(
         ModelProvider(
@@ -80,6 +91,18 @@ async def test_build_resource_catalog_lists_models_tools_and_mcp(resource_access
         }
     ]
     assert catalog["mcp_servers"][0]["key"] == "chart"
+
+
+def test_stored_resource_access_removes_knowledge_base_tools_from_tool_allowlist():
+    access = {
+        "models": {"mode": "none", "allowed": [], "defaults": {}},
+        "tools": {"mode": "selected", "allowed": ["search_web", *KNOWLEDGE_BASE_TOOL_SLUGS]},
+        "mcp_servers": {"mode": "none", "allowed": []},
+    }
+
+    normalized = normalize_stored_resource_access(access)
+
+    assert normalized["tools"]["allowed"] == ["search_web"]
 
 
 def test_normalize_resource_access_requires_defaults_for_selected_model_types():

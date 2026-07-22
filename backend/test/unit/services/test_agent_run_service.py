@@ -46,6 +46,25 @@ def test_openai_content_parts_build_and_restore_multimodal_message():
     assert restored.require_langchain_message().content == raw_message["content"]
 
 
+@pytest.mark.asyncio
+async def test_validate_agent_context_skips_unavailable_skills(monkeypatch: pytest.MonkeyPatch):
+    async def fake_hydrate_user_resource_access(db, user):
+        del db
+        return user
+
+    monkeypatch.setattr(
+        agent_run_service,
+        "hydrate_user_resource_access",
+        fake_hydrate_user_resource_access,
+    )
+
+    await agent_run_service.validate_agent_context_resource_access(
+        db=object(),
+        user=SimpleNamespace(role="user"),
+        context={"skills": ["deep-research"]},
+    )
+
+
 def test_prepare_run_input_message_keeps_invocation_meta_namespaced():
     input_message = agent_run_service._prepare_run_input_message(
         run_type="chat",

@@ -7,7 +7,7 @@ Yuxi 使用全局单角色 RBAC。每个用户通过 `users.role` 关联一个 `
 受控操作必须同时通过三层检查：
 
 1. 动作权限：使用 `require_permission("resource.action")` 校验当前角色是否允许执行该动作。
-2. 资源权限：模型、内置 Tool 和 MCP 服务必须属于角色的 `resource_access` 允许集合。
+2. 资源权限：模型、通用内置 Tool 和 MCP 服务必须属于角色的 `resource_access` 允许集合；`knowledge-base` Skill 的知识库工具不进入 Tool 白名单，继续跟随知识库数据范围。
 3. 数据范围：继续校验部门、资源创建者和 `share_config`。拥有动作或资源权限不代表可以操作其他部门或未共享的数据。
 
 知识库的按 ID 更新、删除、文档、图谱和评估接口必须先检查对应动作权限，再通过知识库可访问性检查。Agent 与 Skill 同样保留创建者和共享范围约束。
@@ -18,7 +18,7 @@ Yuxi 使用全局单角色 RBAC。每个用户通过 `users.role` 关联一个 `
 
 每类资源使用 `all`、`selected`、`none` 三态配置。`selected` 模式只允许显式列出的稳定标识：模型使用 `provider_id:model_id`，内置 Tool 使用工具 `slug`，MCP 使用服务 `slug`。超级管理员始终按 `all` 处理；历史角色升级时保持 `all`，新建自定义角色默认 `none`。
 
-资源权限必须在选择列表、配置保存和实际运行三个边界重复执行。共享 Agent 按实际调用者判断；角色降权后，旧 Agent 配置、恢复任务和已排队任务不得继续使用被收回的资源。Skill 只有在其直接与传递 Tool/MCP 依赖全部获准时才可选择和运行。
+资源权限必须在选择列表、配置保存和实际运行三个边界重复执行。共享 Agent 按实际调用者判断；角色降权后，旧 Agent 配置、恢复任务和已排队任务不得继续使用被收回的资源。Skill 只有在其直接与传递 Tool/MCP 依赖全部获准时才会保留在本次运行上下文中；不可用 Skill 会被跳过，不阻断 Agent 的其余能力，也不得借此扩张 Tool/MCP 权限。`list_kbs`、`query_kb`、`find_kb_document`、`open_kb_document`、`get_mindmap`、`search_file` 除外，它们由知识库功能权限、部门/共享范围和会话启用范围共同约束。
 
 受限角色可为 `chat`、`embedding`、`rerank` 分别指定角色默认模型。显式模型、Agent 配置模型和角色默认模型都必须通过同一授权服务；不允许静默替换越权模型或裁剪越权工具。
 

@@ -12,6 +12,16 @@ from yuxi.storage.postgres.models_business import MCPServer, ModelProvider, Role
 
 RESOURCE_ACCESS_MODES = {"all", "selected", "none"}
 MODEL_RESOURCE_TYPES = ("chat", "embedding", "rerank")
+KNOWLEDGE_BASE_TOOL_SLUGS = frozenset(
+    {
+        "list_kbs",
+        "query_kb",
+        "find_kb_document",
+        "open_kb_document",
+        "get_mindmap",
+        "search_file",
+    }
+)
 
 
 def get_tool_metadata(*args, **kwargs):
@@ -50,6 +60,9 @@ def normalize_stored_resource_access(value: Any) -> dict[str, Any]:
     normalized = default_resource_access_none()
     normalized["models"] = _normalize_stored_model_group(data.get("models"))
     normalized["tools"] = _normalize_stored_basic_group(data.get("tools"))
+    normalized["tools"]["allowed"] = [
+        slug for slug in normalized["tools"]["allowed"] if slug not in KNOWLEDGE_BASE_TOOL_SLUGS
+    ]
     normalized["mcp_servers"] = _normalize_stored_basic_group(data.get("mcp_servers"))
     return normalized
 
@@ -144,6 +157,7 @@ def _build_tool_catalog() -> list[dict[str, Any]]:
                 "enabled": True,
             }
             for tool in get_tool_metadata()
+            if tool["slug"] not in KNOWLEDGE_BASE_TOOL_SLUGS
         ],
         key=lambda item: (str(item["category"] or ""), item["key"]),
     )
@@ -387,6 +401,8 @@ def is_model_allowed(resource_access: Any, spec: str) -> bool:
 
 
 def is_tool_allowed(resource_access: Any, slug: str) -> bool:
+    if slug in KNOWLEDGE_BASE_TOOL_SLUGS:
+        return True
     return _is_resource_allowed(normalize_stored_resource_access(resource_access)["tools"], slug)
 
 

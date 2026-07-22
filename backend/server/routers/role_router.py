@@ -15,6 +15,7 @@ from yuxi.services.resource_access_service import (
     build_resource_catalog,
     default_resource_access_none,
     normalize_resource_access,
+    normalize_stored_resource_access,
 )
 from yuxi.storage.postgres.models_business import User
 
@@ -40,6 +41,7 @@ class RoleUpdate(BaseModel):
 
 async def _serialize_role(repo: RoleRepository, role) -> dict:
     data = role.to_dict()
+    data["resource_access"] = normalize_stored_resource_access(data.get("resource_access"))
     data["user_count"] = await repo.user_count(role.key)
     data["editable"] = role.key != "superadmin"
     data["deletable"] = not role.is_system and data["user_count"] == 0

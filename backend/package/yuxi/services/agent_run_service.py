@@ -29,7 +29,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from yuxi.agents.buildin import agent_manager
 from yuxi.agents.mcp.service import get_all_mcp_servers
 from yuxi.agents.models import resolve_chat_model_spec
-from yuxi.agents.skills.service import list_accessible_skills, normalize_string_list
 from yuxi.models.providers.cache import model_cache
 from yuxi.repositories.agent_repository import AgentRepository
 from yuxi.repositories.agent_run_repository import TERMINAL_RUN_STATUSES, AgentRunRepository
@@ -55,7 +54,7 @@ from yuxi.services.resource_access_runtime_service import (
     resolve_role_default_model_spec,
 )
 from yuxi.storage.postgres.manager import pg_manager
-from yuxi.storage.postgres.models_business import Message, Skill, User
+from yuxi.storage.postgres.models_business import Message, User
 from yuxi.utils.datetime_utils import utc_now_naive
 from yuxi.utils.hash_utils import hash_id
 from yuxi.utils.logging_config import logger
@@ -94,24 +93,6 @@ class AgentRunWaitTimeout(Exception):
         super().__init__(f"agent run {run_id} is still {status} after waiting")
 
 
-async def _assert_selected_skill_slugs_accessible(db: AsyncSession, user: User, slugs: list[str] | None) -> None:
-    normalized = normalize_string_list(slugs)
-    if not normalized:
-        return
-
-    accessible = {item.slug for item in await list_accessible_skills(db, user) if item.slug}
-    enabled_result = await db.execute(select(Skill.slug).where(Skill.enabled.is_(True)))
-    enabled = {slug for slug in enabled_result.scalars().all() if isinstance(slug, str)}
-
-    unknown = [slug for slug in normalized if slug not in enabled]
-    if unknown:
-        raise HTTPException(status_code=422, detail=f"存在未知 Skill: {', '.join(unknown)}")
-
-    forbidden = [slug for slug in normalized if slug not in accessible]
-    if forbidden:
-        raise HTTPException(status_code=403, detail=f"当前角色无权使用 Skill: {', '.join(forbidden)}")
-
-
 async def validate_agent_context_resource_access(
     *,
     db: AsyncSession,
@@ -138,9 +119,6 @@ async def validate_agent_context_resource_access(
             existing_slugs=[server.slug for server in servers if server.slug],
             enabled_slugs=[server.slug for server in servers if server.enabled and server.slug],
         )
-
-    if isinstance(context.get("skills"), list):
-        await _assert_selected_skill_slugs_accessible(db, user, context.get("skills") or [])
 
 
 def resolve_agent_run_model_spec(model_spec: str | None, agent_item, agent_backend, *, user: User | None = None) -> str:

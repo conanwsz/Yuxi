@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuxi.models.providers.cache import ModelInfo, model_cache
 from yuxi.services.resource_access_service import (
+    KNOWLEDGE_BASE_TOOL_SLUGS,
     default_resource_access_all,
     default_resource_access_none,
     get_tool_metadata,
@@ -158,14 +159,19 @@ def filter_tool_metadata_for_user(user: User, tools: Iterable[dict[str, Any]]) -
     if user.role == "superadmin":
         return items
 
+    knowledge_tools = [tool for tool in items if tool["slug"] in KNOWLEDGE_BASE_TOOL_SLUGS]
     mode = _group_mode(user, "tools")
     if mode == "none":
-        return []
+        return knowledge_tools
     if mode == "all":
         return items
 
     allowed = _group_allowed(user, "tools")
-    return [tool for tool in items if str(tool.get("slug")) in allowed]
+    return [
+        tool
+        for tool in items
+        if tool["slug"] in KNOWLEDGE_BASE_TOOL_SLUGS or str(tool.get("slug")) in allowed
+    ]
 
 
 def list_tool_slugs_for_user(user: User) -> list[str]:

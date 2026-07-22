@@ -19,6 +19,31 @@ def test_missing_resource_access_fails_closed_for_non_superadmin(monkeypatch):
     assert service.filter_model_infos_for_user(user, [SimpleNamespace(spec="p:m", model_type="chat")]) == []
 
 
+def test_knowledge_base_tools_follow_knowledge_scope_instead_of_tool_allowlist(monkeypatch):
+    user = _user(resource_access=None)
+    monkeypatch.setattr(
+        service,
+        "get_tool_metadata",
+        lambda: [
+            {"slug": "search", "category": "buildin"},
+            {"slug": "find_kb_document", "category": "knowledge"},
+        ],
+    )
+
+    assert service.list_tool_slugs_for_user(user) == ["find_kb_document"]
+    assert service.assert_tool_slugs_allowed(user, ["find_kb_document"]) == ["find_kb_document"]
+
+    skills = [
+        SimpleNamespace(
+            slug="knowledge-base",
+            tool_dependencies=["find_kb_document"],
+            mcp_dependencies=[],
+            skill_dependencies=[],
+        )
+    ]
+    assert service.filter_resource_accessible_skills(user, skills, enabled_mcp_slugs=[]) == skills
+
+
 def test_superadmin_keeps_hard_coded_all_resource_bypass(monkeypatch):
     user = _user(role="superadmin", resource_access=None)
     monkeypatch.setattr(service, "get_tool_metadata", lambda: [{"slug": "search"}])
