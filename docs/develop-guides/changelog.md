@@ -100,6 +100,7 @@
 - 收敛 AgentRun 数据模型与输入语义：运行记录统一使用 `agent_slug`、`conversation_thread_id`、`created_by_run_id`、`input_message_id` 等字段，子智能体通过 `subagent_threads` 关系表维护 parent/child conversation 归属；补齐旧库升级时 `agent_runs` 旧字段到新字段、`subagent_threads.subagent_slug/created_by_run_id` 的静默回填与约束收敛，并在创建部分唯一索引前终结重复活跃 run，避免早期分支库保留 nullable schema 或历史重复活跃数据阻塞升级；Agent 状态中的 `subagent_runs` 改为以 `run_id` 作为执行身份，`resume` 请求字段明确为 `Command(resume=...)` 输入载荷。
 - 精简旧链路与失败语义：恢复审批统一走 `POST /api/agent/runs` 的 `resume` 载荷，移除旧 `POST /api/chat/thread/{id}/resume` 流式接口和已废弃的 `chat_service.agent_chat`；子智能体运行缺少必要线程上下文时直接报错，状态查询只在真实缺失或无权访问时返回 404，内部运行记录格式异常返回 500。
 - 统一流式事件线程 ID 提取契约：新增共享 `extract_thread_id` 工具，`BaseAgent`、聊天服务和 run worker 统一只读取规范化事件的一层稳定路径，并通过显式 fallback 处理父线程归属，避免递归扫描嵌套 metadata 导致父/子线程事件路由分歧。
+- 新增定时任务（Schedule）能力：管理员可在 `/api/schedules` 配置按 cron 表达式定时触发的智能体运行；后端 `SchedulerService` 在 API 进程 lifespan 中以 10s tick 周期扫描到点任务，按 croniter 计算下一次触发时间，以 `owner_uid` 身份调用既有 `create_agent_run_view` + `enqueue_agent_run` + `await_agent_run_result` 复用完整 AgentRun 链路；每条触发落地独立的 `schedule_executions` 行并自动建一个 thread=`schedule-<id>` 的「调度对话」便于前端跳转；执行历史保留 90 天（每 tick 顺手清理）。新增权限点 `system.schedules.manage`（仅 admin/superadmin 拥有），现有角色权限矩阵已通过 `schedule_manage_permission_v1` schema 迁移自动补齐；启停 cron / 时区合法性校验、`POST /fire` 立即触发、删除 schedule 级联清理 execution、优雅停机（取消 tick + 等 in-flight 派发带 10s 超时）均已覆盖。
 
 ## v0.7.0 (2026-06-13)
 

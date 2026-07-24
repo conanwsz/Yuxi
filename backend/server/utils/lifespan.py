@@ -104,6 +104,11 @@ async def lifespan(app: FastAPI):
     print("LangGraph Checkpoint tables verified/created!")
 
     await tasker.start()
+    try:
+        from yuxi.services.scheduler_service import scheduler
+        await scheduler.start()
+    except Exception as e:
+        logger.error(f"Failed to start scheduler: {e}")
     logger.info(f"""
 
 ░██     ░██                       ░██
@@ -117,6 +122,11 @@ async def lifespan(app: FastAPI):
     """)
     logger.info("Yuxi backend startup complete")
     yield
+    try:
+        from yuxi.services.scheduler_service import scheduler
+        await scheduler.shutdown()
+    except Exception as e:
+        logger.error(f"Failed to shutdown scheduler: {e}")
     await tasker.shutdown()
     shutdown_sandbox_provider()
     await close_queue_clients()
