@@ -19,6 +19,7 @@ PERMISSION_GROUPS = [
             ("users.read", "查看用户"),
             ("users.create", "创建用户"),
             ("users.update", "更新用户"),
+            ("users.disable", "禁用用户"),
             ("users.delete", "删除用户"),
             ("users.impersonate", "模拟用户"),
         ],
@@ -99,13 +100,12 @@ PERMISSION_GROUPS = [
     },
 ]
 
-ALL_PERMISSION_KEYS = frozenset(
-    permission[0] for group in PERMISSION_GROUPS for permission in group["permissions"]
-)
+ALL_PERMISSION_KEYS = frozenset(permission[0] for group in PERMISSION_GROUPS for permission in group["permissions"])
 
 ADMIN_PERMISSION_KEYS = ALL_PERMISSION_KEYS - {
     "dashboard.read",
     "users.impersonate",
+    "users.delete",
     "departments.create",
     "departments.update",
     "departments.delete",

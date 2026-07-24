@@ -135,12 +135,13 @@ async def test_profile_requires_authentication(test_client):
     assert response.json()["detail"] == "请登录后再访问"
 
 
-async def test_admin_can_create_and_delete_user(test_client, admin_headers):
+async def test_admin_can_create_disable_and_delete_user(test_client, admin_headers):
     suffix = uuid.uuid4().hex[:8]
     payload = {
         "username": f"rtu_{suffix}",
         "password": "routerTest123!",
         "role": "user",
+        "phone_number": "not-a-phone",
     }
     create_response = await test_client.post("/api/auth/users", json=payload, headers=admin_headers)
     assert create_response.status_code == 200, create_response.text
@@ -148,6 +149,16 @@ async def test_admin_can_create_and_delete_user(test_client, admin_headers):
     created_user = create_response.json()
     assert created_user["username"] == payload["username"]
     assert created_user["role"] == payload["role"]
+    assert created_user["phone_number"] is None
+
+    disable_response = await test_client.post(f"/api/auth/users/{created_user['id']}/disable", headers=admin_headers)
+    assert disable_response.status_code == 200, disable_response.text
+    assert disable_response.json()["message"] == "用户已禁用"
+
+    list_response = await test_client.get("/api/auth/users?limit=1000", headers=admin_headers)
+    assert list_response.status_code == 200, list_response.text
+    disabled_user = next(user for user in list_response.json() if user["id"] == created_user["id"])
+    assert disabled_user["is_disabled"] is True
 
     delete_response = await test_client.delete(f"/api/auth/users/{created_user['id']}", headers=admin_headers)
     assert delete_response.status_code == 200, delete_response.text
@@ -231,12 +242,13 @@ async def test_department_admin_is_limited_to_own_department_users(test_client, 
         )
         assert role_escalation.status_code == 403, role_escalation.text
 
-        cross_delete = await test_client.delete(f"/api/auth/users/{user_b['id']}", headers=dept_a["admin_headers"])
-        assert cross_delete.status_code == 403, cross_delete.text
+        cross_disable = await test_client.post(
+            f"/api/auth/users/{user_b['id']}/disable", headers=dept_a["admin_headers"]
+        )
+        assert cross_disable.status_code == 403, cross_disable.text
 
-        own_delete = await test_client.delete(f"/api/auth/users/{user_a['id']}", headers=dept_a["admin_headers"])
-        assert own_delete.status_code == 200, own_delete.text
-        user_ids.remove(user_a["id"])
+        own_disable = await test_client.post(f"/api/auth/users/{user_a['id']}/disable", headers=dept_a["admin_headers"])
+        assert own_disable.status_code == 200, own_disable.text
     finally:
         for user_id in user_ids:
             await _cleanup_user(test_client, admin_headers, user_id)

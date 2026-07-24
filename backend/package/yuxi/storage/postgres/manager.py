@@ -574,6 +574,26 @@ class PostgresManager(metaclass=SingletonMeta):
             "ALTER TABLE IF EXISTS roles ALTER COLUMN resource_access SET NOT NULL",
             *role_seed_statements,
             """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM app_schema_migrations
+                    WHERE migration_key = 'user_disable_permission_v2'
+                ) THEN
+                    UPDATE roles
+                    SET permissions = (permissions::jsonb - 'users.delete' - 'users.disable')
+                                      || '["users.disable"]'::jsonb
+                    WHERE permissions::jsonb ? 'users.delete';
+                    UPDATE roles
+                    SET permissions = (permissions::jsonb - 'users.delete' - 'users.disable')
+                                      || '["users.disable", "users.delete"]'::jsonb
+                    WHERE key = 'superadmin';
+                    INSERT INTO app_schema_migrations (migration_key)
+                    VALUES ('user_disable_permission_v2');
+                END IF;
+            END $$
+            """,
+            """
             INSERT INTO roles (key, name, description, permissions, resource_access, is_system, created_at, updated_at)
             SELECT DISTINCT users.role, users.role, '从历史用户数据迁移', '[]'::jsonb,
                    '{"models":{"mode":"all","allowed":[],"defaults":{}},"tools":{"mode":"all","allowed":[]},"mcp_servers":{"mode":"all","allowed":[]}}'::jsonb,

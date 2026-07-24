@@ -5,7 +5,7 @@
       <div class="header-content">
         <div class="section-title">用户管理</div>
         <p class="section-description">
-          管理系统用户，请谨慎操作。删除用户后该用户将无法登录系统。
+          禁用会保留账号和历史数据，删除会永久移除账号，请谨慎操作。
         </p>
       </div>
       <div class="header-actions">
@@ -35,7 +35,7 @@
       <a-input
         v-model:value="userManagement.searchKeyword"
         class="search-input"
-        placeholder="搜索用户名 / ID / 手机号"
+        placeholder="搜索用户名 / ID"
         allow-clear
       >
         <template #prefix><Search :size="16" /></template>
@@ -57,6 +57,28 @@
             {{ role.name }}
           </a-select-option>
         </a-select>
+        <div class="view-switch" role="group" aria-label="用户视图">
+          <a-button
+            size="small"
+            :type="userManagement.viewMode === 'list' ? 'primary' : 'default'"
+            :aria-pressed="userManagement.viewMode === 'list'"
+            class="lucide-icon-btn"
+            @click="userManagement.viewMode = 'list'"
+          >
+            <template #icon><ListIcon :size="14" /></template>
+            列表
+          </a-button>
+          <a-button
+            size="small"
+            :type="userManagement.viewMode === 'card' ? 'primary' : 'default'"
+            :aria-pressed="userManagement.viewMode === 'card'"
+            class="lucide-icon-btn"
+            @click="userManagement.viewMode = 'card'"
+          >
+            <template #icon><LayoutGrid :size="14" /></template>
+            卡片
+          </a-button>
+        </div>
       </div>
     </div>
 
@@ -73,6 +95,120 @@
               :description="userManagement.users.length === 0 ? '暂无用户数据' : '没有匹配的用户'"
             />
           </div>
+          <div v-else-if="userManagement.viewMode === 'list'" class="user-table-wrapper">
+            <a-table
+              :columns="userTableColumns"
+              :data-source="paginatedUsers"
+              :pagination="false"
+              :row-class-name="(user) => (user.is_disabled ? 'disabled-user-row' : '')"
+              row-key="id"
+              size="middle"
+              :scroll="{ x: 907 }"
+            >
+              <template #bodyCell="{ column, record: user }">
+                <template v-if="column.key === 'user'">
+                  <div class="table-user">
+                    <FallbackAvatar
+                      :src="user.avatar"
+                      :default-src="getUserDefaultAvatarSrc(user)"
+                      :name="user.username"
+                      :seed="user.uid || user.username"
+                      kind="user"
+                      :size="34"
+                      shape="circle"
+                      :alt="user.username"
+                      class="table-avatar"
+                    />
+                    <div class="table-user-copy">
+                      <span class="table-user-name">{{ user.username }}</span>
+                      <span class="table-user-id">ID: {{ user.uid || '-' }}</span>
+                    </div>
+                  </div>
+                </template>
+
+                <template v-else-if="column.key === 'role'">
+                  <div class="table-role">
+                    <span>{{ user.role_name || roleName(user.role) }}</span>
+                    <span class="table-secondary">
+                      {{ user.department_path || user.department_name || '未分配部门' }}
+                    </span>
+                  </div>
+                </template>
+
+                <template v-else-if="column.key === 'partTime'">
+                  <span class="table-secondary">{{ partTimeLabel(user) }}</span>
+                </template>
+
+                <template v-else-if="column.key === 'createdAt'">
+                  <span class="table-time">{{ formatTime(user.created_at) }}</span>
+                </template>
+
+                <template v-else-if="column.key === 'lastLogin'">
+                  <span class="table-time">{{ formatTime(user.last_login) }}</span>
+                </template>
+
+                <template v-else-if="column.key === 'status'">
+                  <span
+                    class="user-status"
+                    :class="user.is_disabled ? 'user-status-disabled' : 'user-status-active'"
+                  >
+                    {{ user.is_disabled ? '已禁用' : '正常' }}
+                  </span>
+                </template>
+
+                <template v-else-if="column.key === 'actions'">
+                  <a-dropdown :trigger="['click']">
+                    <a-button
+                      type="text"
+                      size="small"
+                      class="table-action-btn lucide-icon-btn"
+                      title="用户操作"
+                      @click.stop
+                    >
+                      <Ellipsis :size="16" />
+                    </a-button>
+                    <template #overlay>
+                      <a-menu>
+                        <a-menu-item
+                          v-if="userStore.hasPermission('users.update') && !user.is_disabled"
+                          key="edit"
+                          @click="showEditUserModal(user)"
+                        >
+                          <span class="lucide-menu-item">
+                            <SquarePen :size="14" />
+                            <span>编辑用户</span>
+                          </span>
+                        </a-menu-item>
+                        <a-menu-item
+                          v-if="userStore.hasPermission('users.disable') && !user.is_disabled"
+                          key="disable"
+                          :disabled="isUserLifecycleActionDisabled(user)"
+                          @click="confirmDisableUser(user)"
+                        >
+                          <span class="lucide-menu-item">
+                            <UserX :size="14" />
+                            <span>禁用用户</span>
+                          </span>
+                        </a-menu-item>
+                        <a-menu-item
+                          v-if="userStore.hasPermission('users.delete')"
+                          key="delete"
+                          :disabled="isUserLifecycleActionDisabled(user)"
+                          :danger="!isUserLifecycleActionDisabled(user)"
+                          @click="confirmDeleteUser(user)"
+                        >
+                          <span class="lucide-menu-item">
+                            <Trash2 :size="14" />
+                            <span>删除用户</span>
+                          </span>
+                        </a-menu-item>
+                      </a-menu>
+                    </template>
+                  </a-dropdown>
+                </template>
+              </template>
+            </a-table>
+          </div>
           <div v-else class="user-cards-grid">
             <InfoCard
               v-for="user in paginatedUsers"
@@ -80,6 +216,7 @@
               :title="user.username"
               :subtitle="`ID: ${user.uid || '-'}`"
               class="user-card"
+              :class="{ 'user-card-disabled': user.is_disabled }"
             >
               <template #icon>
                 <FallbackAvatar
@@ -106,6 +243,7 @@
                     {{ user.role_name || roleName(user.role) }}
                     <template v-if="user.department_path"> · {{ user.department_path }}</template>
                     <template v-else-if="user.department_name"> · {{ user.department_name }}</template>
+                    <template v-if="user.is_disabled"> · 已禁用</template>
                   </span>
                 </div>
               </template>
@@ -113,7 +251,7 @@
               <template #card-more-action-corner>
                 <a-menu>
                   <a-menu-item
-                    v-if="userStore.hasPermission('users.update')"
+                    v-if="userStore.hasPermission('users.update') && !user.is_disabled"
                     key="edit"
                     @click.stop="showEditUserModal(user)"
                   >
@@ -123,10 +261,21 @@
                     </span>
                   </a-menu-item>
                   <a-menu-item
+                    v-if="userStore.hasPermission('users.disable') && !user.is_disabled"
+                    key="disable"
+                    :disabled="isUserLifecycleActionDisabled(user)"
+                    @click.stop="confirmDisableUser(user)"
+                  >
+                    <span class="lucide-menu-item">
+                      <UserX :size="14" />
+                      <span>禁用用户</span>
+                    </span>
+                  </a-menu-item>
+                  <a-menu-item
                     v-if="userStore.hasPermission('users.delete')"
                     key="delete"
-                    :disabled="isUserDeleteDisabled(user)"
-                    :danger="!isUserDeleteDisabled(user)"
+                    :disabled="isUserLifecycleActionDisabled(user)"
+                    :danger="!isUserLifecycleActionDisabled(user)"
                     @click.stop="confirmDeleteUser(user)"
                   >
                     <span class="lucide-menu-item">
@@ -205,8 +354,8 @@
           </div>
         </a-form-item>
 
-        <!-- 手机号字段 -->
-        <a-form-item label="手机号" class="form-item">
+        <!-- 手机号为预留字段，仅保留已有用户的编辑能力 -->
+        <a-form-item v-if="userManagement.editMode" label="手机号" class="form-item">
           <a-input
             v-model:value="userManagement.form.phoneNumber"
             placeholder="请输入手机号（可选，可用于登录）"
@@ -327,6 +476,10 @@ import {
   Plus,
   SquarePen,
   Trash2,
+  UserX,
+  Ellipsis,
+  LayoutGrid,
+  List as ListIcon,
   User,
   UserLock,
   UserStar,
@@ -355,6 +508,7 @@ const userManagement = reactive({
   searchKeyword: '',
   departmentFilter: '',
   roleFilter: '',
+  viewMode: 'list',
   currentPage: 1,
   pageSize: 50,
   error: null,
@@ -383,6 +537,16 @@ const roleOptions = computed(() => {
   const keys = [...new Set(userManagement.users.map((user) => user.role))]
   return keys.map((key) => ({ key, name: roleName(key) }))
 })
+
+const userTableColumns = [
+  { title: '用户', key: 'user', width: 205, fixed: 'left' },
+  { title: '角色与部门', key: 'role', width: 170 },
+  { title: '兼职部门', key: 'partTime', width: 110 },
+  { title: '创建时间', key: 'createdAt', width: 145 },
+  { title: '最后登录', key: 'lastLogin', width: 145 },
+  { title: '状态', key: 'status', width: 80 },
+  { title: '', key: 'actions', width: 52, fixed: 'right', align: 'center' }
+]
 
 // 部门列表（仅超级管理员使用）
 const departmentManagement = reactive({
@@ -442,7 +606,7 @@ const filteredUsers = computed(() => {
   return userManagement.users.filter((user) => {
     const matchesKeyword =
       !keyword ||
-      [user.username, user.uid, user.phone_number].some((value) =>
+      [user.username, user.uid].some((value) =>
         String(value || '')
           .toLowerCase()
           .includes(keyword)
@@ -570,7 +734,7 @@ const partTimeLabel = (user) => {
   return memberships.map((item) => item.path_label || item.name).join('、')
 }
 
-const isUserDeleteDisabled = (user) =>
+const isUserLifecycleActionDisabled = (user) =>
   user.id === userStore.userId ||
   (user.role === 'superadmin' && userStore.userRole !== 'superadmin')
 
@@ -681,8 +845,12 @@ const handleUserFormSubmit = async () => {
       return
     }
 
-    // 验证手机号
-    if (userManagement.form.phoneNumber && !validatePhoneNumber(userManagement.form.phoneNumber)) {
+    // 手机号仅是已有用户的预留编辑字段，不参与新建用户校验
+    if (
+      userManagement.editMode &&
+      userManagement.form.phoneNumber &&
+      !validatePhoneNumber(userManagement.form.phoneNumber)
+    ) {
       message.error('请输入正确的手机号格式')
       return
     }
@@ -748,11 +916,6 @@ const handleUserFormSubmit = async () => {
         createData.part_time_department_ids = userManagement.form.partTimeDepartmentIds
       }
 
-      // 添加手机号字段（如果填写了）
-      if (userManagement.form.phoneNumber) {
-        createData.phone_number = userManagement.form.phoneNumber
-      }
-
       const createdUser = await userStore.createUser(createData)
       if (userStore.isSuperAdmin && userManagement.form.managedDepartmentIds.length) {
         await userStore.updateManagedDepartments(
@@ -774,7 +937,35 @@ const handleUserFormSubmit = async () => {
   }
 }
 
-// 删除用户
+// 禁用用户
+const confirmDisableUser = (user) => {
+  if (user.id === userStore.userId) {
+    message.error('不能禁用自己的账户')
+    return
+  }
+
+  Modal.confirm({
+    title: '确认禁用用户',
+    content: `确定要禁用用户 "${user.username}" 吗？禁用后该用户将无法登录，但账号和历史数据会保留。`,
+    okText: '禁用',
+    cancelText: '取消',
+    async onOk() {
+      try {
+        userManagement.loading = true
+        await userStore.disableUser(user.id)
+        message.success('用户已禁用')
+        await fetchUsers()
+      } catch (error) {
+        console.error('禁用用户失败:', error)
+        message.error(error.message || '禁用失败，请稍后重试')
+      } finally {
+        userManagement.loading = false
+      }
+    }
+  })
+}
+
+// 物理删除用户
 const confirmDeleteUser = (user) => {
   // 自己不能删除自己
   if (user.id === userStore.userId) {
@@ -785,7 +976,7 @@ const confirmDeleteUser = (user) => {
   // 确认对话框
   Modal.confirm({
     title: '确认删除用户',
-    content: `确定要删除用户 "${user.username}" 吗？此操作不可撤销。`,
+    content: `确定要永久删除用户 "${user.username}" 吗？账号及其认证绑定将被物理删除，此操作不可撤销。`,
     okText: '删除',
     okType: 'danger',
     cancelText: '取消',
@@ -912,6 +1103,17 @@ onMounted(async () => {
     .filter-select {
       width: 150px;
     }
+
+    .view-switch {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding-left: 4px;
+
+      .ant-btn {
+        min-width: 68px;
+      }
+    }
   }
 
   @media (max-width: 640px) {
@@ -925,11 +1127,21 @@ onMounted(async () => {
 
       .filter-actions {
         margin-left: 0;
+        flex-wrap: wrap;
       }
 
       .filter-select {
         flex: 1;
         min-width: 0;
+      }
+
+      .view-switch {
+        width: 100%;
+        padding-left: 0;
+
+        .ant-btn {
+          flex: 1;
+        }
       }
     }
   }
@@ -1072,6 +1284,124 @@ onMounted(async () => {
                 }
               }
             }
+          }
+        }
+
+        .user-card-disabled {
+          opacity: 0.72;
+        }
+      }
+
+      .user-table-wrapper {
+        overflow: hidden;
+        border: 1px solid var(--gray-150);
+        border-radius: 8px;
+        background: var(--gray-0);
+
+        :deep(.ant-table) {
+          background: transparent;
+          color: var(--gray-900);
+        }
+
+        :deep(.ant-table-thead > tr > th) {
+          padding: 10px 14px;
+          background: var(--gray-25);
+          border-bottom-color: var(--gray-150);
+          color: var(--gray-600);
+          font-size: 12px;
+          font-weight: 600;
+        }
+
+        :deep(.ant-table-tbody > tr > td) {
+          padding: 11px 14px;
+          border-bottom-color: var(--gray-100);
+        }
+
+        :deep(.ant-table-tbody > tr:last-child > td) {
+          border-bottom: 0;
+        }
+
+        :deep(.ant-table-tbody > tr:hover > td) {
+          background: var(--gray-25);
+        }
+
+        :deep(.ant-table-tbody > .disabled-user-row > td) {
+          background: var(--gray-10);
+        }
+
+        :deep(.ant-table-tbody > .disabled-user-row:hover > td) {
+          background: var(--gray-25);
+        }
+
+        .table-user {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          min-width: 0;
+        }
+
+        .table-avatar {
+          flex: none;
+        }
+
+        .table-user-copy,
+        .table-role {
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+          min-width: 0;
+        }
+
+        .table-user-name {
+          overflow: hidden;
+          color: var(--gray-900);
+          font-size: 13px;
+          font-weight: 600;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+
+        .table-user-id,
+        .table-time,
+        .table-secondary {
+          overflow: hidden;
+          color: var(--gray-600);
+          font-size: 12px;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+
+        .table-user-id {
+          font-family: 'Monaco', 'Consolas', monospace;
+        }
+
+        .user-status {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          min-width: 52px;
+          padding: 2px 8px;
+          border-radius: 999px;
+          font-size: 12px;
+          font-weight: 500;
+          line-height: 20px;
+        }
+
+        .user-status-active {
+          background: var(--color-success-50);
+          color: var(--color-success-700);
+        }
+
+        .user-status-disabled {
+          background: var(--gray-100);
+          color: var(--gray-600);
+        }
+
+        .table-action-btn {
+          color: var(--gray-600);
+
+          &:hover {
+            color: var(--gray-900);
           }
         }
       }
