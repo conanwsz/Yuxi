@@ -977,54 +977,33 @@ async def disable_user(
 
     await _ensure_user_in_current_department(db, current_user, user)
 
-    # 不能删除超级管理员账户
+    # 不能禁用超级管理员账户
     if user.role == "superadmin":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="不能删除超级管理员账户",
+            detail="不能禁用超级管理员账户",
         )
 
     if current_user.role == "admin" and user.role != "user":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="管理员只能删除普通用户账户",
+            detail="管理员只能禁用普通用户账户",
         )
 
-    # 不能删除自己的账户
+    # 不能禁用自己的账户
     if user.id == current_user.id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="不能删除自己的账户",
-        )
-
-    # 检查是否已经被删除
-    if user.is_deleted:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="该用户已经被禁用",
+            detail="不能禁用自己的账户",
         )
 
     disable_detail = f"禁用用户: {user.username}, ID: {user.id}, 角色: {user.role}"
 
     user.is_deleted = 1
     user.deleted_at = utc_now_naive()
-    user.username = f"已禁用用户-{user.id}"
-    user.phone_number = None  # 清空手机号，释放该手机号供其他用户使用
-    user.password_hash = "DELETED"  # 禁止登录
-    user.avatar = None  # 清空头像
     api_key_result = await db.execute(select(APIKey).filter(APIKey.user_id == user.id))
     for api_key in api_key_result.scalars().all():
         api_key.is_enabled = False
-    await db.execute(
-        update(UserDepartmentMembership)
-        .where(UserDepartmentMembership.user_id == user.id)
-        .values(status="inactive", updated_at=utc_now_naive())
-    )
-    await db.execute(
-        update(DepartmentAdminAssignment)
-        .where(DepartmentAdminAssignment.user_id == user.id)
-        .values(status="inactive", updated_at=utc_now_naive())
-    )
 
     await db.commit()
 
@@ -1032,6 +1011,62 @@ async def disable_user(
     await log_operation(db, current_user.id, "禁用用户", disable_detail, request)
 
     return {"success": True, "message": "用户已禁用"}
+
+
+# 路由：重新激活用户（管理员权限）
+@auth.post("/users/{user_id}/activate", response_model=dict)
+async def activate_user(
+    user_id: int,
+    request: Request,
+    current_user: User = Depends(require_permission("users.enable")),
+    db: AsyncSession = Depends(get_db),
+):
+    user = await db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
+
+    await _ensure_user_in_current_department(db, current_user, user)
+    if not user.is_deleted:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="该用户已处于激活状态")
+    if user.role == "superadmin":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="超级管理员账户无需激活")
+    if current_user.role == "admin" and user.role != "user":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="管理员只能激活普通用户账户")
+
+    user.is_deleted = 0
+    user.deleted_at = None
+
+    # 兼容旧版禁用逻辑：至少恢复主部门关系和管理员的主部门管理范围。
+    if user.department_id is not None:
+        await db.execute(
+            update(UserDepartmentMembership)
+            .where(
+                UserDepartmentMembership.user_id == user.id,
+                UserDepartmentMembership.department_id == user.department_id,
+                UserDepartmentMembership.membership_type == "primary",
+            )
+            .values(status="active", updated_at=utc_now_naive())
+        )
+        if user.role == "admin":
+            await db.execute(
+                update(DepartmentAdminAssignment)
+                .where(
+                    DepartmentAdminAssignment.user_id == user.id,
+                    DepartmentAdminAssignment.department_id == user.department_id,
+                )
+                .values(status="active", updated_at=utc_now_naive())
+            )
+
+    await db.commit()
+    await log_operation(
+        db,
+        current_user.id,
+        "激活用户",
+        f"激活用户: {user.username}, ID: {user.id}, 角色: {user.role}",
+        request,
+    )
+
+    return {"success": True, "message": "用户已激活"}
 
 
 # 路由：物理删除用户（管理员权限）

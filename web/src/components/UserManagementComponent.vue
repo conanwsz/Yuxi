@@ -5,7 +5,7 @@
       <div class="header-content">
         <div class="section-title">用户管理</div>
         <p class="section-description">
-          禁用会保留账号和历史数据，删除会永久移除账号，请谨慎操作。
+          禁用会保留账号和历史数据，可随时重新激活；删除会永久移除账号，请谨慎操作。
         </p>
       </div>
       <div class="header-actions">
@@ -103,10 +103,60 @@
               :row-class-name="(user) => (user.is_disabled ? 'disabled-user-row' : '')"
               row-key="id"
               size="middle"
-              :scroll="{ x: 907 }"
+              :scroll="{ x: 1010 }"
             >
               <template #bodyCell="{ column, record: user }">
-                <template v-if="column.key === 'user'">
+                <template v-if="column.key === 'actions'">
+                  <div class="table-actions">
+                    <a-button
+                      v-if="userStore.hasPermission('users.update') && !user.is_disabled"
+                      type="link"
+                      size="small"
+                      class="table-action-btn lucide-icon-btn"
+                      :disabled="isUserLifecycleActionDisabled(user)"
+                      @click="showEditUserModal(user)"
+                    >
+                      <template #icon><SquarePen :size="13" /></template>
+                      编辑
+                    </a-button>
+                    <a-button
+                      v-if="userStore.hasPermission('users.enable') && user.is_disabled"
+                      type="link"
+                      size="small"
+                      class="table-action-btn table-action-activate lucide-icon-btn"
+                      :disabled="isUserLifecycleActionDisabled(user)"
+                      @click="confirmActivateUser(user)"
+                    >
+                      <template #icon><UserCheck :size="13" /></template>
+                      激活
+                    </a-button>
+                    <a-button
+                      v-else-if="userStore.hasPermission('users.disable') && !user.is_disabled"
+                      type="link"
+                      size="small"
+                      class="table-action-btn lucide-icon-btn"
+                      :disabled="isUserLifecycleActionDisabled(user)"
+                      @click="confirmDisableUser(user)"
+                    >
+                      <template #icon><UserX :size="13" /></template>
+                      禁用
+                    </a-button>
+                    <a-button
+                      v-if="userStore.hasPermission('users.delete')"
+                      type="link"
+                      size="small"
+                      danger
+                      class="table-action-btn lucide-icon-btn"
+                      :disabled="isUserLifecycleActionDisabled(user)"
+                      @click="confirmDeleteUser(user)"
+                    >
+                      <template #icon><Trash2 :size="13" /></template>
+                      删除
+                    </a-button>
+                  </div>
+                </template>
+
+                <template v-else-if="column.key === 'user'">
                   <div class="table-user">
                     <FallbackAvatar
                       :src="user.avatar"
@@ -126,25 +176,25 @@
                   </div>
                 </template>
 
-                <template v-else-if="column.key === 'role'">
-                  <div class="table-role">
-                    <span>{{ user.role_name || roleName(user.role) }}</span>
+                <template v-else-if="column.key === 'department'">
+                  <div class="table-department">
+                    <span>{{ user.department_path || user.department_name || '未分配部门' }}</span>
                     <span class="table-secondary">
-                      {{ user.department_path || user.department_name || '未分配部门' }}
+                      兼职：{{ partTimeLabel(user) }}
                     </span>
                   </div>
                 </template>
 
-                <template v-else-if="column.key === 'partTime'">
-                  <span class="table-secondary">{{ partTimeLabel(user) }}</span>
-                </template>
-
-                <template v-else-if="column.key === 'createdAt'">
-                  <span class="table-time">{{ formatTime(user.created_at) }}</span>
+                <template v-else-if="column.key === 'role'">
+                  <span>{{ user.role_name || roleName(user.role) }}</span>
                 </template>
 
                 <template v-else-if="column.key === 'lastLogin'">
                   <span class="table-time">{{ formatTime(user.last_login) }}</span>
+                </template>
+
+                <template v-else-if="column.key === 'createdAt'">
+                  <span class="table-time">{{ formatTime(user.created_at) }}</span>
                 </template>
 
                 <template v-else-if="column.key === 'status'">
@@ -154,57 +204,6 @@
                   >
                     {{ user.is_disabled ? '已禁用' : '正常' }}
                   </span>
-                </template>
-
-                <template v-else-if="column.key === 'actions'">
-                  <a-dropdown :trigger="['click']">
-                    <a-button
-                      type="text"
-                      size="small"
-                      class="table-action-btn lucide-icon-btn"
-                      title="用户操作"
-                      @click.stop
-                    >
-                      <Ellipsis :size="16" />
-                    </a-button>
-                    <template #overlay>
-                      <a-menu>
-                        <a-menu-item
-                          v-if="userStore.hasPermission('users.update') && !user.is_disabled"
-                          key="edit"
-                          @click="showEditUserModal(user)"
-                        >
-                          <span class="lucide-menu-item">
-                            <SquarePen :size="14" />
-                            <span>编辑用户</span>
-                          </span>
-                        </a-menu-item>
-                        <a-menu-item
-                          v-if="userStore.hasPermission('users.disable') && !user.is_disabled"
-                          key="disable"
-                          :disabled="isUserLifecycleActionDisabled(user)"
-                          @click="confirmDisableUser(user)"
-                        >
-                          <span class="lucide-menu-item">
-                            <UserX :size="14" />
-                            <span>禁用用户</span>
-                          </span>
-                        </a-menu-item>
-                        <a-menu-item
-                          v-if="userStore.hasPermission('users.delete')"
-                          key="delete"
-                          :disabled="isUserLifecycleActionDisabled(user)"
-                          :danger="!isUserLifecycleActionDisabled(user)"
-                          @click="confirmDeleteUser(user)"
-                        >
-                          <span class="lucide-menu-item">
-                            <Trash2 :size="14" />
-                            <span>删除用户</span>
-                          </span>
-                        </a-menu-item>
-                      </a-menu>
-                    </template>
-                  </a-dropdown>
                 </template>
               </template>
             </a-table>
@@ -258,6 +257,17 @@
                     <span class="lucide-menu-item">
                       <SquarePen :size="14" />
                       <span>编辑用户</span>
+                    </span>
+                  </a-menu-item>
+                  <a-menu-item
+                    v-if="userStore.hasPermission('users.enable') && user.is_disabled"
+                    key="activate"
+                    :disabled="isUserLifecycleActionDisabled(user)"
+                    @click.stop="confirmActivateUser(user)"
+                  >
+                    <span class="lucide-menu-item">
+                      <UserCheck :size="14" />
+                      <span>激活用户</span>
                     </span>
                   </a-menu-item>
                   <a-menu-item
@@ -476,8 +486,8 @@ import {
   Plus,
   SquarePen,
   Trash2,
+  UserCheck,
   UserX,
-  Ellipsis,
   LayoutGrid,
   List as ListIcon,
   User,
@@ -539,13 +549,13 @@ const roleOptions = computed(() => {
 })
 
 const userTableColumns = [
-  { title: '用户', key: 'user', width: 205, fixed: 'left' },
-  { title: '角色与部门', key: 'role', width: 170 },
-  { title: '兼职部门', key: 'partTime', width: 110 },
-  { title: '创建时间', key: 'createdAt', width: 145 },
-  { title: '最后登录', key: 'lastLogin', width: 145 },
+  { title: '操作', key: 'actions', width: 190, fixed: 'left' },
+  { title: '用户', key: 'user', width: 205 },
+  { title: '部门', key: 'department', width: 165 },
+  { title: '角色', key: 'role', width: 100 },
   { title: '状态', key: 'status', width: 80 },
-  { title: '', key: 'actions', width: 52, fixed: 'right', align: 'center' }
+  { title: '最后登录时间', key: 'lastLogin', width: 135 },
+  { title: '创建时间', key: 'createdAt', width: 135 }
 ]
 
 // 部门列表（仅超级管理员使用）
@@ -736,7 +746,7 @@ const partTimeLabel = (user) => {
 
 const isUserLifecycleActionDisabled = (user) =>
   user.id === userStore.userId ||
-  (user.role === 'superadmin' && userStore.userRole !== 'superadmin')
+  (userStore.userRole !== 'superadmin' && user.role !== 'user')
 
 // 获取用户列表
 const fetchUsers = async () => {
@@ -958,6 +968,29 @@ const confirmDisableUser = (user) => {
       } catch (error) {
         console.error('禁用用户失败:', error)
         message.error(error.message || '禁用失败，请稍后重试')
+      } finally {
+        userManagement.loading = false
+      }
+    }
+  })
+}
+
+// 重新激活用户
+const confirmActivateUser = (user) => {
+  Modal.confirm({
+    title: '确认激活用户',
+    content: `确定要重新激活用户 "${user.username}" 吗？激活后该用户可以重新登录系统。`,
+    okText: '激活',
+    cancelText: '取消',
+    async onOk() {
+      try {
+        userManagement.loading = true
+        await userStore.activateUser(user.id)
+        message.success('用户已激活')
+        await fetchUsers()
+      } catch (error) {
+        console.error('激活用户失败:', error)
+        message.error(error.message || '激活失败，请稍后重试')
       } finally {
         userManagement.loading = false
       }
@@ -1333,9 +1366,18 @@ onMounted(async () => {
           background: var(--gray-25);
         }
 
+        .table-actions,
         .table-user {
           display: flex;
           align-items: center;
+        }
+
+        .table-actions {
+          gap: 2px;
+          white-space: nowrap;
+        }
+
+        .table-user {
           gap: 10px;
           min-width: 0;
         }
@@ -1345,7 +1387,7 @@ onMounted(async () => {
         }
 
         .table-user-copy,
-        .table-role {
+        .table-department {
           display: flex;
           flex-direction: column;
           gap: 2px;
@@ -1398,10 +1440,22 @@ onMounted(async () => {
         }
 
         .table-action-btn {
+          height: 28px;
+          padding: 0 5px;
           color: var(--gray-600);
+          font-size: 12px;
 
           &:hover {
             color: var(--gray-900);
+          }
+        }
+
+        .table-action-activate {
+          color: var(--color-success-700);
+
+          &:hover {
+            color: var(--color-success-700);
+            background: var(--color-success-50);
           }
         }
       }

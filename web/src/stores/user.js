@@ -299,6 +299,27 @@ export const useUserStore = defineStore('user', () => {
     }
   }
 
+  async function activateUser(userId) {
+    try {
+      const response = await fetch(`/api/auth/users/${userId}/activate`, {
+        method: 'POST',
+        headers: {
+          ...getAuthHeaders()
+        }
+      })
+
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.detail || '激活用户失败')
+      }
+
+      return await response.json()
+    } catch (error) {
+      console.error('激活用户错误:', error)
+      throw error
+    }
+  }
+
   async function deleteUser(userId) {
     try {
       const response = await fetch(`/api/auth/users/${userId}`, {
@@ -475,6 +496,7 @@ export const useUserStore = defineStore('user', () => {
     getManagedDepartments,
     updateManagedDepartments,
     disableUser,
+    activateUser,
     deleteUser,
     validateUsernameAndGenerateUid,
     uploadAvatar,

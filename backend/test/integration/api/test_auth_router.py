@@ -135,7 +135,7 @@ async def test_profile_requires_authentication(test_client):
     assert response.json()["detail"] == "请登录后再访问"
 
 
-async def test_admin_can_create_disable_and_delete_user(test_client, admin_headers):
+async def test_admin_can_create_disable_activate_and_delete_user(test_client, admin_headers):
     suffix = uuid.uuid4().hex[:8]
     payload = {
         "username": f"rtu_{suffix}",
@@ -159,6 +159,22 @@ async def test_admin_can_create_disable_and_delete_user(test_client, admin_heade
     assert list_response.status_code == 200, list_response.text
     disabled_user = next(user for user in list_response.json() if user["id"] == created_user["id"])
     assert disabled_user["is_disabled"] is True
+    assert disabled_user["username"] == payload["username"]
+
+    activate_response = await test_client.post(f"/api/auth/users/{created_user['id']}/activate", headers=admin_headers)
+    assert activate_response.status_code == 200, activate_response.text
+    assert activate_response.json()["message"] == "用户已激活"
+
+    login_response = await test_client.post(
+        "/api/auth/token",
+        data={"username": created_user["uid"], "password": payload["password"]},
+    )
+    assert login_response.status_code == 200, login_response.text
+
+    disable_again_response = await test_client.post(
+        f"/api/auth/users/{created_user['id']}/disable", headers=admin_headers
+    )
+    assert disable_again_response.status_code == 200, disable_again_response.text
 
     delete_response = await test_client.delete(f"/api/auth/users/{created_user['id']}", headers=admin_headers)
     assert delete_response.status_code == 200, delete_response.text
@@ -249,6 +265,16 @@ async def test_department_admin_is_limited_to_own_department_users(test_client, 
 
         own_disable = await test_client.post(f"/api/auth/users/{user_a['id']}/disable", headers=dept_a["admin_headers"])
         assert own_disable.status_code == 200, own_disable.text
+
+        cross_activate = await test_client.post(
+            f"/api/auth/users/{user_b['id']}/activate", headers=dept_a["admin_headers"]
+        )
+        assert cross_activate.status_code == 403, cross_activate.text
+
+        own_activate = await test_client.post(
+            f"/api/auth/users/{user_a['id']}/activate", headers=dept_a["admin_headers"]
+        )
+        assert own_activate.status_code == 200, own_activate.text
     finally:
         for user_id in user_ids:
             await _cleanup_user(test_client, admin_headers, user_id)

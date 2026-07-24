@@ -34,6 +34,7 @@ def test_default_roles_keep_existing_management_boundary():
     assert "knowledge.update" in DEFAULT_ROLE_PERMISSIONS["admin"]
     assert "knowledge.update" not in DEFAULT_ROLE_PERMISSIONS["user"]
     assert "users.disable" in DEFAULT_ROLE_PERMISSIONS["admin"]
+    assert "users.enable" in DEFAULT_ROLE_PERMISSIONS["admin"]
     assert "users.delete" not in DEFAULT_ROLE_PERMISSIONS["admin"]
     assert "users.delete" in DEFAULT_ROLE_PERMISSIONS["superadmin"]
 

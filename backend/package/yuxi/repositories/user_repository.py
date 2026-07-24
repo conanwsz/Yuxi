@@ -4,13 +4,12 @@ from datetime import UTC
 from datetime import datetime as dt
 from typing import Annotated, Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_business import (
     APIKey,
-    DepartmentAdminAssignment,
     User,
     UserDepartmentMembership,
 )
@@ -128,7 +127,7 @@ class UserRepository:
                     setattr(user, key, value)
         return user
 
-    async def disable(self, id: int, username: str | None = None, phone_number: str | None = None) -> bool:
+    async def disable(self, id: int) -> bool:
         """禁用用户"""
         async with pg_manager.get_async_session_context() as session:
             result = await session.execute(select(User).where(User.id == id, User.is_deleted == 0))
@@ -136,28 +135,10 @@ class UserRepository:
             if user is None:
                 return False
             user.is_deleted = 1
-
             user.deleted_at = _utc_now()
-            if username:
-                import hashlib
-
-                hash_suffix = hashlib.sha256(user.uid.encode()).hexdigest()[:4]
-                user.username = f"已禁用用户-{hash_suffix}"
-            if phone_number:
-                user.phone_number = None
             api_key_result = await session.execute(select(APIKey).where(APIKey.user_id == user.id))
             for api_key in api_key_result.scalars().all():
                 api_key.is_enabled = False
-            await session.execute(
-                update(UserDepartmentMembership)
-                .where(UserDepartmentMembership.user_id == user.id)
-                .values(status="inactive", updated_at=_utc_now())
-            )
-            await session.execute(
-                update(DepartmentAdminAssignment)
-                .where(DepartmentAdminAssignment.user_id == user.id)
-                .values(status="inactive", updated_at=_utc_now())
-            )
         return True
 
     async def exists_by_uid(self, uid: str) -> bool:

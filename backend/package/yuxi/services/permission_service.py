@@ -20,6 +20,7 @@ PERMISSION_GROUPS = [
             ("users.create", "创建用户"),
             ("users.update", "更新用户"),
             ("users.disable", "禁用用户"),
+            ("users.enable", "激活用户"),
             ("users.delete", "删除用户"),
             ("users.impersonate", "模拟用户"),
         ],

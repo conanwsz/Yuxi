@@ -594,6 +594,21 @@ class PostgresManager(metaclass=SingletonMeta):
             END $$
             """,
             """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM app_schema_migrations
+                    WHERE migration_key = 'user_enable_permission_v3'
+                ) THEN
+                    UPDATE roles
+                    SET permissions = permissions::jsonb || '["users.enable"]'::jsonb
+                    WHERE permissions::jsonb ? 'users.disable';
+                    INSERT INTO app_schema_migrations (migration_key)
+                    VALUES ('user_enable_permission_v3');
+                END IF;
+            END $$
+            """,
+            """
             INSERT INTO roles (key, name, description, permissions, resource_access, is_system, created_at, updated_at)
             SELECT DISTINCT users.role, users.role, '从历史用户数据迁移', '[]'::jsonb,
                    '{"models":{"mode":"all","allowed":[],"defaults":{}},"tools":{"mode":"all","allowed":[]},"mcp_servers":{"mode":"all","allowed":[]}}'::jsonb,
