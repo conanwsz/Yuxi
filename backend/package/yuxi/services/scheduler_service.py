@@ -190,9 +190,12 @@ class SchedulerService:
             logger.warning("Scheduler tick: failed to claim due schedules: {}", exc)
             return
 
-        if not due_schedules:
-            return
-
+        if due_schedules:
+            logger.info(
+                "Scheduler tick: {} due schedule(s) at {}",
+                len(due_schedules),
+                now.isoformat(),
+            )
         for schedule in due_schedules:
             await self._handle_due_schedule(schedule=schedule, now=now)
             await self._maybe_cleanup_old_executions()
@@ -360,7 +363,7 @@ class SchedulerService:
                 current_uid=str(schedule.owner_uid),
                 db=db,
             )
-            run_id = str(run_view["run"]["id"])
+            run_id = str(run_view.get("run_id") or run_view.get("run", {}).get("id"))
 
         # 2) 显式 enqueue（如果 create_agent_run_view 内部已自动 enqueue，这里重复入队会被 job_id 去重覆盖）
         await enqueue_agent_run(run_id)

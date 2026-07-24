@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from types import SimpleNamespace
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -15,6 +16,7 @@ from yuxi.repositories.schedule_repository import (
     ScheduleRepository,
 )
 from yuxi.services.scheduler_service import (
+    compute_next_fire_at,
     is_valid_cron_expression,
     is_valid_timezone,
 )
@@ -94,6 +96,12 @@ async def create_schedule(
     """新建一个 schedule。"""
     repository = ScheduleRepository()
     schedule_id = uuid.uuid4().hex
+    # 初始 next_fire_at 用 cron 算一次，让 enabled=true 的 schedule 在下一个 tick 就能被触发
+    initial_view = SimpleNamespace(
+        cron_expression=payload.cron_expression,
+        timezone=payload.timezone,
+    )
+    initial_next_fire = compute_next_fire_at(schedule=initial_view)
     await repository.create(
         {
             "id": schedule_id,
@@ -106,7 +114,7 @@ async def create_schedule(
             "timezone": payload.timezone,
             "enabled": 1 if payload.enabled else 0,
             "owner_uid": str(current_user.uid),
-            "next_fire_at": None,
+            "next_fire_at": initial_next_fire,
         }
     )
     # 重新读取以拿到 created_at / updated_at
@@ -137,6 +145,7 @@ async def update_schedule(
         raise HTTPException(status_code=404, detail="schedule 不存在")
 
     update_data: dict[str, Any] = {}
+    cron_or_tz_changed = False
     if payload.name is not None:
         update_data["name"] = payload.name.strip()
     if payload.description is not None:
@@ -152,13 +161,23 @@ async def update_schedule(
         if not is_valid_cron_expression(normalized):
             raise HTTPException(status_code=422, detail="cron_expression 不合法")
         update_data["cron_expression"] = normalized
+        cron_or_tz_changed = True
     if payload.timezone is not None:
         normalized_tz = payload.timezone.strip() or "UTC"
         if not is_valid_timezone(normalized_tz):
             raise HTTPException(status_code=422, detail="timezone 不合法")
         update_data["timezone"] = normalized_tz
+        cron_or_tz_changed = True
     if payload.enabled is not None:
         update_data["enabled"] = 1 if payload.enabled else 0
+
+    # cron / timezone 变更：按新表达式重新算 next_fire_at（漏过去的多次不补）
+    if cron_or_tz_changed:
+        merged_view = SimpleNamespace(
+            cron_expression=update_data.get("cron_expression", record.cron_expression),
+            timezone=update_data.get("timezone", record.timezone),
+        )
+        update_data["next_fire_at"] = compute_next_fire_at(schedule=merged_view)
 
     if not update_data:
         return {"schedule": record.to_dict()}
