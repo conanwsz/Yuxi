@@ -3,6 +3,7 @@ import { ref, onMounted, computed, provide, watch } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import {
   BarChart3,
+  CalendarClock,
   ClipboardList,
   LibraryBig,
   Box,
@@ -150,6 +151,15 @@ const mainList = computed(() => {
       path: '/dashboard',
       icon: BarChart3,
       activeIcon: BarChart3
+    })
+  }
+
+  if (userStore.hasPermission('system.schedules.manage')) {
+    items.push({
+      name: '定时任务',
+      path: '/schedules',
+      icon: CalendarClock,
+      activeIcon: CalendarClock
     })
   }
 
