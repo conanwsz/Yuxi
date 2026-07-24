@@ -980,29 +980,6 @@ async def create_oidc_user(db, user_info: dict, issuer: str, email: str, departm
     )
 
 
-async def restore_deleted_oidc_user(db, deleted_user: User, user_info: dict) -> User:
-    """恢复已注销的 OIDC 用户并返回可登录用户"""
-    preferred_username = user_info["name"] or user_info["username"]
-
-    deleted_user.is_deleted = 0
-    deleted_user.deleted_at = None
-    deleted_user.last_login = utc_now_naive()
-    deleted_user.phone_number = None
-    deleted_user.avatar = None
-
-    if deleted_user.username.startswith("已注销用户-"):
-        deleted_user.username = await build_unique_oidc_username(db, preferred_username, user_info["sub"])
-
-    if deleted_user.password_hash == "DELETED":
-        random_password = secrets.token_urlsafe(32)
-        deleted_user.password_hash = AuthUtils.hash_password(random_password)
-
-    await db.commit()
-    await db.refresh(deleted_user)
-    logger.info(f"Restored deleted OIDC user: {deleted_user.username} ({deleted_user.uid})")
-    return deleted_user
-
-
 async def update_oidc_user_login(db, user: User) -> None:
     """更新 OIDC 用户登录时间"""
     user.last_login = utc_now_naive()
@@ -1090,6 +1067,11 @@ async def oidc_callback_handler(
     # 新身份表以 issuer + subject 为主键；旧 uid/占位绑定仅用于兼容并在成功后迁移。
     user_by_identity = await find_user_by_external_identity(db, issuer, sub)
     user_by_sub = user_by_identity or await find_legacy_user_by_oidc_sub(db, issuer, sub)
+    disabled_user = await find_user_by_external_identity(db, issuer, sub, deleted=True)
+    if disabled_user is None:
+        disabled_user = await find_legacy_user_by_oidc_sub(db, issuer, sub, deleted=True)
+    if disabled_user:
+        return _redirect_to_login_with_error("该账户已禁用")
     if email:
         email_identity = await find_external_identity_by_email(db, email)
         if email_identity and (email_identity.issuer != issuer or email_identity.subject != sub):
@@ -1138,24 +1120,17 @@ async def oidc_callback_handler(
     if user:
         logger.info(f"OIDC user logged in: {user.username}")
     elif oidc_config.auto_create_user:
-        deleted_user = await find_user_by_external_identity(db, issuer, sub, deleted=True)
-        if deleted_user is None:
-            deleted_user = await find_legacy_user_by_oidc_sub(db, issuer, sub, deleted=True)
-        if deleted_user:
-            user = await restore_deleted_oidc_user(db, deleted_user, extracted_info)
-            logger.info(f"OIDC deleted user restored and logged in: {user.username}")
-        else:
-            if not email:
-                return _redirect_to_login_with_error("无法获取有效邮箱，请联系管理员检查第三方登录配置")
-            # 从用户信息中获取部门信息
-            dept_name = extracted_info.get("department_name")
-            dept_desc = extracted_info.get("department_description")
-            dept = await get_or_create_oidc_department(db, dept_name, dept_desc)
-            department_id = dept.id if dept else None
-            try:
-                user = await create_oidc_user(db, extracted_info, issuer, email, department_id)
-            except OIDCIdentityConflict:
-                return _redirect_to_login_with_error("该邮箱已绑定其他第三方身份，请联系管理员处理")
+        if not email:
+            return _redirect_to_login_with_error("无法获取有效邮箱，请联系管理员检查第三方登录配置")
+        # 从用户信息中获取部门信息
+        dept_name = extracted_info.get("department_name")
+        dept_desc = extracted_info.get("department_description")
+        dept = await get_or_create_oidc_department(db, dept_name, dept_desc)
+        department_id = dept.id if dept else None
+        try:
+            user = await create_oidc_user(db, extracted_info, issuer, email, department_id)
+        except OIDCIdentityConflict:
+            return _redirect_to_login_with_error("该邮箱已绑定其他第三方身份，请联系管理员处理")
     else:
         return _redirect_to_login_with_error("用户未注册，请联系管理员开通账号")
 

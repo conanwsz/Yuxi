@@ -71,23 +71,25 @@ class UserRepository:
         department_id: int | None = None,
         department_ids: set[int] | None = None,
         role: str | None = None,
+        include_disabled: bool = False,
     ) -> Annotated[list[tuple[User, str | None]], "用户列表，包含部门名称"]:
         """获取用户列表，包含部门名称"""
         async with pg_manager.get_async_session_context() as session:
             from yuxi.storage.postgres.models_business import Department
 
-            query = (
-                select(User, Department.name.label("department_name"))
-                .outerjoin(Department, User.department_id == Department.id)
-                .where(User.is_deleted == 0)
+            query = select(User, Department.name.label("department_name")).outerjoin(
+                Department, User.department_id == Department.id
             )
+            if not include_disabled:
+                query = query.where(User.is_deleted == 0)
             if department_id is not None:
                 query = query.where(User.department_id == department_id)
             if department_ids is not None:
                 membership_user_ids = select(UserDepartmentMembership.user_id).where(
                     UserDepartmentMembership.department_id.in_(department_ids),
-                    UserDepartmentMembership.status == "active",
                 )
+                if not include_disabled:
+                    membership_user_ids = membership_user_ids.where(UserDepartmentMembership.status == "active")
                 query = query.where(User.id.in_(membership_user_ids))
             if role is not None:
                 query = query.where(User.role == role)
@@ -126,8 +128,8 @@ class UserRepository:
                     setattr(user, key, value)
         return user
 
-    async def soft_delete(self, id: int, username: str | None = None, phone_number: str | None = None) -> bool:
-        """软删除用户"""
+    async def disable(self, id: int, username: str | None = None, phone_number: str | None = None) -> bool:
+        """禁用用户"""
         async with pg_manager.get_async_session_context() as session:
             result = await session.execute(select(User).where(User.id == id, User.is_deleted == 0))
             user = result.scalar_one_or_none()
@@ -140,7 +142,7 @@ class UserRepository:
                 import hashlib
 
                 hash_suffix = hashlib.sha256(user.uid.encode()).hexdigest()[:4]
-                user.username = f"已注销用户-{hash_suffix}"
+                user.username = f"已禁用用户-{hash_suffix}"
             if phone_number:
                 user.phone_number = None
             api_key_result = await session.execute(select(APIKey).where(APIKey.user_id == user.id))

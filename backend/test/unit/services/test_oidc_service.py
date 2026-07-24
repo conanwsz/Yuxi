@@ -126,6 +126,58 @@ async def test_oidc_callback_allows_existing_binding_when_sub_contains_colon(oid
     assert identity.user_id == user.id
 
 
+async def test_oidc_callback_rejects_disabled_user_instead_of_restoring(oidc_session, monkeypatch):
+    user = await _create_user(oidc_session, "oidc:legacy-user")
+    await oidc_service.bind_external_identity(
+        oidc_session,
+        user,
+        "https://issuer.example",
+        "disabled-subject",
+        "790100005580@example.com",
+    )
+    user.is_deleted = 1
+    await oidc_session.commit()
+
+    monkeypatch.setattr(oidc_service.oidc_config, "enabled", True)
+    monkeypatch.setattr(oidc_service.oidc_config, "issuer_url", "https://issuer.example")
+    monkeypatch.setattr(oidc_service.oidc_config, "client_id", "cid")
+    monkeypatch.setattr(oidc_service.oidc_config, "client_secret", "secret")
+    monkeypatch.setattr(oidc_service.oidc_config, "redirect_uri", "https://yuxi.example/api/auth/oidc/callback")
+    monkeypatch.setattr(oidc_service.oidc_config, "use_raw_username", False)
+    monkeypatch.setattr(oidc_service.oidc_config, "auto_create_user", True)
+    monkeypatch.setattr(
+        oidc_service.OIDCUtils,
+        "verify_state",
+        classmethod(lambda cls, state: {"redirect_path": "/", "nonce": "nonce", "code_verifier": "verifier"}),
+    )
+
+    async def fake_exchange(cls, code, code_verifier):
+        return {"access_token": "token", "id_token": "id-token"}
+
+    async def fake_verify_id_token(cls, id_token, expected_nonce):
+        return {"iss": "https://issuer.example", "sub": "disabled-subject"}
+
+    async def fake_userinfo(cls, access_token):
+        return {
+            "sub": "disabled-subject",
+            "preferred_username": "disabled-user",
+            "name": "Disabled User",
+            "email": "790100005580@example.com",
+        }
+
+    monkeypatch.setattr(oidc_service.OIDCUtils, "exchange_code_for_token", classmethod(fake_exchange))
+    monkeypatch.setattr(oidc_service.OIDCUtils, "verify_id_token", classmethod(fake_verify_id_token))
+    monkeypatch.setattr(oidc_service.OIDCUtils, "get_userinfo", classmethod(fake_userinfo))
+
+    response = await oidc_service.oidc_callback_handler("code", "state", oidc_session)
+
+    assert response.status_code == 302
+    assert "error=" in response.headers["location"]
+    await oidc_session.refresh(user)
+    assert user.is_deleted == 1
+    assert user.uid == "oidc:legacy-user"
+
+
 async def test_authorization_url_uses_pkce_nonce_and_safe_redirect(monkeypatch):
     monkeypatch.setattr(oidc_service.oidc_config, "enabled", True)
     monkeypatch.setattr(oidc_service.oidc_config, "issuer_url", "https://issuer.example")
@@ -430,14 +482,9 @@ async def test_legacy_sub_binding_requires_explicit_matching_issuer(oidc_session
     monkeypatch.setattr(oidc_service.oidc_config, "legacy_issuer_url", "https://old-issuer.example")
 
     assert (
-        await oidc_service.find_legacy_user_by_oidc_sub(
-            oidc_session, "https://new-issuer.example", "same-sub"
-        )
-        is None
+        await oidc_service.find_legacy_user_by_oidc_sub(oidc_session, "https://new-issuer.example", "same-sub") is None
     )
-    resolved = await oidc_service.find_legacy_user_by_oidc_sub(
-        oidc_session, "https://old-issuer.example", "same-sub"
-    )
+    resolved = await oidc_service.find_legacy_user_by_oidc_sub(oidc_session, "https://old-issuer.example", "same-sub")
     assert resolved.id == user.id
 
 
@@ -454,9 +501,7 @@ async def test_created_oidc_user_uses_employee_number_from_email_as_uid(oidc_ses
     )
 
     assert user.uid == "790100005580"
-    identity = await oidc_service.find_user_by_external_identity(
-        oidc_session, "https://issuer.example", subject
-    )
+    identity = await oidc_service.find_user_by_external_identity(oidc_session, "https://issuer.example", subject)
     assert identity.id == user.id
 
 

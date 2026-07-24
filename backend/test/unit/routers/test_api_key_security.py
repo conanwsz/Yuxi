@@ -1,19 +1,22 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from datetime import timedelta
 
 import pytest
 import pytest_asyncio
 from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from server.routers.auth_router import delete_user
+from server.routers.auth_router import delete_user, disable_user
 from server.routers.user_router import APIKeyCreate, create_api_key
 from server.utils.auth_middleware import _verify_api_key
 from yuxi.repositories import user_repository as user_repository_module
 from yuxi.repositories.user_repository import UserRepository
-from yuxi.storage.postgres.models_business import APIKey, Base, Department, User
+from yuxi.storage.postgres.models_business import APIKey, Base, CLIAuthSession, Department, ExternalIdentity, User
 from yuxi.utils.auth_utils import AuthUtils
+from yuxi.utils.datetime_utils import utc_now_naive
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 
@@ -156,7 +159,7 @@ async def test_create_api_key_allows_current_user_department(session):
     assert response.secret.startswith(response.api_key.key_prefix)
 
 
-async def test_delete_user_disables_owned_api_keys(session):
+async def test_disable_user_disables_owned_api_keys(session):
     db = session["db"]
     _secret, key_hash, key_prefix = AuthUtils.generate_api_key()
     api_key = APIKey(
@@ -170,14 +173,59 @@ async def test_delete_user_disables_owned_api_keys(session):
     await db.commit()
     await db.refresh(api_key)
 
-    result = await delete_user(session["regular_user"].id, None, session["superadmin"], db)
+    result = await disable_user(session["regular_user"].id, None, session["superadmin"], db)
     await db.refresh(api_key)
 
     assert result["success"] is True
+    assert result["message"] == "用户已禁用"
     assert api_key.is_enabled is False
 
 
-async def test_user_repository_soft_delete_disables_owned_api_keys(session, monkeypatch):
+async def test_delete_user_physically_removes_account_and_auth_bindings(session):
+    db = session["db"]
+    user = session["regular_user"]
+    _secret, key_hash, key_prefix = AuthUtils.generate_api_key()
+    api_key = APIKey(
+        key_hash=key_hash,
+        key_prefix=key_prefix,
+        name="owned key",
+        user_id=user.id,
+        created_by=str(user.id),
+    )
+    identity = ExternalIdentity(
+        issuer="https://issuer.example",
+        subject="subject-123",
+        user_id=user.id,
+        email="790100005580@example.com",
+    )
+    db.add_all([api_key, identity])
+    await db.flush()
+    cli_session = CLIAuthSession(
+        device_code_hash="device-code",
+        user_code="USER-CODE",
+        status="approved",
+        key_name="test",
+        approved_user_id=user.id,
+        api_key_id=api_key.id,
+        expires_at=utc_now_naive() + timedelta(minutes=5),
+    )
+    db.add(cli_session)
+    await db.commit()
+
+    result = await delete_user(user.id, None, session["superadmin"], db)
+
+    assert result == {"success": True, "message": "用户已删除"}
+    assert await db.get(User, user.id) is None
+    assert (await db.execute(select(APIKey).where(APIKey.user_id == user.id))).scalar_one_or_none() is None
+    assert (
+        await db.execute(select(ExternalIdentity).where(ExternalIdentity.user_id == user.id))
+    ).scalar_one_or_none() is None
+    await db.refresh(cli_session)
+    assert cli_session.approved_user_id is None
+    assert cli_session.api_key_id is None
+
+
+async def test_user_repository_disable_disables_owned_api_keys(session, monkeypatch):
     db = session["db"]
     _secret, key_hash, key_prefix = AuthUtils.generate_api_key()
     api_key = APIKey(
@@ -198,7 +246,7 @@ async def test_user_repository_soft_delete_disables_owned_api_keys(session, monk
 
     monkeypatch.setattr(user_repository_module.pg_manager, "get_async_session_context", fake_session_context)
 
-    assert await UserRepository().soft_delete(session["regular_user"].id) is True
+    assert await UserRepository().disable(session["regular_user"].id) is True
     await db.refresh(api_key)
 
     assert api_key.is_enabled is False

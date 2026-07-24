@@ -5,15 +5,20 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request, status, Up
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_business import (
     APIKey,
+    AgentEnv,
+    CLIAuthSession,
     Department,
     DepartmentAdminAssignment,
+    ExternalIdentity,
+    OperationLog,
     User,
+    UserConfig,
     UserDepartmentMembership,
 )
 from yuxi.repositories.user_repository import UserRepository
@@ -74,7 +79,6 @@ class UserCreate(BaseModel):
     username: str
     password: str
     role: str = "user"
-    phone_number: str | None = None
     department_id: int | None = None
     primary_department_id: int | None = None
     part_time_department_ids: list[int] = Field(default_factory=list)
@@ -113,6 +117,7 @@ class UserResponse(BaseModel):
     managed_department_ids: list[int] = Field(default_factory=list)
     created_at: str
     last_login: str | None = None
+    is_disabled: bool = False
 
 
 class UserAccessOption(BaseModel):
@@ -466,6 +471,7 @@ async def initialize_admin(admin_data: InitializeAdmin, db: AsyncSession = Depen
 
 async def _serialize_user(db: AsyncSession, user: User, *, role_name: str | None = None) -> dict:
     data = user.to_dict()
+    data["is_disabled"] = bool(data.pop("is_deleted", 0))
     if role_name is None:
         role = await RoleRepository(db).get(user.role)
         role_name = role.name if role else user.role
@@ -491,27 +497,31 @@ async def _serialize_users(db: AsyncSession, users: list[User]) -> list[dict]:
         return []
     user_ids = [user.id for user in users]
     departments = {item["id"]: item for item in await OrganizationService.list_departments(db)}
+    users_by_id = {user.id: user for user in users}
     membership_result = await db.execute(
-        select(UserDepartmentMembership).where(
-            UserDepartmentMembership.user_id.in_(user_ids), UserDepartmentMembership.status == "active"
-        )
+        select(UserDepartmentMembership).where(UserDepartmentMembership.user_id.in_(user_ids))
     )
     membership_map: dict[int, list] = {}
     for membership in membership_result.scalars().all():
-        membership_map.setdefault(membership.user_id, []).append(membership)
+        if membership.status == "active" or users_by_id[membership.user_id].is_deleted:
+            membership_map.setdefault(membership.user_id, []).append(membership)
     assignment_result = await db.execute(
-        select(DepartmentAdminAssignment.user_id, DepartmentAdminAssignment.department_id).where(
-            DepartmentAdminAssignment.user_id.in_(user_ids), DepartmentAdminAssignment.status == "active"
-        )
+        select(
+            DepartmentAdminAssignment.user_id,
+            DepartmentAdminAssignment.department_id,
+            DepartmentAdminAssignment.status,
+        ).where(DepartmentAdminAssignment.user_id.in_(user_ids))
     )
     assignment_map: dict[int, list[int]] = {}
-    for user_id, department_id in assignment_result.all():
-        assignment_map.setdefault(int(user_id), []).append(int(department_id))
+    for user_id, department_id, assignment_status in assignment_result.all():
+        if assignment_status == "active" or users_by_id[user_id].is_deleted:
+            assignment_map.setdefault(int(user_id), []).append(int(department_id))
     role_names = {role.key: role.name for role in await RoleRepository(db).list_all()}
 
     result: list[dict] = []
     for user in users:
         data = user.to_dict()
+        data["is_disabled"] = bool(data.pop("is_deleted", 0))
         data["role_name"] = role_names.get(user.role, user.role)
         relations = []
         for membership in membership_map.get(user.id, []):
@@ -635,12 +645,6 @@ async def create_user(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error_msg)
     if (await db.execute(select(User.id).where(User.username == user_data.username))).scalar_one_or_none():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="用户名已存在")
-    if user_data.phone_number:
-        if not is_valid_phone_number(user_data.phone_number):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="手机号格式不正确")
-        if (await db.execute(select(User.id).where(User.phone_number == user_data.phone_number))).scalar_one_or_none():
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="手机号已存在")
-
     existing_uids = list((await db.execute(select(User.uid))).scalars().all())
     uid = generate_unique_uid(user_data.username, existing_uids)
     role = await RoleRepository(db).get(user_data.role)
@@ -672,7 +676,7 @@ async def create_user(
     new_user = User(
         username=user_data.username,
         uid=uid,
-        phone_number=user_data.phone_number,
+        phone_number=None,
         password_hash=AuthUtils.hash_password(user_data.password),
         role=user_data.role,
         department_id=requested_primary,
@@ -708,12 +712,13 @@ async def read_users(
 
     # 部门隔离逻辑
     if current_user.role == "superadmin":
-        users_with_dept = await user_repo.list_with_department(skip=skip, limit=limit)
+        users_with_dept = await user_repo.list_with_department(skip=skip, limit=limit, include_disabled=True)
     else:
         users_with_dept = await user_repo.list_with_department(
             skip=skip,
             limit=limit,
             department_ids=set(getattr(current_user, "managed_department_ids", set())),
+            include_disabled=True,
         )
     return await _serialize_users(db, [user for user, _ in users_with_dept])
 
@@ -721,15 +726,13 @@ async def read_users(
 async def _ensure_user_in_current_department(db: AsyncSession, current_user: User, target_user: User) -> None:
     if current_user.role == "superadmin":
         return
-    manageable_membership = await db.execute(
-        select(UserDepartmentMembership.id)
-        .where(
-            UserDepartmentMembership.user_id == target_user.id,
-            UserDepartmentMembership.department_id.in_(set(getattr(current_user, "managed_department_ids", set()))),
-            UserDepartmentMembership.status == "active",
-        )
-        .limit(1)
+    membership_query = select(UserDepartmentMembership.id).where(
+        UserDepartmentMembership.user_id == target_user.id,
+        UserDepartmentMembership.department_id.in_(set(getattr(current_user, "managed_department_ids", set()))),
     )
+    if not target_user.is_deleted:
+        membership_query = membership_query.where(UserDepartmentMembership.status == "active")
+    manageable_membership = await db.execute(membership_query.limit(1))
     if manageable_membership.scalar_one_or_none() is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -956,12 +959,12 @@ async def update_user(
     return await _serialize_user(db, user)
 
 
-# 路由：删除用户（管理员权限）
-@auth.delete("/users/{user_id}", response_model=dict)
-async def delete_user(
+# 路由：禁用用户（管理员权限）
+@auth.post("/users/{user_id}/disable", response_model=dict)
+async def disable_user(
     user_id: int,
     request: Request,
-    current_user: User = Depends(require_permission("users.delete")),
+    current_user: User = Depends(require_permission("users.disable")),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(select(User).filter(User.id == user_id, User.is_deleted == 0))
@@ -998,14 +1001,14 @@ async def delete_user(
     if user.is_deleted:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="该用户已经被删除",
+            detail="该用户已经被禁用",
         )
 
-    deletion_detail = f"删除用户: {user.username}, ID: {user.id}, 角色: {user.role}"
+    disable_detail = f"禁用用户: {user.username}, ID: {user.id}, 角色: {user.role}"
 
     user.is_deleted = 1
     user.deleted_at = utc_now_naive()
-    user.username = f"已注销用户-{user.id}"
+    user.username = f"已禁用用户-{user.id}"
     user.phone_number = None  # 清空手机号，释放该手机号供其他用户使用
     user.password_hash = "DELETED"  # 禁止登录
     user.avatar = None  # 清空头像
@@ -1026,6 +1029,55 @@ async def delete_user(
     await db.commit()
 
     # 记录操作
+    await log_operation(db, current_user.id, "禁用用户", disable_detail, request)
+
+    return {"success": True, "message": "用户已禁用"}
+
+
+# 路由：物理删除用户（管理员权限）
+@auth.delete("/users/{user_id}", response_model=dict)
+async def delete_user(
+    user_id: int,
+    request: Request,
+    current_user: User = Depends(require_permission("users.delete")),
+    db: AsyncSession = Depends(get_db),
+):
+    user = await db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
+
+    await _ensure_user_in_current_department(db, current_user, user)
+    if user.role == "superadmin":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不能删除超级管理员账户")
+    if current_user.role == "admin" and user.role != "user":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="管理员只能删除普通用户账户")
+    if user.id == current_user.id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不能删除自己的账户")
+
+    deletion_detail = f"物理删除用户: {user.username}, ID: {user.id}, UID: {user.uid}, 角色: {user.role}"
+    api_key_ids = list((await db.execute(select(APIKey.id).where(APIKey.user_id == user.id))).scalars().all())
+    await db.execute(
+        update(CLIAuthSession).where(CLIAuthSession.approved_user_id == user.id).values(approved_user_id=None)
+    )
+    if api_key_ids:
+        await db.execute(
+            update(CLIAuthSession).where(CLIAuthSession.api_key_id.in_(api_key_ids)).values(api_key_id=None)
+        )
+    await db.execute(
+        update(DepartmentAdminAssignment).where(DepartmentAdminAssignment.granted_by == user.id).values(granted_by=None)
+    )
+    for model, condition in (
+        (OperationLog, OperationLog.user_id == user.id),
+        (APIKey, APIKey.user_id == user.id),
+        (ExternalIdentity, ExternalIdentity.user_id == user.id),
+        (AgentEnv, AgentEnv.uid == user.uid),
+        (UserConfig, UserConfig.uid == user.uid),
+        (UserDepartmentMembership, UserDepartmentMembership.user_id == user.id),
+        (DepartmentAdminAssignment, DepartmentAdminAssignment.user_id == user.id),
+    ):
+        await db.execute(delete(model).where(condition))
+    await db.delete(user)
+    await db.commit()
     await log_operation(db, current_user.id, "删除用户", deletion_detail, request)
 
     return {"success": True, "message": "用户已删除"}
