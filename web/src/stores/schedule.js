@@ -3,25 +3,29 @@ import { ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { scheduleApi } from '@/apis/schedule'
 import { useUserStore } from '@/stores/user'
+import { humanizeCron } from '@/utils/cron'
 
 const PERMISSION = 'system.schedules.manage'
 
-const toSchedule = (raw = {}) => ({
-  id: raw.id,
-  name: raw.name || '未命名计划',
-  description: raw.description || '',
-  agent_slug: raw.agent_slug || '',
-  agent_name: raw.agent_name || raw.agent_slug || '',
-  query: raw.query || '',
-  cron_expression: raw.cron_expression || '',
-  timezone: raw.timezone || 'UTC',
-  enabled: raw.enabled ?? true,
-  owner_uid: raw.owner_uid || '',
-  last_fired_at: raw.last_fired_at,
-  next_fire_at: raw.next_fire_at,
-  created_at: raw.created_at,
-  updated_at: raw.updated_at
-})
+const toSchedule = (raw = {}) => {
+  const humanized = humanizeCron(raw.cron_expression || '')
+  return {
+    id: raw.id,
+    name: raw.name || '未命名计划',
+    description: raw.description || '',
+    agent_slug: raw.agent_slug || '',
+    agent_name: raw.agent_name || raw.agent_slug || '',
+    query: raw.query || '',
+    cron_expression: raw.cron_expression || '',
+    cron_label: humanized.label,
+    enabled: raw.enabled ?? true,
+    owner_uid: raw.owner_uid || '',
+    last_fired_at: raw.last_fired_at,
+    next_fire_at: raw.next_fire_at,
+    created_at: raw.created_at,
+    updated_at: raw.updated_at
+  }
+}
 
 const toExecution = (raw = {}) => ({
   id: raw.id,

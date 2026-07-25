@@ -29,13 +29,14 @@ export const scheduleApi = {
     apiAdminGet(`${BASE_URL}/${id}/executions${buildQuery(params)}`),
 
   fetchAgentOptions: async () => {
-    // 拉取全量可见 agent 列表（包含 subagent），由调用方按需筛选。
+    // 只展示主 agent（过滤 subagent），subagent 不应该被直接调度。
     const response = await apiGet('/api/agent?include_subagents=true')
     const list = response?.agents || []
-    return list.map((agent) => ({
-      slug: agent.slug || agent.agent_id || agent.id,
-      name: agent.name || agent.slug || agent.id,
-      is_subagent: !!agent.is_subagent
-    }))
+    return list
+      .filter((agent) => !agent.is_subagent)
+      .map((agent) => ({
+        slug: agent.slug || agent.agent_id || agent.id,
+        name: agent.name || agent.slug || agent.id
+      }))
   }
 }
