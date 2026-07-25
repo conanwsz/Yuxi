@@ -2318,6 +2318,8 @@ const { startRunStream, resumeActiveRunForThread, stopRunStreamSubscription } = 
     if (approvalState.threadId === threadId || touchedThreadIds.includes(approvalState.threadId)) {
       hideApprovalState()
     }
+    // 收到回复后让会话上浮到列表顶部
+    touchedThreadIds.forEach((id) => chatThreadsStore.touchThread(id))
   }
 })
 
@@ -2548,6 +2550,8 @@ const handleSendMessage = async ({ image } = {}) => {
       throw new Error('创建 run 失败：缺少 run_id')
     }
     await startRunStream(threadId, runId, 0)
+    // 发送消息后让会话上浮到列表顶部
+    chatThreadsStore.touchThread(threadId)
   } catch (error) {
     threadState.isStreaming = false
     threadState.replyLoadingVisible = false

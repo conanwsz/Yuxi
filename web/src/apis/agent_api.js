@@ -133,6 +133,12 @@ export const agentApi = {
   getThreadActiveRun: (threadId) => apiGet(`/api/agent/thread/${threadId}/active_run`),
 
   /**
+   * 获取当前用户所有活跃 Run（轻量，仅 run_id/thread_id/status）
+   * @returns {Promise<Object>}
+   */
+  getActiveRuns: () => apiGet('/api/agent/runs/active'),
+
+  /**
    * 打开 Run 事件 SSE 连接（调用方负责关闭）
    * @param {string} runId - run ID
    * @param {string} afterSeq - 起始 seq/cursor

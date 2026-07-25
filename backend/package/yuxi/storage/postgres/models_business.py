@@ -1,7 +1,8 @@
 """PostgreSQL 业务数据模型 - 用户、部门、对话等相关表"""
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import (
     JSON,
@@ -23,6 +24,18 @@ from sqlalchemy.orm import relationship
 from yuxi.utils.datetime_utils import format_utc_datetime, utc_now_naive
 
 Base = declarative_base()
+
+
+def _format_naive_utc(value: datetime | None) -> str | None:
+    """Schedule 的 last_fired_at / next_fire_at 是 UTC naive（物理时刻即 UTC），
+    不能再走 format_utc_datetime——后者会通过 ensure_utc 把 naive 当 Asia/Shanghai
+    处理，导致输出比实际物理时间早 8 小时。
+    """
+    if value is None:
+        return None
+    if value.tzinfo is not None:
+        value = value.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
+    return value.isoformat() + "Z"
 
 MAX_LOGIN_FAILED_ATTEMPTS = 5
 LOGIN_LOCK_DURATION_SECONDS = 300
@@ -1047,3 +1060,97 @@ Index(
     postgresql_where=AgentRun.status.notin_(AGENT_RUN_TERMINAL_STATUSES),
     sqlite_where=AgentRun.status.notin_(AGENT_RUN_TERMINAL_STATUSES),
 )
+
+
+SCHEDULE_STATUS_PENDING = "pending"
+SCHEDULE_STATUS_RUNNING = "running"
+SCHEDULE_STATUS_SUCCESS = "success"
+SCHEDULE_STATUS_FAILED = "failed"
+SCHEDULE_STATUS_SKIPPED = "skipped"
+SCHEDULE_EXECUTION_STATUSES = frozenset(
+    {
+        SCHEDULE_STATUS_PENDING,
+        SCHEDULE_STATUS_RUNNING,
+        SCHEDULE_STATUS_SUCCESS,
+        SCHEDULE_STATUS_FAILED,
+        SCHEDULE_STATUS_SKIPPED,
+    }
+)
+SCHEDULE_EXECUTION_TERMINAL_STATUSES = frozenset(
+    {
+        SCHEDULE_STATUS_SUCCESS,
+        SCHEDULE_STATUS_FAILED,
+        SCHEDULE_STATUS_SKIPPED,
+    }
+)
+
+
+class Schedule(Base):
+    """定时任务定义表 — 描述一个由 cron 表达式驱动的 AgentRun 调度项。"""
+
+    __tablename__ = "schedules"
+
+    id = Column(String(32), primary_key=True)
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    agent_slug = Column(String(128), nullable=False, index=True)
+    query = Column(Text, nullable=False)
+    runtime_overrides = Column(JSON, nullable=True)
+    # cron 表达式固定以服务器 TZ（Asia/Shanghai）解释，不暴露 timezone 字段给用户。
+    cron_expression = Column(String(128), nullable=False)
+    enabled = Column(Integer, nullable=False, default=1, index=True)
+    owner_uid = Column(String(64), nullable=False, index=True)
+    last_fired_at = Column(DateTime, nullable=True)
+    next_fire_at = Column(DateTime, nullable=True, index=True)
+    created_at = Column(DateTime, default=utc_now_naive)
+    updated_at = Column(DateTime, default=utc_now_naive, onupdate=utc_now_naive)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "description": self.description,
+            "agent_slug": self.agent_slug,
+            "query": self.query,
+            "runtime_overrides": self.runtime_overrides or {},
+            "cron_expression": self.cron_expression,
+            "enabled": bool(self.enabled),
+            "owner_uid": self.owner_uid,
+            "last_fired_at": _format_naive_utc(self.last_fired_at),
+            "next_fire_at": _format_naive_utc(self.next_fire_at),
+            "created_at": format_utc_datetime(self.created_at),
+            "updated_at": format_utc_datetime(self.updated_at),
+        }
+
+
+class ScheduleExecution(Base):
+    """定时任务执行历史 — 每次触发落地一条记录，跟随 run 生命周期更新状态。"""
+
+    __tablename__ = "schedule_executions"
+
+    id = Column(String(32), primary_key=True)
+    schedule_id = Column(String(32), nullable=False, index=True)
+    agent_run_id = Column(String(64), nullable=True, index=True)
+    scheduled_at = Column(DateTime, nullable=False)
+    fired_at = Column(DateTime, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    status = Column(String(32), nullable=False, default=SCHEDULE_STATUS_PENDING, index=True)
+    result_summary = Column(Text, nullable=True)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=utc_now_naive, index=True)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "schedule_id": self.schedule_id,
+            "agent_run_id": self.agent_run_id,
+            "scheduled_at": _format_naive_utc(self.scheduled_at),
+            "fired_at": _format_naive_utc(self.fired_at),
+            "started_at": _format_naive_utc(self.started_at),
+            "completed_at": _format_naive_utc(self.completed_at),
+            "status": self.status,
+            "result_summary": self.result_summary,
+            "error": self.error,
+            "created_at": format_utc_datetime(self.created_at),
+        }

@@ -44,6 +44,7 @@ PERMISSION_GROUPS = [
             ("system.config.update", "修改系统配置"),
             ("system.logs.read", "查看系统日志"),
             ("system.tasks.manage", "管理后台任务"),
+            ("system.schedules.manage", "管理定时任务"),
         ],
     },
     {

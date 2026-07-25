@@ -609,6 +609,41 @@ class PostgresManager(metaclass=SingletonMeta):
             END $$
             """,
             """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM app_schema_migrations
+                    WHERE migration_key = 'schedule_manage_permission_v1'
+                ) THEN
+                    UPDATE roles
+                    SET permissions = permissions::jsonb || '["system.schedules.manage"]'::jsonb
+                    WHERE permissions::jsonb ? 'system.tasks.manage';
+                    INSERT INTO app_schema_migrations (migration_key)
+                    VALUES ('schedule_manage_permission_v1');
+                END IF;
+            END $$
+            """,
+            # schedules 不再需要 timezone 字段（统一以服务器 TZ 解释 cron），
+            # 删列以保证 ORM 模型与表结构一致。
+            """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM app_schema_migrations
+                    WHERE migration_key = 'schedule_drop_timezone_v1'
+                ) THEN
+                    IF EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'schedules' AND column_name = 'timezone'
+                    ) THEN
+                        ALTER TABLE schedules DROP COLUMN timezone;
+                    END IF;
+                    INSERT INTO app_schema_migrations (migration_key)
+                    VALUES ('schedule_drop_timezone_v1');
+                END IF;
+            END $$
+            """,
+            """
             INSERT INTO roles (key, name, description, permissions, resource_access, is_system, created_at, updated_at)
             SELECT DISTINCT users.role, users.role, '从历史用户数据迁移', '[]'::jsonb,
                    '{"models":{"mode":"all","allowed":[],"defaults":{}},"tools":{"mode":"all","allowed":[]},"mcp_servers":{"mode":"all","allowed":[]}}'::jsonb,
@@ -1003,6 +1038,47 @@ class PostgresManager(metaclass=SingletonMeta):
             "CREATE INDEX IF NOT EXISTS ix_conversations_is_pinned ON conversations(is_pinned)",
             "CREATE UNIQUE INDEX IF NOT EXISTS ix_model_providers_provider_id ON model_providers(provider_id)",
             "CREATE INDEX IF NOT EXISTS ix_model_providers_is_enabled ON model_providers(is_enabled)",
+            # ---- 定时任务(Schedule)定义与执行历史 ----
+            """
+            CREATE TABLE IF NOT EXISTS schedules (
+                id VARCHAR(32) PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                description TEXT,
+                agent_slug VARCHAR(128) NOT NULL,
+                query TEXT NOT NULL,
+                runtime_overrides JSONB,
+                cron_expression VARCHAR(128) NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                owner_uid VARCHAR(64) NOT NULL,
+                last_fired_at TIMESTAMP,
+                next_fire_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS ix_schedules_agent_slug ON schedules(agent_slug)",
+            "CREATE INDEX IF NOT EXISTS ix_schedules_owner_uid ON schedules(owner_uid)",
+            "CREATE INDEX IF NOT EXISTS ix_schedules_enabled ON schedules(enabled)",
+            "CREATE INDEX IF NOT EXISTS ix_schedules_next_fire_at ON schedules(next_fire_at)",
+            """
+            CREATE TABLE IF NOT EXISTS schedule_executions (
+                id VARCHAR(32) PRIMARY KEY,
+                schedule_id VARCHAR(32) NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,
+                agent_run_id VARCHAR(64),
+                scheduled_at TIMESTAMP NOT NULL,
+                fired_at TIMESTAMP,
+                started_at TIMESTAMP,
+                completed_at TIMESTAMP,
+                status VARCHAR(32) NOT NULL DEFAULT 'pending',
+                result_summary TEXT,
+                error TEXT,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS ix_schedule_executions_schedule_id ON schedule_executions(schedule_id)",
+            "CREATE INDEX IF NOT EXISTS ix_schedule_executions_agent_run_id ON schedule_executions(agent_run_id)",
+            "CREATE INDEX IF NOT EXISTS ix_schedule_executions_status ON schedule_executions(status)",
+            "CREATE INDEX IF NOT EXISTS ix_schedule_executions_created_at ON schedule_executions(created_at)",
         ]
         async with self.async_engine.begin() as conn:
             # 历史未绑定用户的 API Key 会在下方迁移语句里被静默删除，先计数告警
