@@ -20,7 +20,6 @@ from yuxi.services.scheduler_service import (
     SchedulerService,
     compute_next_fire_at,
     is_valid_cron_expression,
-    is_valid_timezone,
 )
 from yuxi.storage.postgres.models_business import (
     Base,
@@ -55,35 +54,31 @@ def test_cron_validation_rejects_garbage():
     assert not is_valid_cron_expression("not a cron at all")
 
 
-def test_timezone_validation_accepts_iana_and_rejects_unknown():
-    assert is_valid_timezone("UTC")
-    assert is_valid_timezone("Asia/Shanghai")
-    assert is_valid_timezone("America/New_York")
-    assert not is_valid_timezone("Not/AZone")
-    assert not is_valid_timezone("")
-    assert not is_valid_timezone("UTC+8")
+def test_compute_next_fire_at_uses_server_timezone_for_cron_interpretation():
+    """cron 表达式以服务器 TZ（Asia/Shanghai）解释，不接受 schedule 上的 timezone 字段。
 
-
-def test_compute_next_fire_at_respects_cron_and_timezone():
-    schedule = SimpleNamespace(cron_expression="0 0 * * *", timezone="UTC")
-    base = datetime(2026, 1, 1, 0, 0, 0)
-    next_at = compute_next_fire_at(schedule=schedule, base=base)
-    assert next_at is not None
-    # 0 0 * * * 的下一次触发就是次日 00:00 UTC
-    assert next_at == datetime(2026, 1, 2, 0, 0, 0)
-
-
-def test_compute_next_fire_at_handles_utc_base_with_shanghai_timezone():
-    """回归：base 是 UTC naive、tz=Asia/Shanghai，必须先标 UTC 再 astimezone，不能直接贴标签。
-
-    2026-01-01 12:00 UTC = 2026-01-01 20:00 +08；下一个 0 */1 = 21:00 +08 = 13:00 UTC。
-    之前 bug：base_naive.replace(tzinfo=Asia/Shanghai) 会把 12:00 当成 12:00+08（物理时刻
-    变成 04:00 UTC），croniter 算出 13:00+08 = 05:00 UTC —— 偏 8 小时。
+    base = 2026-01-01 12:00 UTC = 20:00 +08，cron `0 0 * * *` = 每天 0:00 +08。
+    当天 0:00 +08 已过，下一个 0:00 +08 是 2026-01-02 00:00 +08 = 2026-01-01 16:00 UTC。
     """
-    schedule = SimpleNamespace(cron_expression="0 */1 * * *", timezone="Asia/Shanghai")
-    base = datetime(2026, 1, 1, 12, 0, 0)  # 12:00 UTC
+    schedule = SimpleNamespace(cron_expression="0 0 * * *")
+    base = datetime(2026, 1, 1, 12, 0, 0)  # 12:00 UTC = 20:00 +08
     next_at = compute_next_fire_at(schedule=schedule, base=base)
     assert next_at is not None
+    # 下一个 00:00 +08 = 2026-01-02 00:00 +08 = 2026-01-01 16:00 UTC
+    assert next_at == datetime(2026, 1, 1, 16, 0, 0)
+
+
+def test_compute_next_fire_at_ignores_schedule_timezone_attribute():
+    """回归：之前 schedule.timezone 字段会被误用为 base 标签导致 8h 偏差。
+
+    即使传入一个带 timezone 属性的 schedule 对象，compute_next_fire_at 也只用
+    服务器 TZ（Asia/Shanghai），不会读取 schedule.timezone。
+    """
+    schedule = SimpleNamespace(cron_expression="0 */1 * * *", timezone="Mars/Olympus")
+    base = datetime(2026, 1, 1, 12, 0, 0)  # 12:00 UTC = 20:00 +08
+    next_at = compute_next_fire_at(schedule=schedule, base=base)
+    assert next_at is not None
+    # 下一个整点 +08 = 21:00 +08 = 13:00 UTC
     assert next_at == datetime(2026, 1, 1, 13, 0, 0)
 
 
@@ -123,16 +118,22 @@ async def test_tick_advances_next_fire_at_in_same_call_as_claim(fake_backend, mo
 
 
 def test_compute_next_fire_at_returns_none_for_invalid_cron():
-    schedule = SimpleNamespace(cron_expression="garbage", timezone="UTC")
+    schedule = SimpleNamespace(cron_expression="garbage")
     assert compute_next_fire_at(schedule=schedule) is None
 
 
-def test_compute_next_fire_at_falls_back_to_utc_on_unknown_timezone():
-    # 时区非法时函数本身不抛，由调用方负责兜底；这里确认它仍能返回 UTC 时间
-    schedule = SimpleNamespace(cron_expression="*/5 * * * *", timezone="Mars/Olympus")
-    next_at = compute_next_fire_at(schedule=schedule, base=datetime(2026, 1, 1, 0, 0, 0))
-    assert next_at is not None
+def test_compute_next_fire_at_works_for_basic_frequency_patterns():
+    """基础频率模式 + Asia/Shanghai 时区不偏 8h。
 
+    base = 00:00 UTC = 08:00 +08，croniter 在 +08 下算 next。
+    """
+    # */5 * * * * = 每 5 分钟（与时区无关）
+    schedule = SimpleNamespace(cron_expression="*/5 * * * *")
+    assert compute_next_fire_at(schedule=schedule, base=datetime(2026, 1, 1, 0, 0, 0)) == datetime(2026, 1, 1, 0, 5, 0)
+    # 0 */1 * * * = 每小时 0 分（+08 下）
+    # base 00:00 UTC = 08:00 +08，下一个整点 +08 = 09:00 +08 = 01:00 UTC
+    schedule = SimpleNamespace(cron_expression="0 */1 * * *")
+    assert compute_next_fire_at(schedule=schedule, base=datetime(2026, 1, 1, 0, 0, 0)) == datetime(2026, 1, 1, 1, 0, 0)
 
 # ---------------------------------------------------------------------------
 # sqlite in-memory 替身
@@ -309,7 +310,6 @@ def _make_schedule(**overrides) -> Schedule:
         "query": "ping",
         "runtime_overrides": None,
         "cron_expression": "*/5 * * * *",
-        "timezone": "UTC",
         "enabled": 1,
         "owner_uid": "user-1",
         "last_fired_at": None,
@@ -508,7 +508,6 @@ async def test_repositories_have_due_schedules_query_helper():
                 agent_slug="agent",
                 query="q",
                 cron_expression="*/5 * * * *",
-                timezone="UTC",
                 enabled=1,
                 owner_uid="u",
                 next_fire_at=utc_now_naive(),

@@ -23,7 +23,6 @@ _SCHEDULE_BASE_PAYLOAD = {
     "agent_slug": "default-chatbot",
     "query": "ping",
     "cron_expression": "0 0 * * *",
-    "timezone": "UTC",
     "enabled": True,
 }
 
@@ -57,7 +56,7 @@ async def test_admin_can_create_get_update_delete_schedule(test_client, admin_he
     assert schedule["enabled"] is True
     assert schedule["agent_slug"] == "default-chatbot"
     assert schedule["cron_expression"] == "0 0 * * *"
-    assert schedule["timezone"] == "UTC"
+    assert "timezone" not in schedule, "API 不再返回 timezone 字段"
     assert schedule["owner_uid"], "owner_uid 应被默认填充为当前用户"
 
     try:
@@ -71,14 +70,14 @@ async def test_admin_can_create_get_update_delete_schedule(test_client, admin_he
         # 3) patch
         patch_resp = await test_client.patch(
             f"/api/schedules/{schedule_id}",
-            json={"name": unique_name + "_v2", "enabled": False, "timezone": "Asia/Shanghai"},
+            json={"name": unique_name + "_v2", "enabled": False},
             headers=admin_headers,
         )
         assert patch_resp.status_code == 200, patch_resp.text
         patched = patch_resp.json()["schedule"]
         assert patched["name"] == unique_name + "_v2"
         assert patched["enabled"] is False
-        assert patched["timezone"] == "Asia/Shanghai"
+        assert "timezone" not in patched
 
         # 4) list
         list_resp = await test_client.get("/api/schedules", headers=admin_headers)
@@ -114,10 +113,17 @@ async def test_create_with_invalid_cron_returns_422(test_client, admin_headers):
     assert resp.status_code == 422, resp.text
 
 
-async def test_create_with_invalid_timezone_returns_422(test_client, admin_headers):
-    payload = {**_SCHEDULE_BASE_PAYLOAD, "timezone": "Mars/Olympus"}
+async def test_legacy_timezone_field_is_ignored(test_client, admin_headers):
+    """老数据里带 timezone 字段的请求，API 应忽略（不再使用），不再 422。"""
+    payload = {**_SCHEDULE_BASE_PAYLOAD, "timezone": "Asia/Shanghai"}
     resp = await test_client.post("/api/schedules", json=payload, headers=admin_headers)
-    assert resp.status_code == 422, resp.text
+    # Pydantic v2 默认忽略额外字段，cron 仍然以服务器 TZ 解释
+    assert resp.status_code == 200, resp.text
+    schedule = resp.json()["schedule"]
+    try:
+        assert "timezone" not in schedule
+    finally:
+        await test_client.delete(f"/api/schedules/{schedule['id']}", headers=admin_headers)
 
 
 async def test_fire_endpoint_writes_execution(test_client, admin_headers):

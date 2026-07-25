@@ -623,6 +623,26 @@ class PostgresManager(metaclass=SingletonMeta):
                 END IF;
             END $$
             """,
+            # schedules 不再需要 timezone 字段（统一以服务器 TZ 解释 cron），
+            # 删列以保证 ORM 模型与表结构一致。
+            """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM app_schema_migrations
+                    WHERE migration_key = 'schedule_drop_timezone_v1'
+                ) THEN
+                    IF EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'schedules' AND column_name = 'timezone'
+                    ) THEN
+                        ALTER TABLE schedules DROP COLUMN timezone;
+                    END IF;
+                    INSERT INTO app_schema_migrations (migration_key)
+                    VALUES ('schedule_drop_timezone_v1');
+                END IF;
+            END $$
+            """,
             """
             INSERT INTO roles (key, name, description, permissions, resource_access, is_system, created_at, updated_at)
             SELECT DISTINCT users.role, users.role, '从历史用户数据迁移', '[]'::jsonb,
@@ -1028,7 +1048,6 @@ class PostgresManager(metaclass=SingletonMeta):
                 query TEXT NOT NULL,
                 runtime_overrides JSONB,
                 cron_expression VARCHAR(128) NOT NULL,
-                timezone VARCHAR(64) NOT NULL DEFAULT 'UTC',
                 enabled INTEGER NOT NULL DEFAULT 1,
                 owner_uid VARCHAR(64) NOT NULL,
                 last_fired_at TIMESTAMP,

@@ -1083,8 +1083,8 @@ class Schedule(Base):
     agent_slug = Column(String(128), nullable=False, index=True)
     query = Column(Text, nullable=False)
     runtime_overrides = Column(JSON, nullable=True)
+    # cron 表达式固定以服务器 TZ（Asia/Shanghai）解释，不暴露 timezone 字段给用户。
     cron_expression = Column(String(128), nullable=False)
-    timezone = Column(String(64), nullable=False, default="UTC")
     enabled = Column(Integer, nullable=False, default=1, index=True)
     owner_uid = Column(String(64), nullable=False, index=True)
     last_fired_at = Column(DateTime, nullable=True)
@@ -1101,7 +1101,6 @@ class Schedule(Base):
             "query": self.query,
             "runtime_overrides": self.runtime_overrides or {},
             "cron_expression": self.cron_expression,
-            "timezone": self.timezone,
             "enabled": bool(self.enabled),
             "owner_uid": self.owner_uid,
             "last_fired_at": format_utc_datetime(self.last_fired_at),

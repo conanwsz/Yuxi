@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import uuid
 import zoneinfo
 from datetime import datetime, timedelta
@@ -64,27 +65,19 @@ def is_valid_cron_expression(expr: str) -> bool:
     return True
 
 
-def is_valid_timezone(name: str) -> bool:
-    """校验 IANA 时区名是否合法。"""
-    if not isinstance(name, str) or not name.strip():
-        return False
-    try:
-        zoneinfo.ZoneInfo(name.strip())
-    except (zoneinfo.ZoneInfoNotFoundError, ValueError):
-        return False
-    return True
-
-
 def compute_next_fire_at(
     *, schedule: Schedule, base: datetime | None = None
 ) -> datetime | None:
-    """基于 cron 表达式与 timezone 计算下一次触发时间，base 默认用 UTC 当前时刻。"""
+    """基于 cron 表达式计算下一次触发时间，base 默认用 UTC 当前时刻。
+
+    时区固定为服务器 TZ（默认 Asia/Shanghai），不暴露给用户。
+    """
     base_naive = (base or utc_now_naive()).replace(tzinfo=None)
-    tz_name = (schedule.timezone or "UTC").strip() or "UTC"
+    tz_name = os.environ.get("SCHEDULER_TIMEZONE", "Asia/Shanghai").strip() or "Asia/Shanghai"
     try:
         tz = zoneinfo.ZoneInfo(tz_name)
     except zoneinfo.ZoneInfoNotFoundError:
-        tz = zoneinfo.ZoneInfo("UTC")
+        tz = zoneinfo.ZoneInfo("Asia/Shanghai")
 
     # 关键：base_naive 是 UTC naive，必须先标 UTC 再 astimezone 到目标 tz。
     # 直接 .replace(tzinfo=tz) 是「贴标签」而非「转换」，会把 01:30 UTC 错标为 01:30+08
@@ -455,7 +448,6 @@ __all__ = [
     "SchedulerService",
     "scheduler",
     "is_valid_cron_expression",
-    "is_valid_timezone",
     "compute_next_fire_at",
     "TICK_INTERVAL_SECONDS",
     "TICK_BATCH_LIMIT",
