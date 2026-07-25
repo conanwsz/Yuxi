@@ -985,3 +985,18 @@ async def get_active_run_by_thread(*, thread_id: str, current_uid: str, db: Asyn
     if run and run.status in ("pending", "running", "cancel_requested", "interrupted"):
         return {"run": run.to_dict()}
     return {"run": None}
+
+
+async def list_active_runs_view(*, current_uid: str, db: AsyncSession) -> list[dict]:
+    """返回当前用户所有活跃 run 的轻量摘要，供前端会话列表轮询。"""
+    run_repo = AgentRunRepository(db)
+    runs = await run_repo.list_active_runs_for_user(uid=current_uid)
+    return [
+        {
+            "run_id": run.id,
+            "thread_id": run.conversation_thread_id,
+            "agent_slug": run.agent_slug,
+            "status": run.status,
+        }
+        for run in runs
+    ]

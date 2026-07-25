@@ -1,15 +1,21 @@
-import { computed, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { defineStore } from 'pinia'
-import { threadApi } from '@/apis'
+import { agentApi, threadApi } from '@/apis'
 import { handleChatError } from '@/utils/errorHandler'
 
 const PAGE_SIZE = 100
+const ACTIVE_RUN_POLL_INTERVAL = 8000
 
 export const useChatThreadsStore = defineStore('chatThreads', () => {
   const threads = ref([])
   const currentThreadId = ref(null)
   const hasMoreThreads = ref(true)
   const isLoadingMoreThreads = ref(false)
+
+  // 正在输出的会话（run 进行中），用于侧边栏标题闪烁
+  const streamingThreadIds = reactive(new Set())
+  // 有未读回复的会话（非当前会话收到回复完成），用于侧边栏蓝色圆点
+  const unreadThreadIds = reactive(new Set())
 
   const currentThread = computed(() => {
     if (!currentThreadId.value) return null
@@ -78,6 +84,50 @@ export const useChatThreadsStore = defineStore('chatThreads', () => {
     const thread = threads.value.find((item) => item.id === threadId)
     if (thread) {
       thread.updated_at = new Date().toISOString()
+    }
+  }
+
+  const markUnread = (threadId) => {
+    if (threadId && threadId !== currentThreadId.value) {
+      unreadThreadIds.add(threadId)
+    }
+  }
+
+  const clearUnread = (threadId) => {
+    if (threadId) {
+      unreadThreadIds.delete(threadId)
+    }
+  }
+
+  // 轮询当前用户所有活跃 run，对比变化驱动闪烁/跳顶/未读。
+  // _prevActiveRunMap 在模块作用域持久化，保证轮询间隔跨调用状态连续。
+  let _prevActiveRunMap = new Map()
+
+  const pollActiveRuns = async () => {
+    try {
+      const resp = await agentApi.getActiveRuns()
+      const runs = resp?.runs || []
+      const currentMap = new Map(runs.map((r) => [r.run_id, r.thread_id]))
+
+      // 新出现的 run -> 会话开始输出
+      for (const [runId, threadId] of currentMap) {
+        if (!_prevActiveRunMap.has(runId)) {
+          streamingThreadIds.add(threadId)
+        }
+      }
+
+      // 消失的 run -> 会话输出完成
+      for (const [runId, threadId] of _prevActiveRunMap) {
+        if (!currentMap.has(runId)) {
+          streamingThreadIds.delete(threadId)
+          touchThread(threadId)
+          markUnread(threadId)
+        }
+      }
+
+      _prevActiveRunMap = currentMap
+    } catch {
+      // 轮询失败静默，下次重试
     }
   }
 
@@ -158,9 +208,14 @@ export const useChatThreadsStore = defineStore('chatThreads', () => {
     currentThread,
     hasMoreThreads,
     isLoadingMoreThreads,
+    streamingThreadIds,
+    unreadThreadIds,
     setCurrentThreadId,
     upsertThread,
     touchThread,
+    markUnread,
+    clearUnread,
+    pollActiveRuns,
     loadThreads,
     loadMoreThreads,
     createThread,
