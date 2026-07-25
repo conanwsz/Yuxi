@@ -72,6 +72,15 @@ export const useChatThreadsStore = defineStore('chatThreads', () => {
     }
   }
 
+  // 只更新已存在 thread 的 updated_at，不插入新项。
+  // 用于发送消息 / 收到回复后让会话在列表中上浮，避免 upsertThread 误插入子智能体线程。
+  const touchThread = (threadId) => {
+    const thread = threads.value.find((item) => item.id === threadId)
+    if (thread) {
+      thread.updated_at = new Date().toISOString()
+    }
+  }
+
   const createThread = async (agentId, title = '新的对话') => {
     if (!agentId) return null
 
@@ -151,6 +160,7 @@ export const useChatThreadsStore = defineStore('chatThreads', () => {
     isLoadingMoreThreads,
     setCurrentThreadId,
     upsertThread,
+    touchThread,
     loadThreads,
     loadMoreThreads,
     createThread,
