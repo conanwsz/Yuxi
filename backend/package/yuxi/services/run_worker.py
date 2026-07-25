@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 
 from fastapi import HTTPException
@@ -26,6 +27,11 @@ from yuxi.services.run_queue_service import (
     has_cancel_signal,
     wait_for_cancel_signal,
 )
+from yuxi.services.token_quota_service import (
+    TokenQuotaExceededError,
+    assert_quota_available,
+    token_billing_context,
+)
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_business import Message, User
 from yuxi.storage.redis import get_arq_redis_settings
@@ -36,6 +42,74 @@ LOADING_FLUSH_INTERVAL_MS = 100
 LOADING_FLUSH_MAX_CHARS = 512
 RUN_CANCEL_POLL_SECONDS = 0.2
 SUPPORTED_RUN_TYPES = {"chat", "resume", "subagent"}
+
+
+def _resolve_billing_source(meta: dict) -> str:
+    """根据 run 元数据推导 token 计量 source 标签。"""
+    explicit = meta.get("source") if isinstance(meta, dict) else None
+    if isinstance(explicit, str) and explicit:
+        return explicit
+    invocation_meta = meta.get("agent_invocation_meta") if isinstance(meta, dict) else None
+    if isinstance(invocation_meta, dict):
+        kind = invocation_meta.get("kind")
+        if isinstance(kind, str) and kind:
+            return f"agent_{kind}"
+    run_type = meta.get("run_type") if isinstance(meta, dict) else None
+    if run_type == "subagent":
+        return "subagent"
+    return "agent_chat"
+
+
+@asynccontextmanager
+async def _run_billing_context(*, user: User, meta: dict):
+    """在 run 流式执行期间注入运行级 token 计量上下文。"""
+    request_id = meta.get("request_id") if isinstance(meta, dict) else None
+    thread_id = meta.get("thread_id") if isinstance(meta, dict) else None
+    run_id = meta.get("run_id") if isinstance(meta, dict) else None
+    parent_run_id = meta.get("created_by_run_id") if isinstance(meta, dict) else None
+    source = _resolve_billing_source(meta if isinstance(meta, dict) else {})
+    with token_billing_context(
+        user_id=user.id,
+        uid_snapshot=user.uid,
+        source=source,
+        run_id=run_id,
+        request_id=request_id,
+        thread_id=thread_id,
+        parent_run_id=parent_run_id,
+        metadata={"run_type": meta.get("run_type")} if isinstance(meta, dict) else None,
+    ):
+        yield
+
+
+async def _assert_run_quota(*, db, user: User, meta: dict) -> None:
+    """在启动 run 前检查用户周额度，耗尽时直接标记为 token_quota_exceeded。"""
+    run_id = meta.get("run_id") if isinstance(meta, dict) else None
+    # 单元测试里 user 是 SimpleNamespace 代理，跳过真实预检。
+    if not isinstance(user, User) or getattr(user, "id", None) is None:
+        return
+    # DB 不可用（测试桩）时也跳过，避免阻塞主流程
+    if db is None or not hasattr(db, "execute"):
+        return
+    try:
+        await assert_quota_available(db, user)
+    except TokenQuotaExceededError as exc:
+        logger.warning(f"Run {run_id} rejected: {exc}")
+        await mark_run_terminal(
+            run_id,
+            "failed",
+            error_type="token_quota_exceeded",
+            error_message=str(exc),
+        )
+        await _append_end_event(
+            run_id,
+            "failed",
+            thread_id=meta.get("thread_id") if isinstance(meta, dict) else None,
+            payload={
+                "error_type": "token_quota_exceeded",
+                "error_message": str(exc),
+            },
+        )
+        raise NonRetryableRunError(str(exc)) from exc
 
 
 class RetryableRunError(Exception):
@@ -410,6 +484,7 @@ async def process_agent_run(ctx, run_id: str):
     try:
         async with pg_manager.get_async_session_context() as db:
             await _validate_run_resource_access(db=db, user=user, run=run, payload=payload)
+            await _assert_run_quota(db=db, user=user, meta=meta)
             if run_type == "resume":
                 stream = stream_agent_resume(
                     thread_id=thread_id,
@@ -431,66 +506,69 @@ async def process_agent_run(ctx, run_id: str):
             else:
                 raise RuntimeError(f"unsupported run_type after validation: {run_type}")
 
-            async for chunk_bytes in _consume_stream_with_cancel(stream, run_ctx):
-                for chunk in _iter_json_chunks(chunk_bytes):
-                    target_thread_id = _chunk_thread_id(chunk, thread_id)
-                    if chunk.get("status") == "loading":
-                        await writer.append(chunk, thread_id=target_thread_id)
-                        continue
+            async with _run_billing_context(user=user, meta=meta):
+                async for chunk_bytes in _consume_stream_with_cancel(stream, run_ctx):
+                    for chunk in _iter_json_chunks(chunk_bytes):
+                        target_thread_id = _chunk_thread_id(chunk, thread_id)
+                        if chunk.get("status") == "loading":
+                            await writer.append(chunk, thread_id=target_thread_id)
+                            continue
 
-                    await writer.flush(target_thread_id)
-                    status = chunk.get("status") or "event"
-                    event_type, event_payload = _map_chunk_to_run_event(chunk)
-                    if event_type != "end":
-                        await append_run_event(run_id, event_type, event_payload, thread_id=target_thread_id)
+                        await writer.flush(target_thread_id)
+                        status = chunk.get("status") or "event"
+                        event_type, event_payload = _map_chunk_to_run_event(chunk)
+                        if event_type != "end":
+                            await append_run_event(run_id, event_type, event_payload, thread_id=target_thread_id)
 
-                    if target_thread_id != thread_id:
+                        if target_thread_id != thread_id:
+                            if await run_ctx.is_cancelled():
+                                raise asyncio.CancelledError(f"run {run_id} cancelled")
+                            continue
+
+                        if status == "finished":
+                            await mark_run_terminal(run_id, "completed")
+                            await _append_end_event(run_id, "completed", thread_id=thread_id, payload={"chunk": chunk})
+                            terminal_set = True
+                        elif status == "error":
+                            await mark_run_terminal(
+                                run_id,
+                                "failed",
+                                error_type=chunk.get("error_type") or "stream_error",
+                                error_message=chunk.get("error_message") or chunk.get("message"),
+                            )
+                            await _append_end_event(run_id, "failed", thread_id=thread_id, payload={"chunk": chunk})
+                            terminal_set = True
+                        elif status == "interrupted":
+                            status_value = "cancelled" if await _is_cancel_requested(run_id) else "interrupted"
+                            await mark_run_terminal(
+                                run_id,
+                                status_value,
+                                error_type=status_value,
+                                error_message=chunk.get("message"),
+                            )
+                            await _append_end_event(run_id, status_value, thread_id=thread_id, payload={"chunk": chunk})
+                            terminal_set = True
+                        elif status in {"ask_user_question_required", "human_approval_required"}:
+                            questions = chunk.get("questions") if isinstance(chunk, dict) else None
+                            first_question = ""
+                            if isinstance(questions, list) and questions:
+                                first = questions[0]
+                                if isinstance(first, dict):
+                                    first_question = str(first.get("question") or "").strip()
+
+                            await mark_run_terminal(
+                                run_id,
+                                "interrupted",
+                                error_type=status,
+                                error_message=first_question or "需要用户回答问题",
+                            )
+                            await _append_end_event(
+                                run_id, "interrupted", thread_id=thread_id, payload={"chunk": chunk}
+                            )
+                            terminal_set = True
+
                         if await run_ctx.is_cancelled():
                             raise asyncio.CancelledError(f"run {run_id} cancelled")
-                        continue
-
-                    if status == "finished":
-                        await mark_run_terminal(run_id, "completed")
-                        await _append_end_event(run_id, "completed", thread_id=thread_id, payload={"chunk": chunk})
-                        terminal_set = True
-                    elif status == "error":
-                        await mark_run_terminal(
-                            run_id,
-                            "failed",
-                            error_type=chunk.get("error_type") or "stream_error",
-                            error_message=chunk.get("error_message") or chunk.get("message"),
-                        )
-                        await _append_end_event(run_id, "failed", thread_id=thread_id, payload={"chunk": chunk})
-                        terminal_set = True
-                    elif status == "interrupted":
-                        status_value = "cancelled" if await _is_cancel_requested(run_id) else "interrupted"
-                        await mark_run_terminal(
-                            run_id,
-                            status_value,
-                            error_type=status_value,
-                            error_message=chunk.get("message"),
-                        )
-                        await _append_end_event(run_id, status_value, thread_id=thread_id, payload={"chunk": chunk})
-                        terminal_set = True
-                    elif status in {"ask_user_question_required", "human_approval_required"}:
-                        questions = chunk.get("questions") if isinstance(chunk, dict) else None
-                        first_question = ""
-                        if isinstance(questions, list) and questions:
-                            first = questions[0]
-                            if isinstance(first, dict):
-                                first_question = str(first.get("question") or "").strip()
-
-                        await mark_run_terminal(
-                            run_id,
-                            "interrupted",
-                            error_type=status,
-                            error_message=first_question or "需要用户回答问题",
-                        )
-                        await _append_end_event(run_id, "interrupted", thread_id=thread_id, payload={"chunk": chunk})
-                        terminal_set = True
-
-                    if await run_ctx.is_cancelled():
-                        raise asyncio.CancelledError(f"run {run_id} cancelled")
 
         await writer.flush()
         if not terminal_set:

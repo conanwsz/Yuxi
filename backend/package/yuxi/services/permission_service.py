@@ -19,6 +19,7 @@ PERMISSION_GROUPS = [
             ("users.read", "查看用户"),
             ("users.create", "创建用户"),
             ("users.update", "更新用户"),
+            ("users.quota.manage", "管理用户额度"),
             ("users.disable", "禁用用户"),
             ("users.enable", "激活用户"),
             ("users.delete", "删除用户"),

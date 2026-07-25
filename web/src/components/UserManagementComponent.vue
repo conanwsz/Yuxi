@@ -103,7 +103,7 @@
               :row-class-name="(user) => (user.is_disabled ? 'disabled-user-row' : '')"
               row-key="id"
               size="middle"
-              :scroll="{ x: 1010 }"
+              :scroll="{ x: 1190 }"
             >
               <template #bodyCell="{ column, record: user }">
                 <template v-if="column.key === 'actions'">
@@ -187,6 +187,13 @@
 
                 <template v-else-if="column.key === 'role'">
                   <span>{{ user.role_name || roleName(user.role) }}</span>
+                </template>
+
+                <template v-else-if="column.key === 'weeklyQuota'">
+                  <div class="table-weekly-quota">
+                    <span class="table-weekly-primary">{{ formatWeeklyQuotaPrimary(user) }}</span>
+                    <span class="table-secondary">{{ formatWeeklyQuotaSecondary(user) }}</span>
+                  </div>
                 </template>
 
                 <template v-else-if="column.key === 'lastLogin'">
@@ -305,6 +312,16 @@
                     </span>
                   </div>
                   <div class="info-item">
+                    <span class="info-label">Token 周额度:</span>
+                    <span class="info-value quota-text">{{ formatWeeklyQuotaPrimary(user) }}</span>
+                  </div>
+                  <div class="info-item" v-if="formatWeeklyQuotaSecondary(user) !== '-'">
+                    <span class="info-label">额度说明:</span>
+                    <span class="info-value quota-subtext">
+                      {{ formatWeeklyQuotaSecondary(user) }}
+                    </span>
+                  </div>
+                  <div class="info-item">
                     <span class="info-label">手机号:</span>
                     <span class="info-value phone-text">{{ user.phone_number || '-' }}</span>
                   </div>
@@ -410,6 +427,32 @@
           <div v-if="!userStore.isSuperAdmin" class="help-text">只有超级管理员可以修改角色</div>
         </a-form-item>
 
+        <a-form-item label="Token 周额度" class="form-item">
+          <div class="quota-form-group">
+            <a-select v-model:value="userManagement.form.tokenQuotaMode">
+              <a-select-option
+                v-for="option in tokenQuotaModeOptions"
+                :key="option.value"
+                :value="option.value"
+              >
+                {{ option.label }}
+              </a-select-option>
+            </a-select>
+            <a-input-number
+              v-if="userManagement.form.tokenQuotaMode === 'custom'"
+              v-model:value="userManagement.form.weeklyTokenQuota"
+              class="quota-input"
+              :min="0"
+              :step="10000"
+              :precision="0"
+              placeholder="请输入自定义周额度"
+            />
+          </div>
+          <div class="help-text">
+            继承：使用系统默认周额度；自定义：为该用户单独设置；不限：不限制每周 Token。
+          </div>
+        </a-form-item>
+
         <template v-if="userStore.isSuperAdmin">
           <a-form-item label="主部门" required class="form-item">
             <a-select
@@ -503,11 +546,65 @@ import InfoCard from '@/components/shared/InfoCard.vue'
 
 const userStore = useUserStore()
 const roles = ref([])
+const tokenQuotaModeOptions = [
+  { value: 'inherit', label: '继承系统默认' },
+  { value: 'custom', label: '自定义额度' },
+  { value: 'unlimited', label: '不限' }
+]
+const tokenQuotaModeLabelMap = Object.fromEntries(
+  tokenQuotaModeOptions.map((option) => [option.value, option.label])
+)
 
 const roleName = (key) => {
   const role = roles.value.find((item) => item.key === key)
   if (role) return role.name
   return { superadmin: '超级管理员', admin: '管理员', user: '普通用户' }[key] || key
+}
+
+const getQuotaRecord = (user) =>
+  user?.token_quota && typeof user.token_quota === 'object' && !Array.isArray(user.token_quota)
+    ? user.token_quota
+    : {}
+
+const normalizeWholeNumber = (value) => {
+  if (value === null || typeof value === 'undefined' || value === '') return null
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed < 0) return null
+  return Math.round(parsed)
+}
+
+const normalizeTokenQuotaMode = (value) =>
+  ['inherit', 'custom', 'unlimited'].includes(value) ? value : 'inherit'
+
+const getUserTokenQuotaMode = (user) => normalizeTokenQuotaMode(getQuotaRecord(user).mode)
+
+const getUserCustomWeeklyQuota = (user) => {
+  const quotaRecord = getQuotaRecord(user)
+  return normalizeWholeNumber(quotaRecord.configured_quota ?? quotaRecord.effective_quota)
+}
+
+const getUserEffectiveWeeklyQuota = (user) =>
+  normalizeWholeNumber(getQuotaRecord(user).effective_quota)
+
+const getUserWeeklyUsage = (user) => normalizeWholeNumber(getQuotaRecord(user).used)
+
+const formatTokenCount = (value) => {
+  if (!Number.isFinite(value)) return '-'
+  return new Intl.NumberFormat('zh-CN').format(value)
+}
+
+const formatWeeklyQuotaPrimary = (user) => {
+  const mode = getUserTokenQuotaMode(user)
+  if (mode === 'unlimited') return '不限'
+  const quota = getUserEffectiveWeeklyQuota(user)
+  if (quota !== null) return `${formatTokenCount(quota)} Tokens`
+  return mode === 'custom' ? '未设置' : '继承系统默认'
+}
+
+const formatWeeklyQuotaSecondary = (user) => {
+  const mode = tokenQuotaModeLabelMap[getUserTokenQuotaMode(user)] || tokenQuotaModeLabelMap.inherit
+  const used = getUserWeeklyUsage(user)
+  return used === null ? mode : `${mode} · 本周已用 ${formatTokenCount(used)}`
 }
 
 // 用户管理相关状态
@@ -533,6 +630,8 @@ const userManagement = reactive({
     password: '',
     confirmPassword: '',
     role: 'user', // 默认角色
+    tokenQuotaMode: 'inherit',
+    weeklyTokenQuota: null,
     primaryDepartmentId: null,
     partTimeDepartmentIds: [],
     managedDepartmentIds: [],
@@ -553,6 +652,7 @@ const userTableColumns = [
   { title: '用户', key: 'user', width: 205 },
   { title: '部门', key: 'department', width: 165 },
   { title: '角色', key: 'role', width: 100 },
+  { title: '本周额度', key: 'weeklyQuota', width: 180 },
   { title: '状态', key: 'status', width: 80 },
   { title: '最后登录时间', key: 'lastLogin', width: 135 },
   { title: '创建时间', key: 'createdAt', width: 135 }
@@ -790,6 +890,8 @@ const showAddUserModal = () => {
     password: '',
     confirmPassword: '',
     role: 'user', // 默认角色为普通用户
+    tokenQuotaMode: 'inherit',
+    weeklyTokenQuota: null,
     primaryDepartmentId: activeDepartments.value.find((dept) => dept.is_system)?.id || null,
     partTimeDepartmentIds: [],
     managedDepartmentIds: [],
@@ -812,6 +914,8 @@ const showEditUserModal = async (user) => {
     password: '',
     confirmPassword: '',
     role: user.role,
+    tokenQuotaMode: getUserTokenQuotaMode(user),
+    weeklyTokenQuota: getUserCustomWeeklyQuota(user),
     primaryDepartmentId: user.department_id || null,
     partTimeDepartmentIds: (user.part_time_departments || []).map((item) => item.department_id),
     managedDepartmentIds: [...(user.managed_department_ids || [])],
@@ -882,6 +986,15 @@ const handleUserFormSubmit = async () => {
       return
     }
 
+    if (
+      userManagement.form.tokenQuotaMode === 'custom' &&
+      (!Number.isFinite(userManagement.form.weeklyTokenQuota) ||
+        userManagement.form.weeklyTokenQuota < 0)
+    ) {
+      message.error('请输入有效的自定义周额度')
+      return
+    }
+
     userManagement.loading = true
 
     // 根据模式决定创建还是更新用户
@@ -889,6 +1002,11 @@ const handleUserFormSubmit = async () => {
       // 创建更新数据对象
       const updateData = { username: userManagement.form.username.trim() }
       if (userStore.isSuperAdmin) updateData.role = userManagement.form.role
+      updateData.token_quota_mode = userManagement.form.tokenQuotaMode
+      updateData.weekly_token_quota =
+        userManagement.form.tokenQuotaMode === 'custom'
+          ? Math.round(userManagement.form.weeklyTokenQuota)
+          : null
 
       // 添加手机号字段
       if (userManagement.form.phoneNumber) {
@@ -918,7 +1036,12 @@ const handleUserFormSubmit = async () => {
       const createData = {
         username: userManagement.form.username.trim(),
         password: userManagement.form.password,
-        role: userManagement.form.role
+        role: userManagement.form.role,
+        token_quota_mode: userManagement.form.tokenQuotaMode,
+        weekly_token_quota:
+          userManagement.form.tokenQuotaMode === 'custom'
+            ? Math.round(userManagement.form.weeklyTokenQuota)
+            : null
       }
 
       if (userStore.isSuperAdmin) {
@@ -1315,6 +1438,10 @@ onMounted(async () => {
                 &.phone-text {
                   font-family: 'Monaco', 'Consolas', monospace;
                 }
+
+                &.quota-subtext {
+                  color: var(--gray-600);
+                }
               }
             }
           }
@@ -1387,7 +1514,8 @@ onMounted(async () => {
         }
 
         .table-user-copy,
-        .table-department {
+        .table-department,
+        .table-weekly-quota {
           display: flex;
           flex-direction: column;
           gap: 2px;
@@ -1399,6 +1527,15 @@ onMounted(async () => {
           color: var(--gray-900);
           font-size: 13px;
           font-weight: 600;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+
+        .table-weekly-primary {
+          overflow: hidden;
+          color: var(--gray-800);
+          font-size: 13px;
+          font-weight: 500;
           text-overflow: ellipsis;
           white-space: nowrap;
         }
@@ -1533,6 +1670,16 @@ onMounted(async () => {
       font-size: 12px;
       margin-top: 4px;
       line-height: 1.3;
+    }
+
+    .quota-form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .quota-input {
+      width: 100%;
     }
 
     .password-toggle {

@@ -18,6 +18,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from croniter import croniter
+from fastapi import HTTPException
 from croniter import CroniterBadCronError
 
 from yuxi.repositories.schedule_repository import (
@@ -35,6 +36,7 @@ from yuxi.storage.postgres.models_business import (
     SCHEDULE_STATUS_FAILED,
     SCHEDULE_STATUS_PENDING,
     SCHEDULE_STATUS_RUNNING,
+    SCHEDULE_STATUS_SKIPPED,
     SCHEDULE_STATUS_SUCCESS,
     Schedule,
     ScheduleExecution,
@@ -65,9 +67,7 @@ def is_valid_cron_expression(expr: str) -> bool:
     return True
 
 
-def compute_next_fire_at(
-    *, schedule: Schedule, base: datetime | None = None
-) -> datetime | None:
+def compute_next_fire_at(*, schedule: Schedule, base: datetime | None = None) -> datetime | None:
     """基于 cron 表达式计算下一次触发时间，base 默认用 UTC 当前时刻。
 
     时区固定为服务器 TZ（默认 Asia/Shanghai），不暴露给用户。
@@ -168,9 +168,7 @@ class SchedulerService:
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Scheduler tick failed: {}", exc)
             try:
-                await asyncio.wait_for(
-                    self._shutdown_event.wait(), timeout=self._tick_interval
-                )
+                await asyncio.wait_for(self._shutdown_event.wait(), timeout=self._tick_interval)
             except TimeoutError:
                 continue
 
@@ -209,9 +207,7 @@ class SchedulerService:
         这里不再调用 advance_fire_window，避免跨事务 race。
         """
         try:
-            execution = await self._create_pending_execution(
-                schedule=schedule, scheduled_at=now
-            )
+            execution = await self._create_pending_execution(schedule=schedule, scheduled_at=now)
         except Exception as exc:  # noqa: BLE001
             logger.error(
                 "Scheduler tick: failed to create execution for {}: {}",
@@ -228,9 +224,7 @@ class SchedulerService:
         task.add_done_callback(self._inflight.discard)
 
     # -- execution helpers --
-    async def _create_pending_execution(
-        self, *, schedule: Schedule, scheduled_at: datetime
-    ) -> ScheduleExecution:
+    async def _create_pending_execution(self, *, schedule: Schedule, scheduled_at: datetime) -> ScheduleExecution:
         """创建一条 pending 的 execution 记录，fired_at 用 UTC now。"""
         repo = ScheduleExecutionRepository()
         return await repo.create(
@@ -248,9 +242,7 @@ class SchedulerService:
             }
         )
 
-    async def _dispatch_execution(
-        self, *, schedule_id: str, execution_id: str
-    ) -> None:
+    async def _dispatch_execution(self, *, schedule_id: str, execution_id: str) -> None:
         """真实派发逻辑：以 owner_uid 创建 run、等待结果并回填 execution。"""
         schedule_repo = ScheduleRepository()
         execution_repo = ScheduleExecutionRepository()
@@ -284,10 +276,40 @@ class SchedulerService:
                 },
             )
 
-            result = await await_agent_run_result(
-                run_id=run_id, current_uid=str(schedule.owner_uid)
-            )
+            result = await await_agent_run_result(run_id=run_id, current_uid=str(schedule.owner_uid))
             await self._apply_result(execution_id=execution_id, result=result)
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, dict) else None
+            if exc.status_code == 429 and isinstance(detail, dict) and detail.get("code") == "token_quota_exceeded":
+                logger.warning(
+                    "Schedule {}/{} skipped due to token quota: {}",
+                    schedule_id,
+                    execution_id,
+                    detail.get("message") or exc.detail,
+                )
+                await execution_repo.update(
+                    execution_id,
+                    {
+                        "status": SCHEDULE_STATUS_SKIPPED,
+                        "completed_at": utc_now_naive(),
+                        "error": detail.get("message") or "token_quota_exceeded",
+                    },
+                )
+                return
+            logger.exception(
+                "Schedule dispatch failed (schedule={} execution={}): {}",
+                schedule_id,
+                execution_id,
+                exc,
+            )
+            await execution_repo.update(
+                execution_id,
+                {
+                    "status": SCHEDULE_STATUS_FAILED,
+                    "completed_at": utc_now_naive(),
+                    "error": str(exc) or type(exc).__name__,
+                },
+            )
         except Exception as exc:  # noqa: BLE001
             logger.exception(
                 "Schedule dispatch failed (schedule={} execution={}): {}",
@@ -304,9 +326,7 @@ class SchedulerService:
                 },
             )
 
-    async def _enqueue_run(
-        self, *, schedule: Schedule, execution_id: str
-    ) -> str:
+    async def _enqueue_run(self, *, schedule: Schedule, execution_id: str) -> str:
         """以 owner_uid 身份在独立会话里创建并入队一个 AgentRun。"""
         meta: dict[str, Any] = {
             "source": SCHEDULE_METADATA_SOURCE,
@@ -359,9 +379,7 @@ class SchedulerService:
         await enqueue_agent_run(run_id)
         return run_id
 
-    async def _apply_result(
-        self, *, execution_id: str, result: dict[str, Any]
-    ) -> None:
+    async def _apply_result(self, *, execution_id: str, result: dict[str, Any]) -> None:
         """把 await_agent_run_result 的结果回填到 execution 记录。"""
         status_value = str(result.get("status") or "")
         if status_value == "completed":
@@ -378,9 +396,7 @@ class SchedulerService:
 
         error_blob = result.get("error")
         if isinstance(error_blob, dict):
-            error_text = "; ".join(
-                str(v) for v in error_blob.values() if v is not None
-            ) or None
+            error_text = "; ".join(str(v) for v in error_blob.values() if v is not None) or None
         elif error_blob:
             error_text = str(error_blob)
         else:
@@ -401,9 +417,7 @@ class SchedulerService:
         """清理超过保留期的终态 execution。"""
         threshold = utc_now_naive() - timedelta(days=self._execution_retention_days)
         try:
-            removed = await ScheduleExecutionRepository().cleanup_terminal_executions(
-                older_than=threshold
-            )
+            removed = await ScheduleExecutionRepository().cleanup_terminal_executions(older_than=threshold)
             if removed:
                 logger.info("Scheduler cleanup: removed {} old execution records", removed)
         except Exception as exc:  # noqa: BLE001
@@ -415,8 +429,6 @@ class SchedulerService:
         repo = ScheduleRepository()
         schedule = await repo.get_by_id(schedule_id)
         if schedule is None:
-            from fastapi import HTTPException
-
             raise HTTPException(status_code=404, detail="schedule 不存在")
 
         now = utc_now_naive()

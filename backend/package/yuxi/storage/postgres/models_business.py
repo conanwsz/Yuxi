@@ -1,19 +1,22 @@
 """PostgreSQL 业务数据模型 - 用户、部门、对话等相关表"""
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import (
+    BigInteger,
     JSON,
     Boolean,
     CheckConstraint,
     Column,
+    Date,
     DateTime,
     Float,
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -135,6 +138,8 @@ class User(Base):
     department_id = Column(Integer, ForeignKey("departments.id"), nullable=True)  # 部门ID
     created_at = Column(DateTime, default=utc_now_naive)
     last_login = Column(DateTime, nullable=True)
+    token_quota_mode = Column(String(16), nullable=False, default="inherit", index=True)
+    weekly_token_quota = Column(BigInteger, nullable=True)
 
     # 登录失败限制相关字段
     login_failed_count = Column(Integer, nullable=False, default=0)  # 登录失败次数
@@ -181,6 +186,8 @@ class User(Base):
             "role_name": getattr(self, "role_name", self.role),
             "permissions": sorted(getattr(self, "permission_keys", set())),
             "department_id": self.department_id,
+            "token_quota_mode": self.token_quota_mode,
+            "weekly_token_quota": self.weekly_token_quota,
             "created_at": format_utc_datetime(self.created_at),
             "last_login": format_utc_datetime(self.last_login),
             "login_failed_count": self.login_failed_count,
@@ -849,6 +856,120 @@ class ModelProvider(Base):
             "is_builtin": bool(self.is_builtin),
             "created_by": self.created_by,
             "updated_by": self.updated_by,
+            "created_at": format_utc_datetime(self.created_at),
+            "updated_at": format_utc_datetime(self.updated_at),
+        }
+
+
+class TokenQuotaLedger(Base):
+    """按事件记录用户 token 消耗，event_id 幂等。"""
+
+    __tablename__ = "token_quota_ledger"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    event_id = Column(String(128), nullable=False, unique=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    uid_snapshot = Column(String(64), nullable=False, index=True)
+    week_start = Column(Date, nullable=False, index=True)
+    model_spec = Column(String(255), nullable=False)
+    prompt_tokens = Column(BigInteger, nullable=False, default=0)
+    completion_tokens = Column(BigInteger, nullable=False, default=0)
+    total_tokens = Column(BigInteger, nullable=False, default=0)
+    weighted_tokens = Column(BigInteger, nullable=False, default=0)
+    token_coefficient = Column(Numeric(8, 4), nullable=False, default=1.0)
+    is_estimated = Column(Boolean, nullable=False, default=False)
+    estimate_reason = Column(String(64), nullable=True)
+    source = Column(String(32), nullable=False, default="chat")
+    run_id = Column(String(64), nullable=True, index=True)
+    request_id = Column(String(128), nullable=True, index=True)
+    thread_id = Column(String(128), nullable=True, index=True)
+    parent_run_id = Column(String(64), nullable=True, index=True)
+    metadata_json = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime, default=utc_now_naive, nullable=False, index=True)
+
+    __table_args__ = (
+        CheckConstraint("prompt_tokens >= 0", name="ck_token_quota_ledger_prompt_tokens_non_negative"),
+        CheckConstraint("completion_tokens >= 0", name="ck_token_quota_ledger_completion_tokens_non_negative"),
+        CheckConstraint("total_tokens >= 0", name="ck_token_quota_ledger_total_tokens_non_negative"),
+        CheckConstraint("weighted_tokens >= 0", name="ck_token_quota_ledger_weighted_tokens_non_negative"),
+        CheckConstraint(
+            "token_coefficient >= 0.01 AND token_coefficient <= 100",
+            name="ck_token_quota_ledger_coefficient_range",
+        ),
+    )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "event_id": self.event_id,
+            "user_id": self.user_id,
+            "uid_snapshot": self.uid_snapshot,
+            "week_start": self.week_start.isoformat() if isinstance(self.week_start, date) else None,
+            "model_spec": self.model_spec,
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "total_tokens": self.total_tokens,
+            "weighted_tokens": self.weighted_tokens,
+            "token_coefficient": float(self.token_coefficient),
+            "is_estimated": bool(self.is_estimated),
+            "estimate_reason": self.estimate_reason,
+            "source": self.source,
+            "run_id": self.run_id,
+            "request_id": self.request_id,
+            "thread_id": self.thread_id,
+            "parent_run_id": self.parent_run_id,
+            "metadata_json": self.metadata_json or {},
+            "created_at": format_utc_datetime(self.created_at),
+        }
+
+
+class TokenQuotaWeeklyUsage(Base):
+    """用户每周 token 聚合，周定义为 Asia/Shanghai 自然周。"""
+
+    __tablename__ = "token_quota_weekly_usage"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    uid_snapshot = Column(String(64), nullable=False, index=True)
+    week_start = Column(Date, nullable=False, index=True)
+    quota_mode = Column(String(16), nullable=False, default="inherit")
+    quota_limit = Column(BigInteger, nullable=True)
+    prompt_tokens = Column(BigInteger, nullable=False, default=0)
+    completion_tokens = Column(BigInteger, nullable=False, default=0)
+    total_tokens = Column(BigInteger, nullable=False, default=0)
+    weighted_tokens = Column(BigInteger, nullable=False, default=0)
+    event_count = Column(Integer, nullable=False, default=0)
+    estimated_event_count = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=utc_now_naive, nullable=False)
+    updated_at = Column(DateTime, default=utc_now_naive, onupdate=utc_now_naive, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "week_start", name="uq_token_quota_weekly_usage_user_week"),
+        CheckConstraint("prompt_tokens >= 0", name="ck_token_quota_weekly_usage_prompt_tokens_non_negative"),
+        CheckConstraint("completion_tokens >= 0", name="ck_token_quota_weekly_usage_completion_tokens_non_negative"),
+        CheckConstraint("total_tokens >= 0", name="ck_token_quota_weekly_usage_total_tokens_non_negative"),
+        CheckConstraint("weighted_tokens >= 0", name="ck_token_quota_weekly_usage_weighted_tokens_non_negative"),
+        CheckConstraint("event_count >= 0", name="ck_token_quota_weekly_usage_event_count_non_negative"),
+        CheckConstraint(
+            "estimated_event_count >= 0",
+            name="ck_token_quota_weekly_usage_estimated_event_count_non_negative",
+        ),
+    )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "user_id": self.user_id,
+            "uid_snapshot": self.uid_snapshot,
+            "week_start": self.week_start.isoformat() if isinstance(self.week_start, date) else None,
+            "quota_mode": self.quota_mode,
+            "quota_limit": self.quota_limit,
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "total_tokens": self.total_tokens,
+            "weighted_tokens": self.weighted_tokens,
+            "event_count": self.event_count,
+            "estimated_event_count": self.estimated_event_count,
             "created_at": format_utc_datetime(self.created_at),
             "updated_at": format_utc_datetime(self.updated_at),
         }

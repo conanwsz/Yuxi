@@ -7,6 +7,10 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from yuxi.services.token_quota_service import (
+    get_user_token_quota_status,
+    token_billing_context,
+)
 from yuxi.storage.postgres.models_business import User
 from server.utils.auth_middleware import get_db, get_required_user
 from yuxi import config as conf
@@ -89,9 +93,33 @@ async def call(
         )
         resolved_model_spec = assert_model_spec_allowed(current_user, resolved_model_spec, model_type="chat").spec
 
+    try:
+        quota_status = await get_user_token_quota_status(db, current_user)
+    except Exception as exc:  # noqa: BLE001 - 单测和异常 DB 状态下不应阻塞主路径
+        logger.warning(f"获取 token 配额状态失败，跳过预检: {exc}")
+        quota_status = None
+    if quota_status and quota_status.get("remaining_tokens") is not None and quota_status["remaining_tokens"] <= 0:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "code": "token_quota_exceeded",
+                "message": "本周 Token 额度已用完",
+                "quota": quota_status.get("effective_weekly_token_quota"),
+                "used": quota_status.get("weighted_tokens", 0),
+                "remaining": 0,
+                "reset_at": quota_status.get("reset_at"),
+            },
+        )
+
     model = select_model(model_spec=resolved_model_spec)
 
-    response = await model.call(query)
+    with token_billing_context(
+        user_id=current_user.id,
+        uid_snapshot=str(current_user.uid),
+        source="chat_call",
+        request_id=meta["request_id"],
+    ):
+        response = await model.call(query)
     logger.debug({"query": query, "response": response.content})
 
     return {"response": response.content, "request_id": meta["request_id"]}

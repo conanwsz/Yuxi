@@ -6,6 +6,10 @@ from pydantic import SecretStr
 
 from yuxi import config as sys_config
 from yuxi.models.providers.cache import model_cache
+from yuxi.services.token_quota_service import (
+    TokenQuotaCallback,
+    create_token_quota_callback,
+)
 from yuxi.utils import get_docker_safe_url
 from yuxi.utils.logging_config import logger
 
@@ -22,6 +26,21 @@ def resolve_chat_model_spec(model_spec: str | None, *, fallback: str | None = No
         if isinstance(candidate, str) and candidate.strip():
             return candidate.strip()
     raise ValueError("model spec 不能为空")
+
+
+def _attach_token_quota_callback(model: BaseChatModel, model_spec: str) -> BaseChatModel:
+    """将统一 token 计量回调挂到模型上，避免重复添加。"""
+    try:
+        callback = create_token_quota_callback(model_spec)
+    except Exception as exc:  # noqa: BLE001 - 计量接入失败不应阻塞主链路
+        logger.warning(f"无法挂载 token 计量回调: {exc}")
+        return model
+    existing = list(getattr(model, "callbacks", None) or [])
+    if any(isinstance(cb, TokenQuotaCallback) for cb in existing):
+        return model
+    existing.append(callback)
+    model.callbacks = existing
+    return model
 
 
 def load_chat_model(fully_specified_name: str | None, **kwargs) -> BaseChatModel:
@@ -44,31 +63,34 @@ def load_chat_model(fully_specified_name: str | None, **kwargs) -> BaseChatModel
 
     logger.debug(f"Loading model {fully_specified_name} with provider_type={info.provider_type}")
 
+    model: BaseChatModel
     if info.provider_type == "anthropic":
         from langchain_anthropic import ChatAnthropic
 
-        return ChatAnthropic(
+        model = ChatAnthropic(
             model=info.model_id,
             api_key=SecretStr(api_key),
             base_url=base_url,
             **kwargs,
         )
-    if info.provider_type == "gemini":
+    elif info.provider_type == "gemini":
         from langchain_google_genai import ChatGoogleGenerativeAI
 
-        return ChatGoogleGenerativeAI(
+        model = ChatGoogleGenerativeAI(
             model=info.model_id,
             google_api_key=SecretStr(api_key),
             **kwargs,
         )
+    else:
+        model = _ToolCallChunkFixChatOpenAI(
+            model=info.model_id,
+            api_key=SecretStr(api_key),
+            base_url=base_url,
+            stream_usage=True,
+            **kwargs,
+        )
 
-    return _ToolCallChunkFixChatOpenAI(
-        model=info.model_id,
-        api_key=SecretStr(api_key),
-        base_url=base_url,
-        stream_usage=True,
-        **kwargs,
-    )
+    return _attach_token_quota_callback(model, fully_specified_name)
 
 
 class _ToolCallChunkFixChatOpenAI(ChatOpenAI):

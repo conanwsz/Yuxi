@@ -7,6 +7,7 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Any, Literal
 
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_business import (
@@ -43,7 +44,7 @@ from yuxi.services.auth_service import (
 )
 from yuxi.storage.minio import upload_image_to_minio
 from yuxi.utils.datetime_utils import utc_now_naive
-from yuxi.services.permission_service import resolve_user_permissions
+from yuxi.services.permission_service import has_permission, resolve_user_permissions
 from yuxi.services.organization_scope_service import user_can_manage_department
 from yuxi.services.organization_service import OrganizationService
 
@@ -57,6 +58,7 @@ from yuxi.services.oidc_service import (
 
 # 创建路由器
 auth = APIRouter(prefix="/auth", tags=["authentication"])
+TokenQuotaMode = Literal["inherit", "custom", "unlimited"]
 
 
 # 请求和响应模型
@@ -82,6 +84,8 @@ class UserCreate(BaseModel):
     department_id: int | None = None
     primary_department_id: int | None = None
     part_time_department_ids: list[int] = Field(default_factory=list)
+    token_quota_mode: TokenQuotaMode | None = None
+    weekly_token_quota: int | None = Field(default=None, ge=0)
 
 
 class UserUpdate(BaseModel):
@@ -93,6 +97,8 @@ class UserUpdate(BaseModel):
     department_id: int | None = None
     primary_department_id: int | None = None
     part_time_department_ids: list[int] | None = None
+    token_quota_mode: TokenQuotaMode | None = None
+    weekly_token_quota: int | None = Field(default=None, ge=0)
 
 
 class UserProfileUpdate(BaseModel):
@@ -115,6 +121,9 @@ class UserResponse(BaseModel):
     primary_department: dict | None = None
     part_time_departments: list[dict] = Field(default_factory=list)
     managed_department_ids: list[int] = Field(default_factory=list)
+    token_quota_mode: TokenQuotaMode | None = None
+    weekly_token_quota: int | None = None
+    token_quota: dict[str, Any] | None = None
     created_at: str
     last_login: str | None = None
     is_disabled: bool = False
@@ -220,6 +229,73 @@ def _raise_cli_auth_error(exc: CLIAuthError) -> None:
         status_code=exc.status_code,
         detail={"error": exc.code, "message": exc.message},
     ) from exc
+
+
+def _validate_user_token_quota_fields(
+    *,
+    token_quota_mode: TokenQuotaMode | None,
+    weekly_token_quota: int | None,
+    current_mode: TokenQuotaMode | None = None,
+) -> tuple[TokenQuotaMode, int | None] | None:
+    if token_quota_mode is None and weekly_token_quota is None:
+        return None
+
+    effective_mode = token_quota_mode or current_mode
+    if effective_mode is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="设置 weekly_token_quota 前必须先指定 token_quota_mode",
+        )
+    if effective_mode == "custom":
+        if weekly_token_quota is None and token_quota_mode == "custom":
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="自定义额度模式必须提供 weekly_token_quota",
+            )
+        return effective_mode, weekly_token_quota
+    if weekly_token_quota is not None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="仅自定义额度模式允许设置 weekly_token_quota",
+        )
+    return effective_mode, None
+
+
+async def _get_user_token_quota_status(db: AsyncSession, user: User) -> dict[str, Any]:
+    from yuxi.services.token_quota_service import get_user_token_quota_status
+
+    return await get_user_token_quota_status(db, user)
+
+
+async def _batch_get_user_token_quota_statuses(db: AsyncSession, users: list[User]) -> dict[int, dict[str, Any]]:
+    from yuxi.services.token_quota_service import batch_get_user_token_quota_statuses
+
+    return await batch_get_user_token_quota_statuses(db, users)
+
+
+async def get_user_token_quota_payload(
+    db: AsyncSession,
+    user: User,
+    *,
+    token_quota: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if token_quota is None:
+        token_quota = await _get_user_token_quota_status(db, user)
+    return {
+        "token_quota_mode": user.token_quota_mode,
+        "weekly_token_quota": user.weekly_token_quota,
+        "token_quota": token_quota,
+    }
+
+
+async def _apply_user_token_quota_fields(
+    user: User,
+    *,
+    token_quota_mode: TokenQuotaMode,
+    weekly_token_quota: int | None,
+) -> None:
+    user.token_quota_mode = token_quota_mode
+    user.weekly_token_quota = weekly_token_quota
 
 
 # 路由：登录获取令牌
@@ -469,7 +545,13 @@ async def initialize_admin(admin_data: InitializeAdmin, db: AsyncSession = Depen
 # =============================================================================
 
 
-async def _serialize_user(db: AsyncSession, user: User, *, role_name: str | None = None) -> dict:
+async def _serialize_user(
+    db: AsyncSession,
+    user: User,
+    *,
+    role_name: str | None = None,
+    token_quota: dict[str, Any] | None = None,
+) -> dict:
     data = user.to_dict()
     data["is_disabled"] = bool(data.pop("is_deleted", 0))
     if role_name is None:
@@ -489,6 +571,7 @@ async def _serialize_user(db: AsyncSession, user: User, *, role_name: str | None
     data["primary_department"] = primary
     data["part_time_departments"] = part_time
     data["managed_department_ids"] = await OrganizationService.admin_assignments(db, user.id)
+    data.update(await get_user_token_quota_payload(db, user, token_quota=token_quota))
     return data
 
 
@@ -496,6 +579,7 @@ async def _serialize_users(db: AsyncSession, users: list[User]) -> list[dict]:
     if not users:
         return []
     user_ids = [user.id for user in users]
+    token_quota_statuses = await _batch_get_user_token_quota_statuses(db, users)
     departments = {item["id"]: item for item in await OrganizationService.list_departments(db)}
     users_by_id = {user.id: user for user in users}
     membership_result = await db.execute(
@@ -541,6 +625,7 @@ async def _serialize_users(db: AsyncSession, users: list[User]) -> list[dict]:
         data["department_name"] = primary["name"] if primary else None
         data["department_path"] = primary["path_label"] if primary else None
         data["managed_department_ids"] = assignment_map.get(user.id, [])
+        data.update(await get_user_token_quota_payload(db, user, token_quota=token_quota_statuses[user.id]))
         result.append(data)
     return result
 
@@ -657,6 +742,17 @@ async def create_user(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="管理员只能创建普通用户账户",
         )
+    if (user_data.token_quota_mode is not None or user_data.weekly_token_quota is not None) and not has_permission(
+        current_user, "users.quota.manage"
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="缺少权限: users.quota.manage",
+        )
+    normalized_token_quota = _validate_user_token_quota_fields(
+        token_quota_mode=user_data.token_quota_mode,
+        weekly_token_quota=user_data.weekly_token_quota,
+    )
 
     requested_primary = user_data.primary_department_id or user_data.department_id
     if current_user.role == "superadmin":
@@ -683,6 +779,13 @@ async def create_user(
     )
     db.add(new_user)
     await db.flush()
+    if normalized_token_quota is not None:
+        token_quota_mode, weekly_token_quota = normalized_token_quota
+        await _apply_user_token_quota_fields(
+            new_user,
+            token_quota_mode=token_quota_mode,
+            weekly_token_quota=weekly_token_quota,
+        )
     try:
         await OrganizationService.set_user_memberships(
             db,
@@ -694,10 +797,19 @@ async def create_user(
         await db.rollback()
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
-    await log_operation(
-        db, current_user.id, "创建用户", f"创建用户: {user_data.username}, 角色: {user_data.role}", request
+    log_details = [f"创建用户: {user_data.username}", f"角色: {user_data.role}"]
+    if normalized_token_quota is not None:
+        token_quota_mode, weekly_token_quota = normalized_token_quota
+        log_details.append(f"额度模式: {token_quota_mode}")
+        if weekly_token_quota is not None:
+            log_details.append(f"周额度: {weekly_token_quota}")
+
+    await log_operation(db, current_user.id, "创建用户", ", ".join(log_details), request)
+    return await _serialize_user(
+        db,
+        new_user,
+        role_name=role.name,
     )
-    return await _serialize_user(db, new_user, role_name=role.name)
 
 
 # 路由：获取所有用户（管理员权限）
@@ -873,6 +985,13 @@ async def update_user(
 
     if current_user.role != "superadmin" and user_data.role is not None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="只有超级管理员才能修改用户角色")
+    if (
+        "token_quota_mode" in user_data.model_fields_set or "weekly_token_quota" in user_data.model_fields_set
+    ) and not has_permission(current_user, "users.quota.manage"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="缺少权限: users.quota.manage",
+        )
 
     # 更新信息
     update_details = []
@@ -909,6 +1028,29 @@ async def update_user(
     if user_data.avatar is not None:
         user.avatar = user_data.avatar
         update_details.append(f"头像: {user_data.avatar or '已清空'}")
+
+    if "token_quota_mode" in user_data.model_fields_set or "weekly_token_quota" in user_data.model_fields_set:
+        normalized_token_quota = _validate_user_token_quota_fields(
+            token_quota_mode=user_data.token_quota_mode,
+            weekly_token_quota=user_data.weekly_token_quota,
+            current_mode=user.token_quota_mode,
+        )
+        if normalized_token_quota is not None:
+            token_quota_mode, weekly_token_quota = normalized_token_quota
+            old_token_quota_mode = user.token_quota_mode
+            old_weekly_token_quota = user.weekly_token_quota
+            await _apply_user_token_quota_fields(
+                user,
+                token_quota_mode=token_quota_mode,
+                weekly_token_quota=weekly_token_quota,
+            )
+            if old_token_quota_mode != token_quota_mode:
+                update_details.append(f"额度模式: {old_token_quota_mode} -> {token_quota_mode}")
+            if old_weekly_token_quota != weekly_token_quota:
+                update_details.append(
+                    f"周额度: {old_weekly_token_quota if old_weekly_token_quota is not None else '未设置'}"
+                    f" -> {weekly_token_quota if weekly_token_quota is not None else '未设置'}"
+                )
 
     membership_fields = user_data.model_fields_set & {
         "department_id",
@@ -956,7 +1098,10 @@ async def update_user(
     # 记录操作
     await log_operation(db, current_user.id, "更新用户", f"更新用户ID {user_id}: {', '.join(update_details)}", request)
 
-    return await _serialize_user(db, user)
+    return await _serialize_user(
+        db,
+        user,
+    )
 
 
 # 路由：禁用用户（管理员权限）

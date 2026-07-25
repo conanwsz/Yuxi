@@ -22,7 +22,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from fastapi import HTTPException
+from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -52,6 +52,11 @@ from yuxi.services.resource_access_runtime_service import (
     assert_tool_slugs_allowed,
     hydrate_user_resource_access,
     resolve_role_default_model_spec,
+)
+from yuxi.services.token_quota_service import (
+    TokenQuotaExceededError,
+    assert_quota_available,
+    get_user_token_quota_status,
 )
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_business import Message, User
@@ -148,6 +153,29 @@ def resolve_agent_run_model_spec(model_spec: str | None, agent_item, agent_backe
         if not info or info.model_type != "chat":
             raise HTTPException(status_code=422, detail=f"未找到可用聊天模型: '{resolved}'")
     return resolved
+
+
+async def _assert_user_quota_for_run(*, db: AsyncSession, user: User) -> None:
+    """创建 run 前预检 token 额度，耗尽时抛 429 并附带前端需要的额度信息。"""
+    # 单元测试使用 SimpleNamespace 代理 User；不是真实 User 实例时跳过预检。
+    if not isinstance(user, User) or getattr(user, "id", None) is None:
+        return
+    try:
+        await assert_quota_available(db, user)
+    except TokenQuotaExceededError as exc:
+        quota_status = await get_user_token_quota_status(db, user)
+        detail = {
+            "code": "token_quota_exceeded",
+            "message": str(exc),
+            "quota": quota_status.get("effective_weekly_token_quota"),
+            "used": quota_status.get("weighted_tokens", 0),
+            "remaining": 0,
+            "reset_at": quota_status.get("reset_at"),
+        }
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=detail,
+        ) from exc
 
 
 def _build_run_response(run) -> dict:
@@ -449,6 +477,8 @@ async def create_agent_run_view(
             scope.agent_backend,
             user=scope.current_user,
         )
+
+    await _assert_user_quota_for_run(db=db, user=scope.current_user)
 
     run_input_message = _prepare_run_input_message(
         run_type=run_type,
