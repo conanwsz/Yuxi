@@ -78,14 +78,27 @@ def _parse_before(value: str | None) -> datetime | None:
         raise HTTPException(status_code=422, detail=f"before 参数不合法: {exc}") from exc
 
 
+def _attach_agent_name(records: list[Any], name_map: dict[str, str]) -> list[dict[str, Any]]:
+    """给每个 schedule dict 注入 agent_name，找不到时 fallback 到 slug。"""
+    output: list[dict[str, Any]] = []
+    for record in records:
+        data = record.to_dict()
+        slug = data.get("agent_slug") or ""
+        data["agent_name"] = name_map.get(slug, slug) if slug else ""
+        output.append(data)
+    return output
+
+
 @schedule_router.get("")
 async def list_schedules(
     enabled: bool | None = Query(default=None),
     current_user: User = Depends(require_permission("system.schedules.manage")),
 ):
     """列出所有 schedule，可选按启用状态过滤。"""
-    records = await ScheduleRepository().list_schedules(enabled=enabled)
-    return {"schedules": [record.to_dict() for record in records]}
+    repository = ScheduleRepository()
+    records = await repository.list_schedules(enabled=enabled)
+    name_map = await repository.get_agent_name_map({r.agent_slug for r in records})
+    return {"schedules": _attach_agent_name(records, name_map)}
 
 
 @schedule_router.post("")
@@ -120,7 +133,8 @@ async def create_schedule(
     # 重新读取以拿到 created_at / updated_at
     record = await repository.get_by_id(schedule_id)
     assert record is not None
-    return {"schedule": record.to_dict()}
+    name_map = await repository.get_agent_name_map({record.agent_slug})
+    return {"schedule": _attach_agent_name([record], name_map)[0]}
 
 
 @schedule_router.get("/{schedule_id}")
@@ -128,10 +142,12 @@ async def get_schedule(
     schedule_id: str,
     current_user: User = Depends(require_permission("system.schedules.manage")),
 ):
-    record = await ScheduleRepository().get_by_id(schedule_id)
+    repository = ScheduleRepository()
+    record = await repository.get_by_id(schedule_id)
     if record is None:
         raise HTTPException(status_code=404, detail="schedule 不存在")
-    return {"schedule": record.to_dict()}
+    name_map = await repository.get_agent_name_map({record.agent_slug})
+    return {"schedule": _attach_agent_name([record], name_map)[0]}
 
 
 @schedule_router.patch("/{schedule_id}")
@@ -140,7 +156,8 @@ async def update_schedule(
     payload: _SchedulePatchModel,
     current_user: User = Depends(require_permission("system.schedules.manage")),
 ):
-    record = await ScheduleRepository().get_by_id(schedule_id)
+    repository = ScheduleRepository()
+    record = await repository.get_by_id(schedule_id)
     if record is None:
         raise HTTPException(status_code=404, detail="schedule 不存在")
 
@@ -180,12 +197,14 @@ async def update_schedule(
         update_data["next_fire_at"] = compute_next_fire_at(schedule=merged_view)
 
     if not update_data:
-        return {"schedule": record.to_dict()}
+        name_map = await repository.get_agent_name_map({record.agent_slug})
+        return {"schedule": _attach_agent_name([record], name_map)[0]}
 
-    updated = await ScheduleRepository().update(schedule_id, update_data)
+    updated = await repository.update(schedule_id, update_data)
     if updated is None:
         raise HTTPException(status_code=404, detail="schedule 不存在")
-    return {"schedule": updated.to_dict()}
+    name_map = await repository.get_agent_name_map({updated.agent_slug})
+    return {"schedule": _attach_agent_name([updated], name_map)[0]}
 
 
 @schedule_router.delete("/{schedule_id}")

@@ -73,6 +73,55 @@ def test_compute_next_fire_at_respects_cron_and_timezone():
     assert next_at == datetime(2026, 1, 2, 0, 0, 0)
 
 
+def test_compute_next_fire_at_handles_utc_base_with_shanghai_timezone():
+    """回归：base 是 UTC naive、tz=Asia/Shanghai，必须先标 UTC 再 astimezone，不能直接贴标签。
+
+    2026-01-01 12:00 UTC = 2026-01-01 20:00 +08；下一个 0 */1 = 21:00 +08 = 13:00 UTC。
+    之前 bug：base_naive.replace(tzinfo=Asia/Shanghai) 会把 12:00 当成 12:00+08（物理时刻
+    变成 04:00 UTC），croniter 算出 13:00+08 = 05:00 UTC —— 偏 8 小时。
+    """
+    schedule = SimpleNamespace(cron_expression="0 */1 * * *", timezone="Asia/Shanghai")
+    base = datetime(2026, 1, 1, 12, 0, 0)  # 12:00 UTC
+    next_at = compute_next_fire_at(schedule=schedule, base=base)
+    assert next_at is not None
+    assert next_at == datetime(2026, 1, 1, 13, 0, 0)
+
+
+async def test_tick_advances_next_fire_at_in_same_call_as_claim(fake_backend, monkeypatch):
+    """回归：claim + advance 必须在同一次调用里完成；reload 中断不会丢 next_fire_at 推进。
+
+    之前实现是 claim_due_schedules 一次事务后 commit，_handle_due_schedule 后续独立事务
+    才推进 next_fire_at。watchfiles reload 期间如果中断在两个事务之间，next_fire_at 没
+    推进，下次 tick 又会 claim 到同一条 schedule，重复触发。
+    """
+    past = datetime(2020, 1, 1, 0, 0, 0)
+    fake_backend.schedules["a"] = _make_schedule(
+        id="a", enabled=1, next_fire_at=past, cron_expression="*/5 * * * *"
+    )
+
+    async def fake_dispatch(*, schedule_id, execution_id):
+        return None
+
+    svc = SchedulerService()
+    monkeypatch.setattr(svc, "_dispatch_execution", fake_dispatch)
+    await svc._tick_once()
+
+    # claim + advance 在同一次调用里完成：next_fire_at 已经在第一次 tick 后被推进
+    advanced = fake_backend.schedules["a"]
+    assert advanced.next_fire_at is not None
+    assert advanced.next_fire_at > past
+    # last_fired_at 应被设置为「now」（即 tick 那一刻），而不是过去
+    assert advanced.last_fired_at is not None
+    assert advanced.last_fired_at > past
+    # _handle_due_schedule 后续不再额外调 advance_fire_window（被吸收到 claim 里）
+    # 因此 advance_calls 中本 schedule 应只有 1 条（来自 claim 阶段）
+    advance_for_a = [c for c in fake_backend.advance_calls if c[0] == "a"]
+    assert len(advance_for_a) == 1, (
+        f"预期 advance 只来自 claim 阶段，实际 {len(advance_for_a)} 次: {advance_for_a}"
+    )
+    await svc.shutdown()
+
+
 def test_compute_next_fire_at_returns_none_for_invalid_cron():
     schedule = SimpleNamespace(cron_expression="garbage", timezone="UTC")
     assert compute_next_fire_at(schedule=schedule) is None
@@ -99,13 +148,22 @@ class _InMemoryBackend:
         self.advance_calls: list[tuple[str, datetime | None]] = []
 
     # ScheduleRepository 接口
-    async def claim_due_schedules(self, *, now, limit):
+    async def claim_due_schedules(self, *, now, limit, advance_fn=None):
         due = [
             s for s in self.schedules.values()
             if s.enabled == 1 and s.next_fire_at is not None and s.next_fire_at <= now
         ]
         due.sort(key=lambda s: s.next_fire_at)
-        return due[: max(limit, 1)]
+        claimed = due[: max(limit, 1)]
+        # 模拟「claim + advance 同事务」：传入 advance_fn 时立即在内存里推进，
+        # 不需要再单独调 advance_fire_window；事务回滚时一并还原。
+        if advance_fn is not None and claimed:
+            for record in claimed:
+                next_fire = advance_fn(schedule=record, base=now)
+                self.advance_calls.append((record.id, next_fire))
+                record.last_fired_at = now
+                record.next_fire_at = next_fire
+        return claimed
 
     async def advance_fire_window(self, *, schedule_id, last_fired_at, next_fire_at):
         self.advance_calls.append((schedule_id, next_fire_at))
@@ -203,8 +261,10 @@ def fake_backend(monkeypatch):
 
     def _make_schedule_repo():
         class _Repo:
-            async def claim_due_schedules(self, *, now, limit):
-                return await backend.claim_due_schedules(now=now, limit=limit)
+            async def claim_due_schedules(self, *, now, limit, advance_fn=None):
+                return await backend.claim_due_schedules(
+                    now=now, limit=limit, advance_fn=advance_fn
+                )
 
             async def advance_fire_window(self, *, schedule_id, last_fired_at, next_fire_at):
                 return await backend.advance_fire_window(

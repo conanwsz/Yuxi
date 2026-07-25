@@ -86,7 +86,10 @@ def compute_next_fire_at(
     except zoneinfo.ZoneInfoNotFoundError:
         tz = zoneinfo.ZoneInfo("UTC")
 
-    local_base = base_naive.replace(tzinfo=tz)
+    # 关键：base_naive 是 UTC naive，必须先标 UTC 再 astimezone 到目标 tz。
+    # 直接 .replace(tzinfo=tz) 是「贴标签」而非「转换」，会把 01:30 UTC 错标为 01:30+08
+    # （物理时刻变成 17:30 UTC 前一天），croniter 算出的 next 会偏 8 小时。
+    local_base = base_naive.replace(tzinfo=zoneinfo.ZoneInfo("UTC")).astimezone(tz)
     try:
         iterator = croniter(schedule.cron_expression, local_base)
     except (CroniterBadCronError, ValueError, TypeError, KeyError):
@@ -179,12 +182,18 @@ class SchedulerService:
                 continue
 
     async def _tick_once(self) -> None:
-        """单次 tick：扫描到点的 schedule、推进 next_fire_at、派发执行。"""
+        """单次 tick：扫描到点的 schedule、推进 next_fire_at、派发执行。
+
+        claim + advance 在同一事务里 commit，避免 watchfiles reload 在 claim commit
+        之后、advance commit 之前中断导致 next_fire_at 没推进、下次 tick 重复 claim。
+        """
         now = utc_now_naive()
         repo = ScheduleRepository()
         try:
             due_schedules = await repo.claim_due_schedules(
-                now=now, limit=self._tick_batch_limit
+                now=now,
+                limit=self._tick_batch_limit,
+                advance_fn=compute_next_fire_at,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Scheduler tick: failed to claim due schedules: {}", exc)
@@ -201,23 +210,11 @@ class SchedulerService:
             await self._maybe_cleanup_old_executions()
 
     async def _handle_due_schedule(self, *, schedule: Schedule, now: datetime) -> None:
-        """单条 schedule 的处理：推进 next_fire_at + 派发执行任务。"""
-        repo = ScheduleRepository()
-        next_fire = compute_next_fire_at(schedule=schedule, base=now)
-        try:
-            await repo.advance_fire_window(
-                schedule_id=schedule.id,
-                last_fired_at=now,
-                next_fire_at=next_fire,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "Scheduler tick: failed to advance fire window for {}: {}",
-                schedule.id,
-                exc,
-            )
-            return
+        """单条 schedule 的处理：写 pending execution + 派发执行任务。
 
+        next_fire_at 已在 claim_due_schedules 的同一事务里推进，
+        这里不再调用 advance_fire_window，避免跨事务 race。
+        """
         try:
             execution = await self._create_pending_execution(
                 schedule=schedule, scheduled_at=now

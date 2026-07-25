@@ -12,6 +12,7 @@ from sqlalchemy import and_, delete, or_, select
 
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_business import (
+    Agent,
     Schedule,
     ScheduleExecution,
     SCHEDULE_EXECUTION_TERMINAL_STATUSES,
@@ -26,6 +27,19 @@ class ScheduleRepository:
         async with pg_manager.get_async_session_context() as session:
             result = await session.execute(select(Schedule).where(Schedule.id == schedule_id))
             return result.scalar_one_or_none()
+
+    async def get_agent_name_map(self, slugs: set[str]) -> dict[str, str]:
+        """按 slug 批量查 agent 显示名，调用方把 slug -> name 注入到 schedule dict。
+
+        找不到或空集时返回空 dict，调用方 fallback 到 slug 自身。
+        """
+        if not slugs:
+            return {}
+        async with pg_manager.get_async_session_context() as session:
+            result = await session.execute(
+                select(Agent.slug, Agent.name).where(Agent.slug.in_(slugs))
+            )
+            return {slug: name for slug, name in result.all()}
 
     async def list_schedules(self, *, enabled: bool | None = None) -> list[Schedule]:
         async with pg_manager.get_async_session_context() as session:
@@ -90,9 +104,19 @@ class ScheduleRepository:
             return [row[0] for row in result.all()]
 
     async def claim_due_schedules(
-        self, *, now: datetime, limit: int = 20
+        self,
+        *,
+        now: datetime,
+        limit: int = 20,
+        advance_fn: Any | None = None,
     ) -> list[Schedule]:
-        """在单事务内对到点的 schedule 加行锁并返回；调用方负责 commit/rollback。"""
+        """在单事务内对到点的 schedule 加行锁并返回。
+
+        ``advance_fn`` 可选：传入 ``(schedule, base) -> next_fire_at | None``，
+        会在同一事务里把 ``last_fired_at`` / ``next_fire_at`` 推进并 flush，
+        事务 commit 时一起落库。这样 claim + advance 原子化，避免跨事务
+        推进在 reload 中断时丢更新导致重复触发。
+        """
         async with pg_manager.get_async_session_context() as session:
             async with session.begin():
                 stmt = (
@@ -105,7 +129,14 @@ class ScheduleRepository:
                     .with_for_update(skip_locked=True)
                 )
                 result = await session.execute(stmt)
-                return list(result.scalars().all())
+                schedules = list(result.scalars().all())
+                if advance_fn is not None and schedules:
+                    for record in schedules:
+                        record.last_fired_at = now
+                        record.next_fire_at = advance_fn(schedule=record, base=now)
+                        record.updated_at = utc_now_naive()
+                    await session.flush()
+                return schedules
 
     async def advance_fire_window(
         self, *, schedule_id: str, last_fired_at: datetime, next_fire_at: datetime | None
