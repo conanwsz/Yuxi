@@ -70,6 +70,25 @@ class ScheduleRepository:
             await session.refresh(record)
             return record
 
+    async def update_last_fired_at(
+        self, *, schedule_id: str, last_fired_at: datetime
+    ) -> Schedule | None:
+        """仅更新 last_fired_at，不动 next_fire_at。
+
+        立即触发（fire）使用：派发后把 last_fired_at 标为「刚刚 fire 的时刻」，
+        让前端列表能立即反映用户的 fire 操作；next_fire_at 必须保留原值，
+        否则用户重复点 fire 会把 cron 推进。
+        """
+        async with pg_manager.get_async_session_context() as session:
+            record = await session.get(Schedule, schedule_id)
+            if record is None:
+                return None
+            record.last_fired_at = last_fired_at
+            record.updated_at = utc_now_naive()
+            await session.flush()
+            await session.refresh(record)
+            return record
+
     async def delete(self, schedule_id: str) -> bool:
         async with pg_manager.get_async_session_context() as session:
             result = await session.execute(delete(Schedule).where(Schedule.id == schedule_id))

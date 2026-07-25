@@ -421,7 +421,13 @@ class SchedulerService:
 
         now = utc_now_naive()
         execution = await self._create_pending_execution(schedule=schedule, scheduled_at=now)
-        # 立即触发不强制修改 next_fire_at，避免用户重复点 fire 导致提前推进调度
+        # 把 last_fired_at 标为「刚刚 fire 的时刻」；next_fire_at 不动，
+        # 否则用户重复点 fire 会把 cron 提前推进。
+        # 失败仅日志，不阻塞 fire 主路径（用户已经看到 execution 入队）。
+        try:
+            await repo.update_last_fired_at(schedule_id=schedule_id, last_fired_at=now)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("fire_now: failed to update last_fired_at for {}: {}", schedule_id, exc)
         task = asyncio.create_task(
             self._dispatch_execution(schedule_id=schedule.id, execution_id=execution.id),
             name=f"schedule-fire-{execution.id}",

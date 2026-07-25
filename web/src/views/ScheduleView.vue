@@ -51,7 +51,6 @@
         <template v-else-if="column.key === 'agent'">
           <div class="cell-agent">
             <span class="cell-agent-name">{{ record.agent_name || record.agent_slug }}</span>
-            <span v-if="record.agent_name && record.agent_slug" class="cell-agent-slug">{{ record.agent_slug }}</span>
           </div>
         </template>
         <template v-else-if="column.key === 'cron'">
@@ -289,7 +288,6 @@
         <a-descriptions-item label="智能体">
           <div class="cell-agent">
             <span class="cell-agent-name">{{ detailModal.schedule.agent_name }}</span>
-            <span v-if="detailModal.schedule.agent_slug" class="cell-agent-slug">{{ detailModal.schedule.agent_slug }}</span>
           </div>
         </a-descriptions-item>
         <a-descriptions-item label="指令">
@@ -746,11 +744,6 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   line-height: 1.4;
-}
-
-.cell-agent-slug {
-  font-size: 12px;
-  color: var(--gray-7, #5b6168);
 }
 
 .cell-cron {

@@ -1,7 +1,8 @@
 """PostgreSQL 业务数据模型 - 用户、部门、对话等相关表"""
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import (
     JSON,
@@ -23,6 +24,18 @@ from sqlalchemy.orm import relationship
 from yuxi.utils.datetime_utils import format_utc_datetime, utc_now_naive
 
 Base = declarative_base()
+
+
+def _format_naive_utc(value: datetime | None) -> str | None:
+    """Schedule 的 last_fired_at / next_fire_at 是 UTC naive（物理时刻即 UTC），
+    不能再走 format_utc_datetime——后者会通过 ensure_utc 把 naive 当 Asia/Shanghai
+    处理，导致输出比实际物理时间早 8 小时。
+    """
+    if value is None:
+        return None
+    if value.tzinfo is not None:
+        value = value.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
+    return value.isoformat() + "Z"
 
 MAX_LOGIN_FAILED_ATTEMPTS = 5
 LOGIN_LOCK_DURATION_SECONDS = 300
@@ -1103,8 +1116,8 @@ class Schedule(Base):
             "cron_expression": self.cron_expression,
             "enabled": bool(self.enabled),
             "owner_uid": self.owner_uid,
-            "last_fired_at": format_utc_datetime(self.last_fired_at),
-            "next_fire_at": format_utc_datetime(self.next_fire_at),
+            "last_fired_at": _format_naive_utc(self.last_fired_at),
+            "next_fire_at": _format_naive_utc(self.next_fire_at),
             "created_at": format_utc_datetime(self.created_at),
             "updated_at": format_utc_datetime(self.updated_at),
         }
