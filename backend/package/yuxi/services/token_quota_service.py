@@ -331,11 +331,9 @@ async def status(
 
 
 def _format_reset_at(week_start: date) -> str:
-    """按 Asia/Shanghai 零点产生 ISO datetime。"""
-    from yuxi.utils.datetime_utils import SHANGHAI_TZ
-
-    naive_monday = datetime.combine(week_start + timedelta(days=7), datetime.min.time())
-    return naive_monday.replace(tzinfo=SHANGHAI_TZ).isoformat()
+    """按 Asia/Shanghai 零点生成可读的下次重置时间。"""
+    next_monday = week_start + timedelta(days=7)
+    return f"{next_monday.isoformat()} 00:00"
 
 
 # ---- public aliases used by routers (test-friendly naming) ----
@@ -351,10 +349,6 @@ async def get_user_token_quota_payload(
 ) -> dict[str, Any]:
     """Aggregate the per-user quota status payload returned in user API responses."""
     quota_status = await get_user_token_quota_status(db, user, now=now)
-    quota_status["effective_quota"] = quota_status.get("effective_weekly_token_quota")
-    quota_status["used"] = quota_status.get("weighted_tokens")
-    quota_status["remaining"] = quota_status.get("remaining_weighted_tokens")
-    quota_status["week_label"] = _format_week_label(quota_status["week_start"], quota_status["week_end"])
     quota_status["by_model"] = model_breakdown or []
     return {
         "token_quota_mode": quota_status["token_quota_mode"],

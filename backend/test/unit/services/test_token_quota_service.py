@@ -158,7 +158,7 @@ async def test_status_for_inherit_user_returns_effective_default(quota_session):
         assert quota["effective_quota"] == quota["effective_weekly_token_quota"]
         assert quota["weighted_tokens"] == 0
         assert quota["is_unlimited"] is False
-        assert quota["reset_at"].endswith("+08:00")
+        assert quota["reset_at"] == "2026-07-27 00:00"
         assert quota["week_label"]
 
 
@@ -214,6 +214,35 @@ async def test_status_after_settle_aggregates_token_usage(quota_session, monkeyp
         assert quota["event_count"] == 2
         assert quota["estimated_event_count"] == 1
         assert quota["remaining_tokens"] == 10000 - 420
+
+
+async def test_get_user_token_quota_payload_preserves_remaining(quota_session):
+    from yuxi.services.token_quota_service import get_user_token_quota_payload
+
+    async with quota_session() as db:
+        user = await _build_user(
+            db,
+            department_id=1,
+            uid="grace",
+            username="grace",
+            token_quota_mode="custom",
+            weekly_token_quota=5000,
+        )
+        await settle(
+            db,
+            model_spec="provider:gpt-4",
+            event_id="evt-grace",
+            user_id=user.id,
+            uid_snapshot=user.uid,
+            usage={"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150},
+        )
+        await db.commit()
+
+        payload = await get_user_token_quota_payload(db, user)
+        token_quota = payload["token_quota"]
+        assert token_quota["effective_quota"] == 5000
+        assert token_quota["used"] == token_quota["weighted_tokens"]
+        assert token_quota["remaining"] == 5000 - token_quota["weighted_tokens"]
 
 
 async def test_settle_with_duplicate_event_id_does_not_double_count(quota_session):

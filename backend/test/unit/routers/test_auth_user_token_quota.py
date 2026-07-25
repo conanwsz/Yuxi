@@ -36,7 +36,7 @@ def fake_token_quota_service(monkeypatch):
             "effective_weekly_token_quota": user.weekly_token_quota,
             "used_tokens": 120,
             "remaining_tokens": None if user.weekly_token_quota is None else user.weekly_token_quota - 120,
-            "reset_at": "2026-07-27T00:00:00+08:00",
+            "reset_at": "2026-07-27 00:00",
             "is_unlimited": user.token_quota_mode == "unlimited",
         }
 
@@ -161,7 +161,7 @@ async def test_self_profile_and_token_quota_endpoint_include_current_user_status
     quota_payload = quota_response.json()
     assert quota_payload["token_quota_mode"] == "custom"
     assert quota_payload["weekly_token_quota"] == 1234
-    assert quota_payload["token_quota"]["reset_at"] == "2026-07-27T00:00:00+08:00"
+    assert quota_payload["token_quota"]["reset_at"] == "2026-07-27 00:00"
 
 
 async def test_create_user_rejects_quota_settings_without_manage_permission(quota_app_client):

@@ -41,7 +41,7 @@
             class="sider-item"
             :class="{ activesec: activeTab === 'base' }"
             @click="activeTab = 'base'"
-            v-if="userStore.hasPermission('system.config.read')"
+            v-if="userStore.hasPermission('system.config.update')"
           >
             <Settings class="icon" :size="18" />
             <span>基本设置</span>
@@ -148,7 +148,7 @@
           class="nav-item"
           :class="{ active: activeTab === 'base' }"
           @click="activeTab = 'base'"
-          v-if="userStore.hasPermission('system.config.read')"
+          v-if="userStore.hasPermission('system.config.update')"
         >
           基本设置
         </div>
@@ -259,7 +259,7 @@
             <AgentEnvSettingsCard />
           </div>
 
-          <div v-show="activeTab === 'base'" v-if="userStore.hasPermission('system.config.read')">
+          <div v-show="activeTab === 'base'" v-if="userStore.hasPermission('system.config.update')">
             <BasicSettingsSection />
           </div>
 
@@ -360,7 +360,7 @@ const tokenQuotaModels = computed(() =>
 const availableTabs = computed(() => {
   const tabs = []
   if (userStore.isLoggedIn) tabs.push('account', 'userConfig', 'agentEnv')
-  if (userStore.hasPermission('system.config.read')) tabs.push('base')
+  if (userStore.hasPermission('system.config.update')) tabs.push('base')
   if (userStore.hasPermission('users.read')) tabs.push('user')
   if (userStore.hasPermission('departments.read')) tabs.push('department')
   if (userStore.isSuperAdmin) tabs.push('permission')
@@ -417,7 +417,7 @@ const setActiveTab = (preferredTab) => {
     activeTab.value = preferredTab
     return
   }
-  activeTab.value = availableTabs.value.includes('base') ? 'base' : availableTabs.value[0]
+  activeTab.value = availableTabs.value.includes('account') ? 'account' : availableTabs.value[0]
 }
 
 const handleClose = () => {

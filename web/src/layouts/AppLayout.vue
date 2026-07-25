@@ -54,8 +54,7 @@ const conversationSearchOpen = ref(false)
 
 // Provide settings modal methods to child components
 const openSettingsModal = (tab) => {
-  settingsInitialTab.value =
-    tab || (userStore.hasPermission('system.config.read') ? 'base' : 'account')
+  settingsInitialTab.value = tab || 'account'
   showSettingsModal.value = true
 }
 
