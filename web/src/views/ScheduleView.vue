@@ -170,97 +170,88 @@
         </a-form-item>
 
         <a-form-item label="触发频率" required>
-          <a-row :gutter="8" align="middle" wrap>
-            <a-col :flex="'120px'">
-              <a-select
-                v-model:value="formState.frequency.type"
-                :options="FREQUENCY_OPTIONS"
-                @change="handleFrequencyTypeChange"
-              />
-            </a-col>
+          <div class="frequency-row">
+            <a-select
+              class="frequency-type"
+              v-model:value="formState.frequency.type"
+              :options="FREQUENCY_OPTIONS"
+              @change="handleFrequencyTypeChange"
+            />
             <template v-if="formState.frequency.type === 'minute'">
-              <a-col :flex="'120px'">
-                <a-select
-                  v-model:value="formState.frequency.value"
-                  :options="FREQUENCY_VALUE_OPTIONS"
-                />
-              </a-col>
-              <a-col :flex="1">
-                <span class="form-helper">分钟</span>
-              </a-col>
+              <a-select
+                class="frequency-value"
+                v-model:value="formState.frequency.value"
+                :options="FREQUENCY_VALUE_OPTIONS"
+              />
+              <span class="form-unit">分钟</span>
             </template>
             <template v-else-if="formState.frequency.type === 'hour'">
-              <a-col :flex="'120px'">
-                <a-select
-                  v-model:value="formState.frequency.value"
-                  :options="FREQUENCY_VALUE_OPTIONS"
-                />
-              </a-col>
-              <a-col :flex="'120px'">
-                <a-select
-                  v-model:value="formState.frequency.minute"
-                  :options="MINUTE_OPTIONS"
-                />
-              </a-col>
-              <a-col :flex="1">
-                <span class="form-helper">时 分</span>
-              </a-col>
+              <a-select
+                class="frequency-value"
+                v-model:value="formState.frequency.value"
+                :options="FREQUENCY_VALUE_OPTIONS"
+              />
+              <span class="form-unit">小时</span>
+              <a-select
+                class="frequency-minute"
+                v-model:value="formState.frequency.minute"
+                :options="MINUTE_OPTIONS"
+              />
+              <span class="form-unit">分</span>
             </template>
             <template v-else-if="formState.frequency.type === 'day'">
-              <a-col :flex="'120px'">
-                <a-select v-model:value="formState.frequency.hour" :options="HOUR_OPTIONS" />
-              </a-col>
-              <a-col :flex="1">
-                <span class="form-helper">时</span>
-              </a-col>
-              <a-col :flex="'120px'">
-                <a-select v-model:value="formState.frequency.minute" :options="MINUTE_OPTIONS" />
-              </a-col>
-              <a-col :flex="1">
-                <span class="form-helper">分</span>
-              </a-col>
+              <a-select
+                class="frequency-time"
+                v-model:value="formState.frequency.hour"
+                :options="HOUR_OPTIONS"
+              />
+              <span class="form-unit">时</span>
+              <a-select
+                class="frequency-time"
+                v-model:value="formState.frequency.minute"
+                :options="MINUTE_OPTIONS"
+              />
+              <span class="form-unit">分</span>
             </template>
             <template v-else-if="formState.frequency.type === 'week'">
-              <a-col :flex="'140px'">
-                <a-select
-                  v-model:value="formState.frequency.dayOfWeek"
-                  :options="WEEK_OPTIONS"
-                />
-              </a-col>
-              <a-col :flex="'120px'">
-                <a-select v-model:value="formState.frequency.hour" :options="HOUR_OPTIONS" />
-              </a-col>
-              <a-col :flex="1">
-                <span class="form-helper">时</span>
-              </a-col>
-              <a-col :flex="'120px'">
-                <a-select v-model:value="formState.frequency.minute" :options="MINUTE_OPTIONS" />
-              </a-col>
-              <a-col :flex="1">
-                <span class="form-helper">分</span>
-              </a-col>
+              <a-select
+                class="frequency-week"
+                v-model:value="formState.frequency.dayOfWeek"
+                :options="WEEK_OPTIONS"
+              />
+              <a-select
+                class="frequency-time"
+                v-model:value="formState.frequency.hour"
+                :options="HOUR_OPTIONS"
+              />
+              <span class="form-unit">时</span>
+              <a-select
+                class="frequency-time"
+                v-model:value="formState.frequency.minute"
+                :options="MINUTE_OPTIONS"
+              />
+              <span class="form-unit">分</span>
             </template>
             <template v-else-if="formState.frequency.type === 'month'">
-              <a-col :flex="'140px'">
-                <a-select
-                  v-model:value="formState.frequency.dayOfMonth"
-                  :options="DAY_OF_MONTH_OPTIONS"
-                />
-              </a-col>
-              <a-col :flex="'120px'">
-                <a-select v-model:value="formState.frequency.hour" :options="HOUR_OPTIONS" />
-              </a-col>
-              <a-col :flex="1">
-                <span class="form-helper">时</span>
-              </a-col>
-              <a-col :flex="'120px'">
-                <a-select v-model:value="formState.frequency.minute" :options="MINUTE_OPTIONS" />
-              </a-col>
-              <a-col :flex="1">
-                <span class="form-helper">分</span>
-              </a-col>
+              <a-select
+                class="frequency-dom"
+                v-model:value="formState.frequency.dayOfMonth"
+                :options="DAY_OF_MONTH_OPTIONS"
+              />
+              <a-select
+                class="frequency-time"
+                v-model:value="formState.frequency.hour"
+                :options="HOUR_OPTIONS"
+              />
+              <span class="form-unit">时</span>
+              <a-select
+                class="frequency-time"
+                v-model:value="formState.frequency.minute"
+                :options="MINUTE_OPTIONS"
+              />
+              <span class="form-unit">分</span>
             </template>
-          </a-row>
+          </div>
           <div class="form-preview">
             <span class="form-preview-label">预览：</span>
             <a-tag color="blue">{{ previewCronLabel }}</a-tag>
@@ -268,9 +259,14 @@
         </a-form-item>
 
         <a-form-item>
-          <a-checkbox v-model:checked="formState.enabled">
+          <a-switch
+            v-model:checked="formState.enabled"
+            checked-children="启用"
+            un-checked-children="停用"
+          />
+          <span class="form-helper" style="margin-left: 8px">
             停用后不再触发，但保留配置与历史
-          </a-checkbox>
+          </span>
         </a-form-item>
       </a-form>
     </a-modal>
@@ -790,6 +786,26 @@ onUnmounted(() => {
   color: var(--gray-7, #5b6168);
   font-size: 13px;
   padding-left: 4px;
+}
+
+.frequency-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.frequency-type { width: 130px; }
+.frequency-value { width: 100px; }
+.frequency-time { width: 100px; }
+.frequency-week { width: 110px; }
+.frequency-dom { width: 110px; }
+.frequency-minute { width: 100px; }
+
+.form-unit {
+  color: var(--gray-7, #5b6168);
+  font-size: 13px;
+  white-space: nowrap;
 }
 
 .form-preview {
