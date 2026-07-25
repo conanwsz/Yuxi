@@ -119,10 +119,12 @@ const sortedChats = computed(() => {
     if (a.is_pinned !== b.is_pinned) {
       return a.is_pinned ? -1 : 1
     }
-    const dateA = parseToShanghai(b.created_at)
-    const dateB = parseToShanghai(a.created_at)
-    if (!dateA || !dateB) return 0
-    return dateA.diff(dateB)
+    // 按更新时间倒序：有最新回复的会话跳到最上面（类似微信/聊天 app 行为）。
+    // 兜底：如果 updated_at 缺失，回退到 created_at。
+    const aTime = parseToShanghai(a.updated_at || a.created_at)
+    const bTime = parseToShanghai(b.updated_at || b.created_at)
+    if (!aTime || !bTime) return 0
+    return bTime.diff(aTime)
   })
 })
 
