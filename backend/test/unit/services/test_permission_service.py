@@ -42,6 +42,18 @@ def test_default_roles_keep_existing_management_boundary():
     assert "users.delete" in DEFAULT_ROLE_PERMISSIONS["superadmin"]
 
 
+def test_api_key_permissions_default_for_admin_roles():
+    # API Key 新增权限：admin/superadmin 默认带，普通 user 不带
+    assert "apikey.manage" in ALL_PERMISSION_KEYS
+    assert "apikey.invoke" in ALL_PERMISSION_KEYS
+    assert "apikey.manage" in DEFAULT_ROLE_PERMISSIONS["superadmin"]
+    assert "apikey.invoke" in DEFAULT_ROLE_PERMISSIONS["superadmin"]
+    assert "apikey.manage" in DEFAULT_ROLE_PERMISSIONS["admin"]
+    assert "apikey.invoke" in DEFAULT_ROLE_PERMISSIONS["admin"]
+    assert "apikey.manage" not in DEFAULT_ROLE_PERMISSIONS["user"]
+    assert "apikey.invoke" not in DEFAULT_ROLE_PERMISSIONS["user"]
+
+
 def test_unknown_permission_is_rejected():
     with pytest.raises(ValueError, match="未知权限"):
         validate_permission_keys(["knowledge.read", "unknown.permission"])

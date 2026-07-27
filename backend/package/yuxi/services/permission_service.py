@@ -7,9 +7,7 @@ from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-
 from yuxi.storage.postgres.models_business import Role, User
-
 
 PERMISSION_GROUPS = [
     {
@@ -99,6 +97,14 @@ PERMISSION_GROUPS = [
             ("knowledge.documents.manage", "管理文档"),
             ("knowledge.graph.manage", "管理图谱"),
             ("knowledge.evaluation.manage", "管理评估"),
+        ],
+    },
+    {
+        "key": "apikey",
+        "name": "API Key",
+        "permissions": [
+            ("apikey.manage", "管理 API Key"),
+            ("apikey.invoke", "通过 API Key 调用"),
         ],
     },
 ]

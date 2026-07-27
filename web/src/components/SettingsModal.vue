@@ -32,7 +32,7 @@
             class="sider-item"
             :class="{ activesec: activeTab === 'apiKeys' }"
             @click="activeTab = 'apiKeys'"
-            v-if="userStore.isLoggedIn"
+            v-if="userStore.hasPermission('apikey.manage')"
           >
             <Key class="icon" :size="18" />
             <span>API Keys</span>
