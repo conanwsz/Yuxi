@@ -38,9 +38,12 @@ export function useThreadAlerts() {
    *
    * @param {string} threadId
    * @param {{ kind: string, httpStatus?: number, title: string, body: object }|null|undefined} category
+   * @param {{ retry?: { text: string, imageContent: any, attachments: any[], requestId: string } }} [options]
+   *        retry：把"待重发的请求载荷"挂到 alert 上，让 ChatAlertBanner 可以渲染"重试"按钮。
+   *        一般在 handleSendMessage 失败时挂上；SSE 失败路径不挂（请求已发，不能盲重发）。
    * @returns {string|null} 新告警 id；category 为空时返回 null
    */
-  const pushThreadAlert = (threadId, category) => {
+  const pushThreadAlert = (threadId, category, options = {}) => {
     if (!threadId || !category) return null
     if (!threadAlerts[threadId]) {
       threadAlerts[threadId] = []
@@ -49,13 +52,19 @@ export function useThreadAlerts() {
     // 同 kind 已有告警且 createdAt 在 5s 内 → 不重复入栈
     const now = Date.now()
     const recentSame = list.find((a) => a.kind === category.kind && now - (a.createdAt || 0) < 5000)
-    if (recentSame) return recentSame.id
+    if (recentSame) {
+      // 5s 内重复：把最新的 retry 覆盖上去（同一 kind 错误再次发生时，载荷可能变了）
+      if (options.retry) {
+        recentSame.body = { ...(recentSame.body || {}), retry: options.retry }
+      }
+      return recentSame.id
+    }
 
     const alert = {
       id: _generateId(),
       kind: category.kind,
       title: category.title,
-      body: category.body,
+      body: { ...(category.body || {}), ...(options.retry ? { retry: options.retry } : {}) },
       httpStatus: category.httpStatus,
       createdAt: now
     }
@@ -110,10 +119,11 @@ export function useThreadAlerts() {
 
   /**
    * 给定一个 Error / SSE 事件，自动 categorize 并 push。如果不可分类则静默返回 null。
+   * options.retry 会原样透传给 pushThreadAlert，用于在告警上挂"重试载荷"。
    */
-  const pushAlertFromError = (threadId, error) => {
+  const pushAlertFromError = (threadId, error, options) => {
     const category = categorizeChatError(error)
-    return pushThreadAlert(threadId, category)
+    return pushThreadAlert(threadId, category, options)
   }
 
   const totalCount = computed(() =>

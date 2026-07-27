@@ -113,8 +113,10 @@
                 :kind="row.alert.kind"
                 :title="row.alert.title"
                 :body="row.alert.body"
+                :retry="row.alert.body?.retry"
                 class="chat-alert-row"
                 @dismiss="dismissThreadAlert(currentChatId, row.alert.id)"
+                @retry="(payload) => handleRetry(currentChatId, row.alert.id, payload)"
               />
             </template>
 
@@ -2586,9 +2588,19 @@ const handleSendMessage = async ({ image } = {}) => {
     threadState.replyLoadingVisible = false
     threadState.pendingRequestId = null
     rollbackAttachments(threadId, previousAttachments)
-    resetOnGoingConv(threadId)
+    // 【改：3a3da0ba 之前调 resetOnGoingConv(threadId)，但这会把乐观插入的 user 消息也清掉，
+    //   用户视角下"刚发的那条字消失"。现在保留 onGoingConv 里的 user 消息，靠告警条 + 重试按钮
+    //   让用户能再发一次。配额恢复后点重试，user 消息会自动消失（被新一轮乐观插入 resetOnGoingConv 接管）。
+    //   同步清掉 activeRunId，否则 isProcessing 计算属性还以为在跑。
+    threadState.activeRunId = null
+    const retryPayload = {
+      text,
+      imageContent,
+      attachments: pendingAttachments,
+      requestId
+    }
     // 优先内联到会话流（不依赖 toast，刷新后消失，不入 LLM 上下文）
-    const alertId = pushAlertFromError(threadId, error)
+    const alertId = pushAlertFromError(threadId, error, { retry: retryPayload })
     if (!alertId) {
       handleChatError(error, 'send')
     }
@@ -2618,6 +2630,35 @@ const handleSendOrStop = async (payload) => {
   }
   if (props.sendDisabled) return
   await handleSendMessage(payload)
+}
+
+// 重试：来自告警条的"重试"按钮。拿之前缓存的请求载荷回填，然后重新调 handleSendOrStop。
+// 1. rollbackAttachments 已经把 attachments 的 request_id 解绑了——它们已经自动回到
+//    currentPendingThreadAttachments（filter !attachment.request_id），所以无需手动放回。
+// 2. 上一次的乐观 user 消息还留在 threadState.onGoingConv.msgChunks[oldRequestId]，
+//    handleSendMessage 自己开头的 resetOnGoingConv 会接管清空，所以这里不动。
+// 3. 主动 dismiss 告警——重试成功后告警条不应再停留。
+const handleRetry = async (threadId, alertId, retryPayload) => {
+  if (!threadId || !retryPayload) return
+  if (threadId !== currentChatId.value) {
+    // 不在当前会话里的告警点重试：先切到该 thread，再触发一次"重试"。
+    // 这里保守处理：直接 no-op，避免误把其他会话的载荷塞到当前输入框。
+    message.warning('请切到对应会话后再点击重试')
+    return
+  }
+  if (isProcessing.value) {
+    message.info('当前会话正在处理中，请稍后再试')
+    return
+  }
+  // 先回填文本（handleSendMessage 内部会先读 userInput.value 再清空）
+  userInput.value = retryPayload.text || ''
+  // 关闭告警条
+  dismissThreadAlert(threadId, alertId)
+  // 触发重发：构造和首次发送一样的 payload 形状
+  const imagePayload = retryPayload.imageContent
+    ? { image: { imageContent: retryPayload.imageContent } }
+    : {}
+  await handleSendOrStop(imagePayload)
 }
 
 // ==================== 人工审批处理 ====================

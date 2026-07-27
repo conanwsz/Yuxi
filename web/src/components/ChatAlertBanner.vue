@@ -16,21 +16,33 @@
         </slot>
       </div>
     </div>
-    <button
-      v-if="dismissible"
-      type="button"
-      class="alert-dismiss"
-      :aria-label="`关闭告警：${title}`"
-      @click="emit('dismiss')"
-    >
-      <X :size="14" />
-    </button>
+    <div class="alert-actions">
+      <button
+        v-if="canRetry"
+        type="button"
+        class="alert-action alert-retry"
+        :aria-label="`重试：${title}`"
+        @click="emit('retry', retry)"
+      >
+        <RefreshCw :size="14" />
+        <span>重试</span>
+      </button>
+      <button
+        v-if="dismissible"
+        type="button"
+        class="alert-action alert-dismiss"
+        :aria-label="`关闭告警：${title}`"
+        @click="emit('dismiss')"
+      >
+        <X :size="14" />
+      </button>
+    </div>
   </div>
 </template>
 
 <script setup>
 import { computed } from 'vue'
-import { AlertTriangle, ShieldAlert, Info, X } from 'lucide-vue-next'
+import { AlertTriangle, ShieldAlert, Info, X, RefreshCw } from 'lucide-vue-next'
 
 const props = defineProps({
   kind: {
@@ -45,13 +57,29 @@ const props = defineProps({
     type: Object,
     default: () => ({})
   },
+  /**
+   * 重试载荷：{ text, imageContent, attachments, requestId }。
+   * 通常由 useThreadAlerts 在 push 告警时挂到 body.retry。
+   * 仅 quota_exceeded / generic_error 展示重试按钮；permission_denied 重试也是 403，无意义。
+   */
+  retry: {
+    type: Object,
+    default: null
+  },
   dismissible: {
     type: Boolean,
     default: true
   }
 })
 
-const emit = defineEmits(['dismiss'])
+const emit = defineEmits(['dismiss', 'retry'])
+
+const canRetry = computed(
+  () =>
+    props.retry != null &&
+    typeof props.retry === 'object' &&
+    (props.kind === 'quota_exceeded' || props.kind === 'generic_error')
+)
 
 const iconComponent = computed(() => {
   switch (props.kind) {
@@ -121,24 +149,57 @@ const formatNumber = (n) => {
     opacity: 0.85;
   }
 
-  .alert-dismiss {
+  .alert-actions {
     flex-shrink: 0;
-    background: transparent;
-    border: none;
-    padding: 2px;
-    cursor: pointer;
-    color: inherit;
-    opacity: 0.6;
     display: flex;
     align-items: center;
-    justify-content: center;
+    gap: 4px;
+  }
+
+  .alert-action {
+    background: transparent;
+    border: 1px solid transparent;
+    padding: 4px 8px;
+    cursor: pointer;
+    color: inherit;
+    opacity: 0.75;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
     border-radius: 4px;
-    transition: opacity 0.15s ease;
+    font-size: 12px;
+    line-height: 1;
+    transition:
+      opacity 0.15s ease,
+      background 0.15s ease,
+      border-color 0.15s ease;
 
     &:hover {
       opacity: 1;
       background: rgba(0, 0, 0, 0.06);
     }
+
+    &:focus-visible {
+      outline: none;
+      border-color: currentColor;
+      opacity: 1;
+    }
+  }
+
+  .alert-retry {
+    font-weight: 500;
+    padding: 4px 10px;
+    border-color: currentColor;
+    opacity: 0.9;
+
+    &:hover {
+      opacity: 1;
+      background: rgba(0, 0, 0, 0.08);
+    }
+  }
+
+  .alert-dismiss {
+    padding: 4px;
   }
 
   &.kind-quota_exceeded {

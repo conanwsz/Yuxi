@@ -110,4 +110,46 @@ describe('useThreadAlerts', () => {
     pushThreadAlert('tc-2', quotaCategory)
     assert.equal(totalCount.value, before + 3)
   })
+
+  it('retry payload 持久化到 body.retry', () => {
+    const { pushThreadAlert, getThreadAlerts } = useThreadAlerts()
+    const retry = { text: 'hello', imageContent: null, attachments: [], requestId: 'r-1' }
+    pushThreadAlert('thread-retry-1', quotaCategory, { retry })
+    const list = getThreadAlerts('thread-retry-1')
+    assert.equal(list.length, 1)
+    assert.deepEqual(list[0].body.retry, retry)
+  })
+
+  it('不传 retry 时 body.retry 为 undefined', () => {
+    const { pushThreadAlert, getThreadAlerts } = useThreadAlerts()
+    pushThreadAlert('thread-retry-2', quotaCategory)
+    const list = getThreadAlerts('thread-retry-2')
+    assert.equal(list[0].body.retry, undefined)
+  })
+
+  it('5s 内同 kind 重复 push 时，最新 retry 覆盖旧 retry', async () => {
+    const { pushThreadAlert, getThreadAlerts } = useThreadAlerts()
+    const threadId = 'thread-retry-dedupe'
+    const retry1 = { text: 'first', imageContent: null, attachments: [], requestId: 'r-1' }
+    const retry2 = { text: 'second', imageContent: null, attachments: [], requestId: 'r-2' }
+    pushThreadAlert(threadId, quotaCategory, { retry: retry1 })
+    await sleep(20)
+    pushThreadAlert(threadId, quotaCategory, { retry: retry2 })
+    const list = getThreadAlerts(threadId)
+    assert.equal(list.length, 1)
+    assert.equal(list[0].body.retry.text, 'second')
+    assert.equal(list[0].body.retry.requestId, 'r-2')
+  })
+
+  it('pushAlertFromError 转发 options.retry', () => {
+    const { pushAlertFromError, getThreadAlerts } = useThreadAlerts()
+    const err = Object.assign(new Error('quota'), {
+      response: { status: 429, data: { detail: { code: 'token_quota_exceeded', message: 'm' } } }
+    })
+    const retry = { text: 'retry-text', imageContent: null, attachments: [], requestId: 'r-x' }
+    const id = pushAlertFromError('thread-retry-3', err, { retry })
+    assert.ok(id)
+    const list = getThreadAlerts('thread-retry-3')
+    assert.equal(list[0].body.retry.text, 'retry-text')
+  })
 })
