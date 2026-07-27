@@ -9,12 +9,20 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from server.routers.auth_router import delete_user, disable_user
+from server.routers.auth_router import activate_user, delete_user, disable_user
 from server.routers.user_router import APIKeyCreate, create_api_key
 from server.utils.auth_middleware import _verify_api_key
 from yuxi.repositories import user_repository as user_repository_module
 from yuxi.repositories.user_repository import UserRepository
-from yuxi.storage.postgres.models_business import APIKey, Base, CLIAuthSession, Department, ExternalIdentity, User
+from yuxi.storage.postgres.models_business import (
+    APIKey,
+    Base,
+    CLIAuthSession,
+    Department,
+    ExternalIdentity,
+    User,
+    UserDepartmentMembership,
+)
 from yuxi.utils.auth_utils import AuthUtils
 from yuxi.utils.datetime_utils import utc_now_naive
 
@@ -169,16 +177,62 @@ async def test_disable_user_disables_owned_api_keys(session):
         user_id=session["regular_user"].id,
         created_by=str(session["regular_user"].id),
     )
-    db.add(api_key)
+    membership = UserDepartmentMembership(
+        user_id=session["regular_user"].id,
+        department_id=session["dept_a"].id,
+        membership_type="primary",
+        status="active",
+    )
+    db.add_all([api_key, membership])
     await db.commit()
     await db.refresh(api_key)
+    original_username = session["regular_user"].username
+    original_password_hash = session["regular_user"].password_hash
 
     result = await disable_user(session["regular_user"].id, None, session["superadmin"], db)
     await db.refresh(api_key)
+    await db.refresh(session["regular_user"])
+    await db.refresh(membership)
 
     assert result["success"] is True
     assert result["message"] == "用户已禁用"
     assert api_key.is_enabled is False
+    assert session["regular_user"].username == original_username
+    assert session["regular_user"].password_hash == original_password_hash
+    assert membership.status == "active"
+
+
+async def test_activate_user_restores_login_state_but_keeps_api_keys_disabled(session):
+    db = session["db"]
+    user = session["regular_user"]
+    _secret, key_hash, key_prefix = AuthUtils.generate_api_key()
+    api_key = APIKey(
+        key_hash=key_hash,
+        key_prefix=key_prefix,
+        name="owned key",
+        user_id=user.id,
+        created_by=str(user.id),
+    )
+    membership = UserDepartmentMembership(
+        user_id=user.id,
+        department_id=session["dept_a"].id,
+        membership_type="primary",
+        status="inactive",
+    )
+    db.add_all([api_key, membership])
+    await db.commit()
+
+    await disable_user(user.id, None, session["superadmin"], db)
+    result = await activate_user(user.id, None, session["superadmin"], db)
+    await db.refresh(user)
+    await db.refresh(api_key)
+    await db.refresh(membership)
+
+    assert result == {"success": True, "message": "用户已激活"}
+    assert user.is_deleted == 0
+    assert user.deleted_at is None
+    assert api_key.is_enabled is False
+    assert membership.status == "active"
 
 
 async def test_delete_user_physically_removes_account_and_auth_bindings(session):

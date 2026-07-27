@@ -15,7 +15,12 @@
 
 ### 开发记录
 
-- 用户生命周期拆分为禁用与物理删除：后台新建用户不再展示、校验或写入预留手机号；原软删除改为独立的“禁用”操作，保留账号与历史数据但禁用密码、API Key 和组织关系，OIDC 登录不再自动恢复禁用账号；新增物理删除接口，删除用户行前解除 CLI 授权会话引用并清理 OIDC 身份、API Key、用户配置、组织关系和操作日志等直接关联数据，仅以 UID 保存的会话与运行历史继续保留。RBAC 新增 `users.disable`，历史角色原 `users.delete` 权限迁移为禁用权限，物理删除默认仅超级管理员拥有。
+- 新增用户 Chat 模型 Token 周额度：系统提供每自然周 1000 万加权 Token 的全局默认值，用户可继承默认、设置自定义额度或不限额；每个 Chat 模型可配置 Token 系数，主智能体、工具循环、子智能体、摘要、定时任务和外部 Agent 调用统一按真实或估算 usage 写入独立账本，并在额度耗尽后拒绝新的模型调用。AgentRun worker 在流式执行前预检额度并注入运行级 BillingContext，同步 `/api/agent/runs`、`/api/chat/call` 与 `/api/user/token-quota` 路径超额时返回 HTTP 429 + `token_quota_exceeded` 结构化错误（含 quota/used/remaining/reset_at），运行中触发的超额标记为 `failed / token_quota_exceeded`，Schedule 因额度不足标记为 `skipped`；用户、AgentRun 与 Schedule 的 `billing_event_id` 用 LangChain `run_id` 幂等，避免重复结算。用户和管理员可查看本周已用、剩余及重置时间，现有 Dashboard 原始 Token 趋势保持不变。
+- 修复个人 Token 用量面板"剩余额度"始终为空：`get_user_token_quota_payload` 错误地用 `remaining_weighted_tokens` 覆盖了 `remaining`，导致前端读取不到值；现删除冗余的字段映射层，直接透传 `status()` 返回的原始字段。
+- Token 额度重置时间改为本地可读格式（如 `2026-07-27 00:00`），不再附带 `+08:00`。
+- 设置弹窗默认打开"账户设置"页签，不再按角色跳转；普通用户隐藏"基本设置"菜单（权限从 `system.config.read` 收紧为 `system.config.update`）。
+- 修复 Dashboard 模型调用统计展示：后端会把消息中保存的运行时模型 ID 映射到模型供应商配置的 `display_name`，前端图例与悬浮提示优先显示该名称；统计分组与历史数据键继续使用模型 ID，避免改变已有计数。
+- 用户生命周期拆分为禁用、重新激活与物理删除：后台新建用户不再展示、校验或写入预留手机号；禁用通过账号状态阻止密码与 OIDC 登录并停用 API Key，但保留用户名、密码摘要、头像、手机号、组织关系和历史数据，管理员可通过新增的激活接口恢复账号登录，旧版已禁用账号激活时会兼容恢复主部门关系；物理删除会解除 CLI 授权会话引用并清理 OIDC 身份、API Key、用户配置、组织关系和操作日志等直接关联数据，仅以 UID 保存的会话与运行历史继续保留。RBAC 提供 `users.disable`、`users.enable` 和 `users.delete` 三项权限，物理删除默认仅超级管理员拥有；用户管理默认列表按操作、用户、部门、角色、状态、最后登录和创建时间排列，列表操作改为直接展示按钮。
 - 部门升级为多主体组织树：支持多根、同主体层级移动、完整路径、节点停用、单一主部门与同主体兼职部门；组织成员身份与显式管理范围分离，管理节点自动覆盖全部后代。知识库、Agent 与 Skill 统一支持 v2 部门子树授权、排除子树和指定用户例外，同时保留历史 v1 精确部门语义；Agent 进一步拆分使用与管理范围，管理授权不包含删除，删除仅限所有者或超级管理员。默认部门继续作为不可移动、不可停用、不可删除的系统根节点。
 - 加固第三方 OIDC 接入协议：Yuxi 作为独立 Confidential Client 使用 Authorization Code + PKCE S256，并通过 Discovery 获取认证端点；统一 `OIDC_ISSUER_BASE_URL` 主配置与旧 `OIDC_ISSUER_URL` 兼容边界，要求精确 HTTPS 回调、服务端 state/nonce/PKCE 事务、固定 ID Token 算法白名单及 `issuer + sub` 身份键；外部身份落独立表，新建 OIDC 用户的内部 UID 使用规范化邮箱 `@` 前的员工编号，旧 issuer-less 绑定仅允许通过 `OIDC_LEGACY_ISSUER_URL` 受控迁移；明确 Client Secret 与认证 Token 不得进入前端、仓库、URL 或普通日志，当前退出仅清理本地 JWT，不宣称已退出统一认证。
 - 新增全局单角色 RBAC 权限矩阵：启动时幂等创建 `superadmin`、`admin`、`user` 系统角色并迁移历史角色，超级管理员可在设置中创建自定义角色、按资源与动作配置权限并分配给用户；JWT 与 API Key 每次请求解析角色当前权限。用户、部门、仪表盘、系统、模型、Tools、MCP、Agent、Skill 与知识库管理接口改用统一权限依赖，知识库按 ID 管理继续叠加创建者、部门与共享范围检查；登录和当前用户响应补充角色名称与权限列表，前端菜单、路由、页签和按钮按权限展示。
@@ -100,6 +105,9 @@
 - 收敛 AgentRun 数据模型与输入语义：运行记录统一使用 `agent_slug`、`conversation_thread_id`、`created_by_run_id`、`input_message_id` 等字段，子智能体通过 `subagent_threads` 关系表维护 parent/child conversation 归属；补齐旧库升级时 `agent_runs` 旧字段到新字段、`subagent_threads.subagent_slug/created_by_run_id` 的静默回填与约束收敛，并在创建部分唯一索引前终结重复活跃 run，避免早期分支库保留 nullable schema 或历史重复活跃数据阻塞升级；Agent 状态中的 `subagent_runs` 改为以 `run_id` 作为执行身份，`resume` 请求字段明确为 `Command(resume=...)` 输入载荷。
 - 精简旧链路与失败语义：恢复审批统一走 `POST /api/agent/runs` 的 `resume` 载荷，移除旧 `POST /api/chat/thread/{id}/resume` 流式接口和已废弃的 `chat_service.agent_chat`；子智能体运行缺少必要线程上下文时直接报错，状态查询只在真实缺失或无权访问时返回 404，内部运行记录格式异常返回 500。
 - 统一流式事件线程 ID 提取契约：新增共享 `extract_thread_id` 工具，`BaseAgent`、聊天服务和 run worker 统一只读取规范化事件的一层稳定路径，并通过显式 fallback 处理父线程归属，避免递归扫描嵌套 metadata 导致父/子线程事件路由分歧。
+- 新增会话列表实时刷新：首页左侧会话列表在发送消息后和收到回复完成后自动按 `updated_at` 重新排序，最新活动的会话上浮到非置顶区域顶部；前端通过 `chatThreadsStore.touchThread()` 乐观更新 `updated_at`，避免整表刷新和闪烁；置顶会话始终在最上方不受影响，审批中断场景不会误触发刷新。
+- 新增定时任务（Schedule）能力：管理员可在 `/api/schedules` 配置按 cron 表达式定时触发的智能体运行；后端 `SchedulerService` 在 API 进程 lifespan 中以 10s tick 周期扫描到点任务，按 croniter 计算下一次触发时间，以 `owner_uid` 身份调用既有 `create_agent_run_view` + `enqueue_agent_run` + `await_agent_run_result` 复用完整 AgentRun 链路；每条触发落地独立的 `schedule_executions` 行并自动建一个 thread=`schedule-<id>` 的「调度对话」便于前端跳转；执行历史保留 90 天（每 tick 顺手清理）。新增权限点 `system.schedules.manage`（仅 admin/superadmin 拥有），现有角色权限矩阵已通过 `schedule_manage_permission_v1` schema 迁移自动补齐；启停 cron / 时区合法性校验、`POST /fire` 立即触发、删除 schedule 级联清理 execution、优雅停机（取消 tick + 等 in-flight 派发带 10s 超时）均已覆盖。
+- 修复侧边栏会话列表不实时刷新的问题：发送消息和收到回复后，对应会话不会自动上浮到列表顶部，只有切换智能体或手动刷新才会更新。根因是前端在发送消息（`handleSendMessage`）和 run 结束（`onTerminalDetected`）两个时机都没有更新会话列表项的 `updated_at`，而 `ConversationNavSection` 按 `updated_at` 排序。新增 `chatThreadsStore.touchThread` 方法，在这两个时机乐观更新已存在 thread 的 `updated_at`，触发列表重排，零网络请求、零延迟。
 
 ## v0.7.0 (2026-06-13)
 

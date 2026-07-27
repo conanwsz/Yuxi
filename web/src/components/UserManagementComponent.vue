@@ -5,7 +5,7 @@
       <div class="header-content">
         <div class="section-title">用户管理</div>
         <p class="section-description">
-          禁用会保留账号和历史数据，删除会永久移除账号，请谨慎操作。
+          禁用会保留账号和历史数据，可随时重新激活；删除会永久移除账号，请谨慎操作。
         </p>
       </div>
       <div class="header-actions">
@@ -103,10 +103,60 @@
               :row-class-name="(user) => (user.is_disabled ? 'disabled-user-row' : '')"
               row-key="id"
               size="middle"
-              :scroll="{ x: 907 }"
+              :scroll="{ x: 1190 }"
             >
               <template #bodyCell="{ column, record: user }">
-                <template v-if="column.key === 'user'">
+                <template v-if="column.key === 'actions'">
+                  <div class="table-actions">
+                    <a-button
+                      v-if="userStore.hasPermission('users.update') && !user.is_disabled"
+                      type="link"
+                      size="small"
+                      class="table-action-btn lucide-icon-btn"
+                      :disabled="isUserLifecycleActionDisabled(user)"
+                      @click="showEditUserModal(user)"
+                    >
+                      <template #icon><SquarePen :size="13" /></template>
+                      编辑
+                    </a-button>
+                    <a-button
+                      v-if="userStore.hasPermission('users.enable') && user.is_disabled"
+                      type="link"
+                      size="small"
+                      class="table-action-btn table-action-activate lucide-icon-btn"
+                      :disabled="isUserLifecycleActionDisabled(user)"
+                      @click="confirmActivateUser(user)"
+                    >
+                      <template #icon><UserCheck :size="13" /></template>
+                      激活
+                    </a-button>
+                    <a-button
+                      v-else-if="userStore.hasPermission('users.disable') && !user.is_disabled"
+                      type="link"
+                      size="small"
+                      class="table-action-btn lucide-icon-btn"
+                      :disabled="isUserLifecycleActionDisabled(user)"
+                      @click="confirmDisableUser(user)"
+                    >
+                      <template #icon><UserX :size="13" /></template>
+                      禁用
+                    </a-button>
+                    <a-button
+                      v-if="userStore.hasPermission('users.delete')"
+                      type="link"
+                      size="small"
+                      danger
+                      class="table-action-btn lucide-icon-btn"
+                      :disabled="isUserLifecycleActionDisabled(user)"
+                      @click="confirmDeleteUser(user)"
+                    >
+                      <template #icon><Trash2 :size="13" /></template>
+                      删除
+                    </a-button>
+                  </div>
+                </template>
+
+                <template v-else-if="column.key === 'user'">
                   <div class="table-user">
                     <FallbackAvatar
                       :src="user.avatar"
@@ -126,25 +176,32 @@
                   </div>
                 </template>
 
-                <template v-else-if="column.key === 'role'">
-                  <div class="table-role">
-                    <span>{{ user.role_name || roleName(user.role) }}</span>
+                <template v-else-if="column.key === 'department'">
+                  <div class="table-department">
+                    <span>{{ user.department_path || user.department_name || '未分配部门' }}</span>
                     <span class="table-secondary">
-                      {{ user.department_path || user.department_name || '未分配部门' }}
+                      兼职：{{ partTimeLabel(user) }}
                     </span>
                   </div>
                 </template>
 
-                <template v-else-if="column.key === 'partTime'">
-                  <span class="table-secondary">{{ partTimeLabel(user) }}</span>
+                <template v-else-if="column.key === 'role'">
+                  <span>{{ user.role_name || roleName(user.role) }}</span>
                 </template>
 
-                <template v-else-if="column.key === 'createdAt'">
-                  <span class="table-time">{{ formatTime(user.created_at) }}</span>
+                <template v-else-if="column.key === 'weeklyQuota'">
+                  <div class="table-weekly-quota">
+                    <span class="table-weekly-primary">{{ formatWeeklyQuotaPrimary(user) }}</span>
+                    <span class="table-secondary">{{ formatWeeklyQuotaSecondary(user) }}</span>
+                  </div>
                 </template>
 
                 <template v-else-if="column.key === 'lastLogin'">
                   <span class="table-time">{{ formatTime(user.last_login) }}</span>
+                </template>
+
+                <template v-else-if="column.key === 'createdAt'">
+                  <span class="table-time">{{ formatTime(user.created_at) }}</span>
                 </template>
 
                 <template v-else-if="column.key === 'status'">
@@ -154,57 +211,6 @@
                   >
                     {{ user.is_disabled ? '已禁用' : '正常' }}
                   </span>
-                </template>
-
-                <template v-else-if="column.key === 'actions'">
-                  <a-dropdown :trigger="['click']">
-                    <a-button
-                      type="text"
-                      size="small"
-                      class="table-action-btn lucide-icon-btn"
-                      title="用户操作"
-                      @click.stop
-                    >
-                      <Ellipsis :size="16" />
-                    </a-button>
-                    <template #overlay>
-                      <a-menu>
-                        <a-menu-item
-                          v-if="userStore.hasPermission('users.update') && !user.is_disabled"
-                          key="edit"
-                          @click="showEditUserModal(user)"
-                        >
-                          <span class="lucide-menu-item">
-                            <SquarePen :size="14" />
-                            <span>编辑用户</span>
-                          </span>
-                        </a-menu-item>
-                        <a-menu-item
-                          v-if="userStore.hasPermission('users.disable') && !user.is_disabled"
-                          key="disable"
-                          :disabled="isUserLifecycleActionDisabled(user)"
-                          @click="confirmDisableUser(user)"
-                        >
-                          <span class="lucide-menu-item">
-                            <UserX :size="14" />
-                            <span>禁用用户</span>
-                          </span>
-                        </a-menu-item>
-                        <a-menu-item
-                          v-if="userStore.hasPermission('users.delete')"
-                          key="delete"
-                          :disabled="isUserLifecycleActionDisabled(user)"
-                          :danger="!isUserLifecycleActionDisabled(user)"
-                          @click="confirmDeleteUser(user)"
-                        >
-                          <span class="lucide-menu-item">
-                            <Trash2 :size="14" />
-                            <span>删除用户</span>
-                          </span>
-                        </a-menu-item>
-                      </a-menu>
-                    </template>
-                  </a-dropdown>
                 </template>
               </template>
             </a-table>
@@ -261,6 +267,17 @@
                     </span>
                   </a-menu-item>
                   <a-menu-item
+                    v-if="userStore.hasPermission('users.enable') && user.is_disabled"
+                    key="activate"
+                    :disabled="isUserLifecycleActionDisabled(user)"
+                    @click.stop="confirmActivateUser(user)"
+                  >
+                    <span class="lucide-menu-item">
+                      <UserCheck :size="14" />
+                      <span>激活用户</span>
+                    </span>
+                  </a-menu-item>
+                  <a-menu-item
                     v-if="userStore.hasPermission('users.disable') && !user.is_disabled"
                     key="disable"
                     :disabled="isUserLifecycleActionDisabled(user)"
@@ -292,6 +309,16 @@
                     <span class="info-label">兼职部门:</span>
                     <span class="info-value part-time-text">
                       {{ partTimeLabel(user) }}
+                    </span>
+                  </div>
+                  <div class="info-item">
+                    <span class="info-label">Token 周额度:</span>
+                    <span class="info-value quota-text">{{ formatWeeklyQuotaPrimary(user) }}</span>
+                  </div>
+                  <div class="info-item" v-if="formatWeeklyQuotaSecondary(user) !== '-'">
+                    <span class="info-label">额度说明:</span>
+                    <span class="info-value quota-subtext">
+                      {{ formatWeeklyQuotaSecondary(user) }}
                     </span>
                   </div>
                   <div class="info-item">
@@ -400,6 +427,32 @@
           <div v-if="!userStore.isSuperAdmin" class="help-text">只有超级管理员可以修改角色</div>
         </a-form-item>
 
+        <a-form-item label="Token 周额度" class="form-item">
+          <div class="quota-form-group">
+            <a-select v-model:value="userManagement.form.tokenQuotaMode">
+              <a-select-option
+                v-for="option in tokenQuotaModeOptions"
+                :key="option.value"
+                :value="option.value"
+              >
+                {{ option.label }}
+              </a-select-option>
+            </a-select>
+            <a-input-number
+              v-if="userManagement.form.tokenQuotaMode === 'custom'"
+              v-model:value="userManagement.form.weeklyTokenQuota"
+              class="quota-input"
+              :min="0"
+              :step="10000"
+              :precision="0"
+              placeholder="请输入自定义周额度"
+            />
+          </div>
+          <div class="help-text">
+            继承：使用系统默认周额度；自定义：为该用户单独设置；不限：不限制每周 Token。
+          </div>
+        </a-form-item>
+
         <template v-if="userStore.isSuperAdmin">
           <a-form-item label="主部门" required class="form-item">
             <a-select
@@ -476,8 +529,8 @@ import {
   Plus,
   SquarePen,
   Trash2,
+  UserCheck,
   UserX,
-  Ellipsis,
   LayoutGrid,
   List as ListIcon,
   User,
@@ -493,11 +546,65 @@ import InfoCard from '@/components/shared/InfoCard.vue'
 
 const userStore = useUserStore()
 const roles = ref([])
+const tokenQuotaModeOptions = [
+  { value: 'inherit', label: '继承系统默认' },
+  { value: 'custom', label: '自定义额度' },
+  { value: 'unlimited', label: '不限' }
+]
+const tokenQuotaModeLabelMap = Object.fromEntries(
+  tokenQuotaModeOptions.map((option) => [option.value, option.label])
+)
 
 const roleName = (key) => {
   const role = roles.value.find((item) => item.key === key)
   if (role) return role.name
   return { superadmin: '超级管理员', admin: '管理员', user: '普通用户' }[key] || key
+}
+
+const getQuotaRecord = (user) =>
+  user?.token_quota && typeof user.token_quota === 'object' && !Array.isArray(user.token_quota)
+    ? user.token_quota
+    : {}
+
+const normalizeWholeNumber = (value) => {
+  if (value === null || typeof value === 'undefined' || value === '') return null
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed < 0) return null
+  return Math.round(parsed)
+}
+
+const normalizeTokenQuotaMode = (value) =>
+  ['inherit', 'custom', 'unlimited'].includes(value) ? value : 'inherit'
+
+const getUserTokenQuotaMode = (user) => normalizeTokenQuotaMode(getQuotaRecord(user).mode)
+
+const getUserCustomWeeklyQuota = (user) => {
+  const quotaRecord = getQuotaRecord(user)
+  return normalizeWholeNumber(quotaRecord.configured_quota ?? quotaRecord.effective_quota)
+}
+
+const getUserEffectiveWeeklyQuota = (user) =>
+  normalizeWholeNumber(getQuotaRecord(user).effective_quota)
+
+const getUserWeeklyUsage = (user) => normalizeWholeNumber(getQuotaRecord(user).used)
+
+const formatTokenCount = (value) => {
+  if (!Number.isFinite(value)) return '-'
+  return new Intl.NumberFormat('zh-CN').format(value)
+}
+
+const formatWeeklyQuotaPrimary = (user) => {
+  const mode = getUserTokenQuotaMode(user)
+  if (mode === 'unlimited') return '不限'
+  const quota = getUserEffectiveWeeklyQuota(user)
+  if (quota !== null) return `${formatTokenCount(quota)} Tokens`
+  return mode === 'custom' ? '未设置' : '继承系统默认'
+}
+
+const formatWeeklyQuotaSecondary = (user) => {
+  const mode = tokenQuotaModeLabelMap[getUserTokenQuotaMode(user)] || tokenQuotaModeLabelMap.inherit
+  const used = getUserWeeklyUsage(user)
+  return used === null ? mode : `${mode} · 本周已用 ${formatTokenCount(used)}`
 }
 
 // 用户管理相关状态
@@ -523,6 +630,8 @@ const userManagement = reactive({
     password: '',
     confirmPassword: '',
     role: 'user', // 默认角色
+    tokenQuotaMode: 'inherit',
+    weeklyTokenQuota: null,
     primaryDepartmentId: null,
     partTimeDepartmentIds: [],
     managedDepartmentIds: [],
@@ -539,13 +648,14 @@ const roleOptions = computed(() => {
 })
 
 const userTableColumns = [
-  { title: '用户', key: 'user', width: 205, fixed: 'left' },
-  { title: '角色与部门', key: 'role', width: 170 },
-  { title: '兼职部门', key: 'partTime', width: 110 },
-  { title: '创建时间', key: 'createdAt', width: 145 },
-  { title: '最后登录', key: 'lastLogin', width: 145 },
+  { title: '操作', key: 'actions', width: 190, fixed: 'left' },
+  { title: '用户', key: 'user', width: 205 },
+  { title: '部门', key: 'department', width: 165 },
+  { title: '角色', key: 'role', width: 100 },
+  { title: '本周额度', key: 'weeklyQuota', width: 180 },
   { title: '状态', key: 'status', width: 80 },
-  { title: '', key: 'actions', width: 52, fixed: 'right', align: 'center' }
+  { title: '最后登录时间', key: 'lastLogin', width: 135 },
+  { title: '创建时间', key: 'createdAt', width: 135 }
 ]
 
 // 部门列表（仅超级管理员使用）
@@ -736,7 +846,7 @@ const partTimeLabel = (user) => {
 
 const isUserLifecycleActionDisabled = (user) =>
   user.id === userStore.userId ||
-  (user.role === 'superadmin' && userStore.userRole !== 'superadmin')
+  (userStore.userRole !== 'superadmin' && user.role !== 'user')
 
 // 获取用户列表
 const fetchUsers = async () => {
@@ -780,6 +890,8 @@ const showAddUserModal = () => {
     password: '',
     confirmPassword: '',
     role: 'user', // 默认角色为普通用户
+    tokenQuotaMode: 'inherit',
+    weeklyTokenQuota: null,
     primaryDepartmentId: activeDepartments.value.find((dept) => dept.is_system)?.id || null,
     partTimeDepartmentIds: [],
     managedDepartmentIds: [],
@@ -802,6 +914,8 @@ const showEditUserModal = async (user) => {
     password: '',
     confirmPassword: '',
     role: user.role,
+    tokenQuotaMode: getUserTokenQuotaMode(user),
+    weeklyTokenQuota: getUserCustomWeeklyQuota(user),
     primaryDepartmentId: user.department_id || null,
     partTimeDepartmentIds: (user.part_time_departments || []).map((item) => item.department_id),
     managedDepartmentIds: [...(user.managed_department_ids || [])],
@@ -872,6 +986,15 @@ const handleUserFormSubmit = async () => {
       return
     }
 
+    if (
+      userManagement.form.tokenQuotaMode === 'custom' &&
+      (!Number.isFinite(userManagement.form.weeklyTokenQuota) ||
+        userManagement.form.weeklyTokenQuota < 0)
+    ) {
+      message.error('请输入有效的自定义周额度')
+      return
+    }
+
     userManagement.loading = true
 
     // 根据模式决定创建还是更新用户
@@ -879,6 +1002,11 @@ const handleUserFormSubmit = async () => {
       // 创建更新数据对象
       const updateData = { username: userManagement.form.username.trim() }
       if (userStore.isSuperAdmin) updateData.role = userManagement.form.role
+      updateData.token_quota_mode = userManagement.form.tokenQuotaMode
+      updateData.weekly_token_quota =
+        userManagement.form.tokenQuotaMode === 'custom'
+          ? Math.round(userManagement.form.weeklyTokenQuota)
+          : null
 
       // 添加手机号字段
       if (userManagement.form.phoneNumber) {
@@ -908,7 +1036,12 @@ const handleUserFormSubmit = async () => {
       const createData = {
         username: userManagement.form.username.trim(),
         password: userManagement.form.password,
-        role: userManagement.form.role
+        role: userManagement.form.role,
+        token_quota_mode: userManagement.form.tokenQuotaMode,
+        weekly_token_quota:
+          userManagement.form.tokenQuotaMode === 'custom'
+            ? Math.round(userManagement.form.weeklyTokenQuota)
+            : null
       }
 
       if (userStore.isSuperAdmin) {
@@ -958,6 +1091,29 @@ const confirmDisableUser = (user) => {
       } catch (error) {
         console.error('禁用用户失败:', error)
         message.error(error.message || '禁用失败，请稍后重试')
+      } finally {
+        userManagement.loading = false
+      }
+    }
+  })
+}
+
+// 重新激活用户
+const confirmActivateUser = (user) => {
+  Modal.confirm({
+    title: '确认激活用户',
+    content: `确定要重新激活用户 "${user.username}" 吗？激活后该用户可以重新登录系统。`,
+    okText: '激活',
+    cancelText: '取消',
+    async onOk() {
+      try {
+        userManagement.loading = true
+        await userStore.activateUser(user.id)
+        message.success('用户已激活')
+        await fetchUsers()
+      } catch (error) {
+        console.error('激活用户失败:', error)
+        message.error(error.message || '激活失败，请稍后重试')
       } finally {
         userManagement.loading = false
       }
@@ -1282,6 +1438,10 @@ onMounted(async () => {
                 &.phone-text {
                   font-family: 'Monaco', 'Consolas', monospace;
                 }
+
+                &.quota-subtext {
+                  color: var(--gray-600);
+                }
               }
             }
           }
@@ -1333,9 +1493,18 @@ onMounted(async () => {
           background: var(--gray-25);
         }
 
+        .table-actions,
         .table-user {
           display: flex;
           align-items: center;
+        }
+
+        .table-actions {
+          gap: 2px;
+          white-space: nowrap;
+        }
+
+        .table-user {
           gap: 10px;
           min-width: 0;
         }
@@ -1345,7 +1514,8 @@ onMounted(async () => {
         }
 
         .table-user-copy,
-        .table-role {
+        .table-department,
+        .table-weekly-quota {
           display: flex;
           flex-direction: column;
           gap: 2px;
@@ -1357,6 +1527,15 @@ onMounted(async () => {
           color: var(--gray-900);
           font-size: 13px;
           font-weight: 600;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+
+        .table-weekly-primary {
+          overflow: hidden;
+          color: var(--gray-800);
+          font-size: 13px;
+          font-weight: 500;
           text-overflow: ellipsis;
           white-space: nowrap;
         }
@@ -1398,10 +1577,22 @@ onMounted(async () => {
         }
 
         .table-action-btn {
+          height: 28px;
+          padding: 0 5px;
           color: var(--gray-600);
+          font-size: 12px;
 
           &:hover {
             color: var(--gray-900);
+          }
+        }
+
+        .table-action-activate {
+          color: var(--color-success-700);
+
+          &:hover {
+            color: var(--color-success-700);
+            background: var(--color-success-50);
           }
         }
       }
@@ -1479,6 +1670,16 @@ onMounted(async () => {
       font-size: 12px;
       margin-top: 4px;
       line-height: 1.3;
+    }
+
+    .quota-form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .quota-input {
+      width: 100%;
     }
 
     .password-toggle {

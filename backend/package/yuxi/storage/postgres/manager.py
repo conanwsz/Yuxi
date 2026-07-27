@@ -594,6 +594,56 @@ class PostgresManager(metaclass=SingletonMeta):
             END $$
             """,
             """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM app_schema_migrations
+                    WHERE migration_key = 'user_enable_permission_v3'
+                ) THEN
+                    UPDATE roles
+                    SET permissions = permissions::jsonb || '["users.enable"]'::jsonb
+                    WHERE permissions::jsonb ? 'users.disable';
+                    INSERT INTO app_schema_migrations (migration_key)
+                    VALUES ('user_enable_permission_v3');
+                END IF;
+            END $$
+            """,
+            """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM app_schema_migrations
+                    WHERE migration_key = 'schedule_manage_permission_v1'
+                ) THEN
+                    UPDATE roles
+                    SET permissions = permissions::jsonb || '["system.schedules.manage"]'::jsonb
+                    WHERE permissions::jsonb ? 'system.tasks.manage';
+                    INSERT INTO app_schema_migrations (migration_key)
+                    VALUES ('schedule_manage_permission_v1');
+                END IF;
+            END $$
+            """,
+            # schedules 不再需要 timezone 字段（统一以服务器 TZ 解释 cron），
+            # 删列以保证 ORM 模型与表结构一致。
+            """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM app_schema_migrations
+                    WHERE migration_key = 'schedule_drop_timezone_v1'
+                ) THEN
+                    IF EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'schedules' AND column_name = 'timezone'
+                    ) THEN
+                        ALTER TABLE schedules DROP COLUMN timezone;
+                    END IF;
+                    INSERT INTO app_schema_migrations (migration_key)
+                    VALUES ('schedule_drop_timezone_v1');
+                END IF;
+            END $$
+            """,
+            """
             INSERT INTO roles (key, name, description, permissions, resource_access, is_system, created_at, updated_at)
             SELECT DISTINCT users.role, users.role, '从历史用户数据迁移', '[]'::jsonb,
                    '{"models":{"mode":"all","allowed":[],"defaults":{}},"tools":{"mode":"all","allowed":[]},"mcp_servers":{"mode":"all","allowed":[]}}'::jsonb,
@@ -621,6 +671,10 @@ class PostgresManager(metaclass=SingletonMeta):
                 END IF;
             END $$
             """,
+            "ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS token_quota_mode VARCHAR(16) DEFAULT 'inherit'",
+            "ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS weekly_token_quota BIGINT",
+            "UPDATE users SET token_quota_mode = 'inherit' WHERE token_quota_mode IS NULL",
+            "ALTER TABLE IF EXISTS users ALTER COLUMN token_quota_mode SET NOT NULL",
             "ALTER TABLE IF EXISTS skills ADD COLUMN IF NOT EXISTS tool_dependencies JSONB DEFAULT '[]'::jsonb",
             "ALTER TABLE IF EXISTS skills ADD COLUMN IF NOT EXISTS mcp_dependencies JSONB DEFAULT '[]'::jsonb",
             "ALTER TABLE IF EXISTS skills ADD COLUMN IF NOT EXISTS skill_dependencies JSONB DEFAULT '[]'::jsonb",
@@ -754,6 +808,97 @@ class PostgresManager(metaclass=SingletonMeta):
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             )
             """,
+            """
+            CREATE TABLE IF NOT EXISTS token_quota_ledger (
+                id SERIAL PRIMARY KEY,
+                event_id VARCHAR(128) NOT NULL UNIQUE,
+                user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                uid_snapshot VARCHAR(64) NOT NULL,
+                week_start DATE NOT NULL,
+                model_spec VARCHAR(255) NOT NULL,
+                prompt_tokens BIGINT NOT NULL DEFAULT 0,
+                completion_tokens BIGINT NOT NULL DEFAULT 0,
+                total_tokens BIGINT NOT NULL DEFAULT 0,
+                weighted_tokens BIGINT NOT NULL DEFAULT 0,
+                token_coefficient NUMERIC(8, 4) NOT NULL DEFAULT 1.0000,
+                is_estimated BOOLEAN NOT NULL DEFAULT FALSE,
+                estimate_reason VARCHAR(64),
+                source VARCHAR(32) NOT NULL DEFAULT 'chat',
+                run_id VARCHAR(64),
+                request_id VARCHAR(128),
+                thread_id VARCHAR(128),
+                parent_run_id VARCHAR(64),
+                metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                CONSTRAINT ck_token_quota_ledger_prompt_tokens_non_negative CHECK (prompt_tokens >= 0),
+                CONSTRAINT ck_token_quota_ledger_completion_tokens_non_negative CHECK (completion_tokens >= 0),
+                CONSTRAINT ck_token_quota_ledger_total_tokens_non_negative CHECK (total_tokens >= 0),
+                CONSTRAINT ck_token_quota_ledger_weighted_tokens_non_negative CHECK (weighted_tokens >= 0),
+                CONSTRAINT ck_token_quota_ledger_coefficient_range
+                    CHECK (token_coefficient >= 0.01 AND token_coefficient <= 100)
+            )
+            """,
+            # ----- 兼容此前已建表但缺列的旧实例 -----
+            "ALTER TABLE IF EXISTS token_quota_ledger ADD COLUMN IF NOT EXISTS uid_snapshot VARCHAR(64)",
+            "UPDATE token_quota_ledger SET uid_snapshot = 'unknown' WHERE uid_snapshot IS NULL",
+            "ALTER TABLE IF EXISTS token_quota_ledger ALTER COLUMN uid_snapshot SET NOT NULL",
+            "ALTER TABLE IF EXISTS token_quota_ledger ADD COLUMN IF NOT EXISTS estimate_reason VARCHAR(64)",
+            "ALTER TABLE IF EXISTS token_quota_ledger ADD COLUMN IF NOT EXISTS run_id VARCHAR(64)",
+            "ALTER TABLE IF EXISTS token_quota_ledger ADD COLUMN IF NOT EXISTS request_id VARCHAR(128)",
+            "ALTER TABLE IF EXISTS token_quota_ledger ADD COLUMN IF NOT EXISTS thread_id VARCHAR(128)",
+            "ALTER TABLE IF EXISTS token_quota_ledger ADD COLUMN IF NOT EXISTS parent_run_id VARCHAR(64)",
+            "ALTER TABLE IF EXISTS token_quota_ledger ALTER COLUMN token_coefficient TYPE NUMERIC(8, 4) "
+            "USING token_coefficient::NUMERIC(8, 4)",
+            "ALTER TABLE IF EXISTS token_quota_ledger ALTER COLUMN token_coefficient SET DEFAULT 1.0000",
+            "ALTER TABLE IF EXISTS token_quota_ledger ALTER COLUMN token_coefficient SET NOT NULL",
+            (
+                "DO $$ BEGIN "
+                "IF NOT EXISTS (SELECT 1 FROM pg_constraint "
+                "WHERE conname = 'ck_token_quota_ledger_coefficient_range') THEN "
+                "ALTER TABLE token_quota_ledger "
+                "ADD CONSTRAINT ck_token_quota_ledger_coefficient_range "
+                "CHECK (token_coefficient >= 0.01 AND token_coefficient <= 100); "
+                "END IF; END $$"
+            ),
+            "ALTER TABLE IF EXISTS token_quota_ledger ALTER COLUMN metadata_json SET DEFAULT '{}'::jsonb",
+            "ALTER TABLE IF EXISTS token_quota_ledger ALTER COLUMN metadata_json SET NOT NULL",
+            """
+            CREATE TABLE IF NOT EXISTS token_quota_weekly_usage (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                uid_snapshot VARCHAR(64) NOT NULL,
+                week_start DATE NOT NULL,
+                quota_mode VARCHAR(16) NOT NULL DEFAULT 'inherit',
+                quota_limit BIGINT,
+                prompt_tokens BIGINT NOT NULL DEFAULT 0,
+                completion_tokens BIGINT NOT NULL DEFAULT 0,
+                total_tokens BIGINT NOT NULL DEFAULT 0,
+                weighted_tokens BIGINT NOT NULL DEFAULT 0,
+                event_count INTEGER NOT NULL DEFAULT 0,
+                estimated_event_count INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                CONSTRAINT uq_token_quota_weekly_usage_user_week UNIQUE (user_id, week_start),
+                CONSTRAINT ck_token_quota_weekly_usage_prompt_tokens_non_negative CHECK (prompt_tokens >= 0),
+                CONSTRAINT ck_token_quota_weekly_usage_completion_tokens_non_negative CHECK (completion_tokens >= 0),
+                CONSTRAINT ck_token_quota_weekly_usage_total_tokens_non_negative CHECK (total_tokens >= 0),
+                CONSTRAINT ck_token_quota_weekly_usage_weighted_tokens_non_negative CHECK (weighted_tokens >= 0),
+                CONSTRAINT ck_token_quota_weekly_usage_event_count_non_negative CHECK (event_count >= 0),
+                CONSTRAINT ck_token_quota_weekly_usage_estimated_event_count_non_negative
+                    CHECK (estimated_event_count >= 0)
+            )
+            """,
+            "ALTER TABLE IF EXISTS token_quota_weekly_usage ADD COLUMN IF NOT EXISTS uid_snapshot VARCHAR(64)",
+            "UPDATE token_quota_weekly_usage SET uid_snapshot = 'unknown' WHERE uid_snapshot IS NULL",
+            "ALTER TABLE IF EXISTS token_quota_weekly_usage ALTER COLUMN uid_snapshot SET NOT NULL",
+            (
+                "ALTER TABLE IF EXISTS token_quota_weekly_usage "
+                "ADD COLUMN IF NOT EXISTS prompt_tokens BIGINT NOT NULL DEFAULT 0"
+            ),
+            (
+                "ALTER TABLE IF EXISTS token_quota_weekly_usage "
+                "ADD COLUMN IF NOT EXISTS completion_tokens BIGINT NOT NULL DEFAULT 0"
+            ),
             """
             CREATE TABLE IF NOT EXISTS subagent_threads (
                 id SERIAL PRIMARY KEY,
@@ -988,6 +1133,54 @@ class PostgresManager(metaclass=SingletonMeta):
             "CREATE INDEX IF NOT EXISTS ix_conversations_is_pinned ON conversations(is_pinned)",
             "CREATE UNIQUE INDEX IF NOT EXISTS ix_model_providers_provider_id ON model_providers(provider_id)",
             "CREATE INDEX IF NOT EXISTS ix_model_providers_is_enabled ON model_providers(is_enabled)",
+            "CREATE INDEX IF NOT EXISTS ix_users_token_quota_mode ON users(token_quota_mode)",
+            "CREATE INDEX IF NOT EXISTS ix_token_quota_ledger_user_week ON token_quota_ledger(user_id, week_start)",
+            "CREATE INDEX IF NOT EXISTS ix_token_quota_ledger_uid_week ON token_quota_ledger(uid_snapshot, week_start)",
+            "CREATE INDEX IF NOT EXISTS ix_token_quota_ledger_request_id ON token_quota_ledger(request_id)",
+            "CREATE INDEX IF NOT EXISTS ix_token_quota_ledger_thread_id ON token_quota_ledger(thread_id)",
+            "CREATE INDEX IF NOT EXISTS ix_token_quota_weekly_usage_uid_week "
+            "ON token_quota_weekly_usage(uid_snapshot, week_start)",
+            # ---- 定时任务(Schedule)定义与执行历史 ----
+            """
+            CREATE TABLE IF NOT EXISTS schedules (
+                id VARCHAR(32) PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                description TEXT,
+                agent_slug VARCHAR(128) NOT NULL,
+                query TEXT NOT NULL,
+                runtime_overrides JSONB,
+                cron_expression VARCHAR(128) NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                owner_uid VARCHAR(64) NOT NULL,
+                last_fired_at TIMESTAMP,
+                next_fire_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS ix_schedules_agent_slug ON schedules(agent_slug)",
+            "CREATE INDEX IF NOT EXISTS ix_schedules_owner_uid ON schedules(owner_uid)",
+            "CREATE INDEX IF NOT EXISTS ix_schedules_enabled ON schedules(enabled)",
+            "CREATE INDEX IF NOT EXISTS ix_schedules_next_fire_at ON schedules(next_fire_at)",
+            """
+            CREATE TABLE IF NOT EXISTS schedule_executions (
+                id VARCHAR(32) PRIMARY KEY,
+                schedule_id VARCHAR(32) NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,
+                agent_run_id VARCHAR(64),
+                scheduled_at TIMESTAMP NOT NULL,
+                fired_at TIMESTAMP,
+                started_at TIMESTAMP,
+                completed_at TIMESTAMP,
+                status VARCHAR(32) NOT NULL DEFAULT 'pending',
+                result_summary TEXT,
+                error TEXT,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS ix_schedule_executions_schedule_id ON schedule_executions(schedule_id)",
+            "CREATE INDEX IF NOT EXISTS ix_schedule_executions_agent_run_id ON schedule_executions(agent_run_id)",
+            "CREATE INDEX IF NOT EXISTS ix_schedule_executions_status ON schedule_executions(status)",
+            "CREATE INDEX IF NOT EXISTS ix_schedule_executions_created_at ON schedule_executions(created_at)",
         ]
         async with self.async_engine.begin() as conn:
             # 历史未绑定用户的 API Key 会在下方迁移语句里被静默删除，先计数告警

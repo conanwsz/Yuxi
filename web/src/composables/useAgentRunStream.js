@@ -146,8 +146,8 @@ export function useAgentRunStream({
     onInterruptDetected({ threadId, runId, run })
   }
 
-  const notifyTerminalDetected = (threadId, runId, touchedThreadIds) => {
-    if (typeof onTerminalDetected !== 'function') return
+  const notifyTerminalDetected = (threadId, runId, touchedThreadIds, shouldNotify = true) => {
+    if (!shouldNotify || typeof onTerminalDetected !== 'function') return
     onTerminalDetected({ threadId, runId, touchedThreadIds: [...touchedThreadIds] })
   }
 
@@ -419,7 +419,8 @@ export function useAgentRunStream({
           ts.pendingRequestId = null
           clearPendingInterruptForRun(threadId, run.id)
           clearActiveRunSnapshot(threadId)
-          notifyTerminalDetected(threadId, run.id, new Set([threadId]))
+          // 恢复会话时检测到历史终态 run，不触发列表更新
+          notifyTerminalDetected(threadId, run.id, new Set([threadId]), false)
         }
       } catch (e) {
         console.warn('Failed to refresh active run while stream is open:', threadId, e)
@@ -488,7 +489,8 @@ export function useAgentRunStream({
     ts.pendingRequestId = null
     ts.pendingInterrupt = null
     clearActiveRunSnapshot(threadId)
-    notifyTerminalDetected(threadId, null, new Set([threadId]))
+    // 恢复会话时没有活跃 run，不触发列表更新
+    notifyTerminalDetected(threadId, null, new Set([threadId]), false)
   }
 
   return {

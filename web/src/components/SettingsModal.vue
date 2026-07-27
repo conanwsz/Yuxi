@@ -41,7 +41,7 @@
             class="sider-item"
             :class="{ activesec: activeTab === 'base' }"
             @click="activeTab = 'base'"
-            v-if="userStore.hasPermission('system.config.read')"
+            v-if="userStore.hasPermission('system.config.update')"
           >
             <Settings class="icon" :size="18" />
             <span>基本设置</span>
@@ -148,7 +148,7 @@
           class="nav-item"
           :class="{ active: activeTab === 'base' }"
           @click="activeTab = 'base'"
-          v-if="userStore.hasPermission('system.config.read')"
+          v-if="userStore.hasPermission('system.config.update')"
         >
           基本设置
         </div>
@@ -182,7 +182,73 @@
       <div class="settings-content-wrapper">
         <div class="settings-content">
           <div v-show="activeTab === 'account'" v-if="userStore.isLoggedIn">
-            <AccountSettingsComponent />
+            <div class="account-settings-stack">
+              <AccountSettingsComponent />
+              <div class="settings-inline-card token-quota-card">
+                <div class="quota-card-header">
+                  <div>
+                    <div class="section-title">个人 Token 用量</div>
+                    <p class="section-description">查看当前自然周额度、消耗进度与模型折算明细。</p>
+                  </div>
+                  <a-button class="lucide-icon-btn" :loading="tokenQuotaLoading" @click="loadTokenQuota">
+                    <RefreshCw :size="14" :class="{ spin: tokenQuotaLoading }" />
+                    刷新
+                  </a-button>
+                </div>
+                <a-spin :spinning="tokenQuotaLoading">
+                  <a-alert
+                    v-if="tokenQuotaError"
+                    type="warning"
+                    show-icon
+                    :message="tokenQuotaError"
+                    class="quota-alert"
+                  />
+                  <div v-else class="quota-summary-grid">
+                    <div class="quota-summary-item">
+                      <span class="quota-summary-label">{{ tokenQuota.weekLabel || '本周额度' }}</span>
+                      <span class="quota-summary-value">{{ formatQuotaMetric(tokenQuota.quota) }}</span>
+                      <span class="quota-summary-note">{{ tokenQuotaModeLabel }}</span>
+                    </div>
+                    <div class="quota-summary-item">
+                      <span class="quota-summary-label">本周已用</span>
+                      <span class="quota-summary-value">{{ formatQuotaMetric(tokenQuota.used) }}</span>
+                      <span class="quota-summary-note">
+                        {{ tokenQuota.used === null ? '暂无统计' : '累计消耗 Tokens' }}
+                      </span>
+                    </div>
+                    <div class="quota-summary-item">
+                      <span class="quota-summary-label">剩余额度</span>
+                      <span class="quota-summary-value">{{ formatQuotaMetric(tokenQuota.remaining) }}</span>
+                      <span class="quota-summary-note">
+                        {{ tokenQuota.resetAt ? `下次重置：${tokenQuota.resetAt}` : '按自然周滚动重置' }}
+                      </span>
+                    </div>
+                  </div>
+                  <div v-if="tokenQuotaModels.length" class="quota-model-list">
+                    <div class="quota-model-list-header">
+                      <span class="section-subtitle">按模型折算明细</span>
+                      <span class="quota-model-count">{{ tokenQuotaModels.length }} 个模型</span>
+                    </div>
+                    <div class="quota-model-table">
+                      <div class="quota-model-row quota-model-head">
+                        <span>模型</span>
+                        <span>原始消耗</span>
+                        <span>折算后</span>
+                      </div>
+                      <div
+                        v-for="item in tokenQuotaModels"
+                        :key="getModelQuotaKey(item)"
+                        class="quota-model-row"
+                      >
+                        <span class="quota-model-name">{{ getModelQuotaLabel(item) }}</span>
+                        <span>{{ formatQuotaMetric(normalizeQuotaNumber(item.used)) }}</span>
+                        <span>{{ formatQuotaMetric(normalizeQuotaNumber(item.effective_used)) }}</span>
+                      </div>
+                    </div>
+                  </div>
+                </a-spin>
+              </div>
+            </div>
           </div>
 
           <div v-if="activeTab === 'apiKeys' && userStore.isLoggedIn">
@@ -193,7 +259,7 @@
             <AgentEnvSettingsCard />
           </div>
 
-          <div v-show="activeTab === 'base'" v-if="userStore.hasPermission('system.config.read')">
+          <div v-show="activeTab === 'base'" v-if="userStore.hasPermission('system.config.update')">
             <BasicSettingsSection />
           </div>
 
@@ -216,10 +282,12 @@
 
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
+import { userApi } from '@/apis/user_api'
 import { useUserStore } from '@/stores/user'
 import {
   CircleUser,
   ExternalLink,
+  RefreshCw,
   Settings,
   Key,
   Star,
@@ -253,31 +321,103 @@ const emit = defineEmits(['update:visible', 'close'])
 const userStore = useUserStore()
 const activeTab = ref('account')
 const showStarCard = ref(true)
+const tokenQuotaLoading = ref(false)
+const tokenQuotaError = ref('')
+const tokenQuota = ref({
+  mode: 'inherit',
+  quota: null,
+  used: null,
+  remaining: null,
+  models: [],
+  weekLabel: '本周额度',
+  resetAt: ''
+})
 
 const STAR_CARD_STORAGE_KEY = 'yuxi-settings-star-card-dismissed'
 const projectRepoUrl = 'https://github.com/xerrors/Yuxi'
+const TOKEN_QUOTA_MODE_LABELS = {
+  inherit: '继承系统默认',
+  custom: '自定义额度',
+  unlimited: '不限'
+}
 
 const visible = computed({
   get: () => props.visible,
   set: (value) => emit('update:visible', value)
 })
 
+const tokenQuotaModeLabel = computed(
+  () => TOKEN_QUOTA_MODE_LABELS[tokenQuota.value.mode] || TOKEN_QUOTA_MODE_LABELS.inherit
+)
+const tokenQuotaModels = computed(() =>
+  Array.isArray(tokenQuota.value.by_model)
+    ? tokenQuota.value.by_model
+    : Array.isArray(tokenQuota.value.models)
+      ? tokenQuota.value.models
+      : []
+)
+
 const availableTabs = computed(() => {
   const tabs = []
   if (userStore.isLoggedIn) tabs.push('account', 'userConfig', 'agentEnv')
-  if (userStore.hasPermission('system.config.read')) tabs.push('base')
+  if (userStore.hasPermission('system.config.update')) tabs.push('base')
   if (userStore.hasPermission('users.read')) tabs.push('user')
   if (userStore.hasPermission('departments.read')) tabs.push('department')
   if (userStore.isSuperAdmin) tabs.push('permission')
   return tabs
 })
 
+const getQuotaPayload = (response) => {
+  const payload = response?.data && typeof response.data === 'object' ? response.data : response
+  if (!payload || typeof payload !== 'object') return {}
+  return payload.token_quota && typeof payload.token_quota === 'object' ? payload.token_quota : payload
+}
+
+const normalizeQuotaNumber = (value) => {
+  if (value === null || typeof value === 'undefined' || value === '') return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed) : null
+}
+
+const formatQuotaMetric = (value) => {
+  if (tokenQuota.value.mode === 'unlimited' && value === null) return '不限'
+  if (!Number.isFinite(value)) return '-'
+  return new Intl.NumberFormat('zh-CN').format(value)
+}
+
+const getModelQuotaKey = (item) => item.model || item.spec || JSON.stringify(item)
+
+const getModelQuotaLabel = (item) => item.model || item.spec || '未命名模型'
+
+const loadTokenQuota = async () => {
+  tokenQuotaLoading.value = true
+  tokenQuotaError.value = ''
+  try {
+    const response = await userApi.getTokenQuota()
+    const payload = getQuotaPayload(response)
+    tokenQuota.value = {
+      mode: ['inherit', 'custom', 'unlimited'].includes(payload.mode) ? payload.mode : 'inherit',
+      quota: normalizeQuotaNumber(payload.effective_quota),
+      used: normalizeQuotaNumber(payload.used),
+      remaining: normalizeQuotaNumber(payload.remaining),
+      by_model: Array.isArray(payload.by_model) ? payload.by_model : [],
+      models: Array.isArray(payload.models) ? payload.models : [],
+      weekLabel: payload.week_label || '本周额度',
+      resetAt: payload.reset_at || ''
+    }
+  } catch (error) {
+    tokenQuotaError.value = error.message || 'Token 用量暂时不可用'
+  } finally {
+    tokenQuotaLoading.value = false
+  }
+}
+
 const setActiveTab = (preferredTab) => {
   if (preferredTab && availableTabs.value.includes(preferredTab)) {
     activeTab.value = preferredTab
     return
   }
-  activeTab.value = availableTabs.value.includes('base') ? 'base' : availableTabs.value[0]
+  activeTab.value = availableTabs.value.includes('account') ? 'account' : availableTabs.value[0]
 }
 
 const handleClose = () => {
@@ -300,6 +440,16 @@ watch(
       setActiveTab(props.initialTab)
     }
   }
+)
+
+watch(
+  () => [props.visible, activeTab.value],
+  ([isVisible, currentTab]) => {
+    if (isVisible && currentTab === 'account') {
+      loadTokenQuota()
+    }
+  },
+  { immediate: true }
 )
 </script>
 
@@ -570,9 +720,140 @@ watch(
       gap: 6px;
     }
 
+    .account-settings-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .settings-inline-card {
+      padding: 18px;
+      border-radius: 12px;
+      background: var(--gray-0);
+      border: 1px solid var(--gray-150);
+    }
+
+    .quota-card-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+
+    .quota-alert {
+      margin-bottom: 12px;
+    }
+
+    .quota-summary-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .quota-summary-item {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 14px 16px;
+      border-radius: 10px;
+      background: var(--gray-25);
+      border: 1px solid var(--gray-100);
+    }
+
+    .quota-summary-label {
+      color: var(--gray-600);
+      font-size: 12px;
+      font-weight: 500;
+    }
+
+    .quota-summary-value {
+      color: var(--gray-900);
+      font-size: 22px;
+      font-weight: 600;
+      line-height: 1.1;
+    }
+
+    .quota-summary-note {
+      color: var(--gray-500);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .quota-model-list {
+      margin-top: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .quota-model-list-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .quota-model-count {
+      color: var(--gray-500);
+      font-size: 12px;
+    }
+
+    .quota-model-table {
+      border: 1px solid var(--gray-150);
+      border-radius: 10px;
+      overflow: hidden;
+      background: var(--gray-0);
+    }
+
+    .quota-model-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 120px 120px;
+      gap: 12px;
+      align-items: center;
+      padding: 12px 14px;
+      font-size: 13px;
+      color: var(--gray-700);
+      border-top: 1px solid var(--gray-100);
+    }
+
+    .quota-model-row:first-child {
+      border-top: none;
+    }
+
+    .quota-model-head {
+      background: var(--gray-25);
+      color: var(--gray-500);
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .quota-model-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--gray-900);
+      font-weight: 500;
+    }
+
     @media (max-width: 900px) {
       height: auto;
       padding: 10px 12px 12px;
+    }
+
+    @media (max-width: 760px) {
+      .quota-card-header {
+        flex-direction: column;
+        align-items: stretch;
+      }
+
+      .quota-summary-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .quota-model-row {
+        grid-template-columns: minmax(0, 1fr) 90px 90px;
+      }
     }
   }
 }

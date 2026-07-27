@@ -23,6 +23,7 @@ from yuxi.services.agent_run_service import (
     get_active_run_by_thread,
     get_agent_run_result,
     get_agent_run_view,
+    list_active_runs_view,
     stream_agent_run_events,
     validate_agent_context_resource_access,
 )
@@ -333,6 +334,15 @@ async def create_agent_run(
         resume=payload.resume,
         created_by_run_id=payload.created_by_run_id,
     )
+
+
+@agent_router.get("/runs/active")
+async def list_active_runs(
+    current_user: User = Depends(get_required_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """返回当前用户所有活跃 run，供前端会话列表轮询。"""
+    return {"runs": await list_active_runs_view(current_uid=str(current_user.uid), db=db)}
 
 
 @agent_router.get("/runs/{run_id}")

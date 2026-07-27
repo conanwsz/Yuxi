@@ -3,6 +3,7 @@
 import asyncio
 import os
 import re
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
 
 import httpx
@@ -22,6 +23,9 @@ VALID_MODEL_TYPES = {"chat", "embedding", "rerank"}
 VALID_MODEL_SOURCES = {"manual", "remote"}
 VALID_PROVIDER_TYPES = {"openai", "anthropic", "gemini", "openrouter"}
 _PROVIDER_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{1,99}$")
+_TOKEN_COEFFICIENT_QUANTIZE = Decimal("0.0001")
+_TOKEN_COEFFICIENT_MIN = Decimal("0.01")
+_TOKEN_COEFFICIENT_MAX = Decimal("100")
 
 
 def _normalize_list(value: Any) -> list:
@@ -35,6 +39,18 @@ def _normalize_dict(value: Any) -> dict:
 def _validate_provider_id(provider_id: str) -> None:
     if not _PROVIDER_ID_RE.match(provider_id):
         raise ValueError("provider_id 只能包含字母、数字、下划线和中划线，长度 2-100")
+
+
+def _normalize_token_coefficient(value: Any) -> float:
+    if value in (None, ""):
+        return 1.0
+    try:
+        coefficient = Decimal(str(value)).quantize(_TOKEN_COEFFICIENT_QUANTIZE, rounding=ROUND_HALF_UP)
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError("token_coefficient 必须是数字") from exc
+    if coefficient < _TOKEN_COEFFICIENT_MIN or coefficient > _TOKEN_COEFFICIENT_MAX:
+        raise ValueError("token_coefficient 必须在 0.01 到 100 之间")
+    return float(coefficient)
 
 
 def _normalize_model_item(model: dict[str, Any]) -> dict[str, Any]:
@@ -58,6 +74,8 @@ def _normalize_model_item(model: dict[str, Any]) -> dict[str, Any]:
     normalized["source"] = source
     normalized["display_name"] = str(model.get("display_name") or model.get("name") or model_id)
     normalized["extra"] = _normalize_dict(model.get("extra"))
+    if model_type == "chat":
+        normalized["token_coefficient"] = _normalize_token_coefficient(model.get("token_coefficient"))
 
     if model_type == "embedding":
         dimension = model.get("dimension")

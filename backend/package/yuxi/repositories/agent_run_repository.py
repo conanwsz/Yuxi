@@ -137,6 +137,19 @@ class AgentRunRepository:
         )
         return result.scalar_one_or_none()
 
+    async def list_active_runs_for_user(self, *, uid: str) -> list[AgentRun]:
+        """列出当前用户所有未结束的 chat/resume run，用于前端会话列表轮询。"""
+        result = await self.db.execute(
+            select(AgentRun)
+            .where(
+                AgentRun.uid == str(uid),
+                AgentRun.status.notin_(TERMINAL_RUN_STATUSES),
+                AgentRun.run_type.in_(["chat", "resume"]),
+            )
+            .order_by(AgentRun.created_at.desc())
+        )
+        return list(result.scalars().all())
+
     async def create_run(
         self,
         *,

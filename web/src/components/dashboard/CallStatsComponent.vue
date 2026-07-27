@@ -172,10 +172,11 @@ const renderCallStatsChart = () => {
   })
 
   const agentNames = callStatsData.value.agent_names || {}
+  const modelNames = callStatsData.value.model_names || {}
 
   const resolveCategoryLabel = (cat) => {
     if (cat === 'None') return '未知模型'
-    return agentNames[cat] || cat
+    return modelNames[cat] || agentNames[cat] || cat
   }
 
   const series = categories.map((category, index) => ({

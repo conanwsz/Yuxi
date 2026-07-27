@@ -74,6 +74,34 @@
       </div>
 
       <template v-if="userStore.hasPermission('system.config.update')">
+        <div class="section-title">Token 周额度</div>
+        <div class="settings-panel">
+          <div class="setting-row two-cols">
+            <div class="col-item">
+              <div class="setting-label">
+                {{ items?.default_weekly_token_quota?.des || '系统默认周额度' }}
+              </div>
+              <div class="setting-content">
+                <a-input-number
+                  class="full-width"
+                  :value="defaultWeeklyQuotaValue"
+                  :min="0"
+                  :step="10000"
+                  :precision="0"
+                  placeholder="请输入系统默认周额度"
+                  @change="handleDefaultWeeklyQuotaChange"
+                />
+                <div class="setting-help">
+                  用户选择“继承”时，将使用这里配置的每周 Token 上限。1 M Token = 1,000,000
+                  Tokens。
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </template>
+
+      <template v-if="userStore.hasPermission('system.config.update')">
         <div class="section-title">内容审查配置</div>
         <div class="section">
           <div class="card">
@@ -202,8 +230,17 @@ const ocrEngineOptions = [
   { value: 'paddleocr_pp_ocrv6', label: 'PP-OCRv6' }
 ]
 
+const defaultWeeklyQuotaValue = computed(() => {
+  const rawValue = Number(configStore.config?.default_weekly_token_quota)
+  return Number.isFinite(rawValue) ? rawValue : null
+})
+
 const handleChange = (key, e) => {
   configStore.setConfigValue(key, e)
+}
+
+const handleDefaultWeeklyQuotaChange = (value) => {
+  configStore.setConfigValue('default_weekly_token_quota', value ?? 0)
 }
 
 const handleChatModelSelect = (spec) => {
@@ -282,6 +319,13 @@ const openLink = (url) => {
     .full-width {
       width: 100%;
     }
+  }
+
+  .setting-help {
+    margin-top: 8px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--gray-500);
   }
 
   .card {

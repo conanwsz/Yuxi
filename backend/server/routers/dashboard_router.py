@@ -16,6 +16,7 @@ from sqlalchemy import Integer, String, cast, distinct, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.utils.auth_middleware import get_db, require_permission
+from yuxi.models.providers.cache import model_cache
 from yuxi.repositories.agent_repository import AgentRepository
 from yuxi.repositories.conversation_repository import ConversationRepository
 from yuxi.storage.postgres.models_business import User
@@ -728,6 +729,34 @@ class TimeSeriesStats(BaseModel):
     peak_count: int
     peak_date: str
     agent_names: dict[str, str] | None = None  # agent_id -> agent_name 映射（仅 type=agents）
+    model_names: dict[str, str] | None = None  # model_id -> display_name 映射（仅 type=models）
+
+
+def _get_model_display_names(categories: list[str]) -> dict[str, str]:
+    """Resolve stored model IDs to their configured display names when unambiguous."""
+    configured_models = model_cache.get_all_specs("chat")
+    display_names: dict[str, str] = {}
+
+    for category in categories:
+        if category in {"None", "unknown_model"}:
+            continue
+
+        direct_match = model_cache.get_model_info(category)
+        if direct_match:
+            display_names[category] = direct_match.display_name
+            continue
+
+        normalized_category = "".join(char for char in category.lower() if char.isalnum())
+        names = {
+            model.display_name
+            for model in configured_models
+            if model.model_id == category
+            or "".join(char for char in model.model_id.lower() if char.isalnum()) == normalized_category
+        }
+        if len(names) == 1:
+            display_names[category] = names.pop()
+
+    return display_names
 
 
 @dashboard.get("/stats/calls/timeseries", response_model=TimeSeriesStats)
@@ -898,11 +927,14 @@ async def get_call_timeseries_stats(
         categories = sorted(list(categories))
 
         agent_names = None
+        model_names = None
         if type == "agents" and categories:
             agent_slugs = [c for c in categories if c]
             if agent_slugs:
                 agent_repo = AgentRepository(db)
                 agent_names = {agent.slug: agent.name for agent in await agent_repo.list_by_slugs(agent_slugs)}
+        elif type == "models" and categories:
+            model_names = _get_model_display_names(categories)
 
         # 重新组织数据：按时间点分组每个类别的数据
         time_data = {}
@@ -979,6 +1011,7 @@ async def get_call_timeseries_stats(
             peak_count=peak_data["total"],
             peak_date=peak_data["date"],
             agent_names=agent_names,
+            model_names=model_names,
         )
 
     except HTTPException:

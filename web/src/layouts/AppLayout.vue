@@ -1,8 +1,9 @@
 <script setup>
-import { ref, onMounted, computed, provide, watch } from 'vue'
+import { ref, onMounted, onUnmounted, computed, provide, watch } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import {
   BarChart3,
+  CalendarClock,
   ClipboardList,
   LibraryBig,
   Box,
@@ -38,7 +39,7 @@ const infoStore = useInfoStore()
 const taskerStore = useTaskerStore()
 const userStore = useUserStore()
 const { activeCount: activeCountRef, isDrawerOpen } = storeToRefs(taskerStore)
-const { threads, currentThreadId, hasMoreThreads, isLoadingMoreThreads } =
+const { threads, currentThreadId, hasMoreThreads, isLoadingMoreThreads, streamingThreadIds, unreadThreadIds } =
   storeToRefs(chatThreadsStore)
 
 // Add state for debug modal
@@ -53,8 +54,7 @@ const conversationSearchOpen = ref(false)
 
 // Provide settings modal methods to child components
 const openSettingsModal = (tab) => {
-  settingsInitialTab.value =
-    tab || (userStore.hasPermission('system.config.read') ? 'base' : 'account')
+  settingsInitialTab.value = tab || 'account'
   showSettingsModal.value = true
 }
 
@@ -88,6 +88,30 @@ onMounted(async () => {
   if (userStore.hasPermission('system.tasks.manage')) {
     taskerStore.loadTasks()
   }
+})
+
+let activeRunPollTimer = null
+const startActiveRunPolling = () => {
+  if (activeRunPollTimer) return
+  // 首次立即执行一次，然后按间隔轮询
+  void chatThreadsStore.pollActiveRuns()
+  activeRunPollTimer = setInterval(() => {
+    void chatThreadsStore.pollActiveRuns()
+  }, 8000)
+}
+const stopActiveRunPolling = () => {
+  if (activeRunPollTimer) {
+    clearInterval(activeRunPollTimer)
+    activeRunPollTimer = null
+  }
+}
+
+onMounted(() => {
+  startActiveRunPolling()
+})
+
+onUnmounted(() => {
+  stopActiveRunPolling()
 })
 
 const route = useRoute()
@@ -153,6 +177,15 @@ const mainList = computed(() => {
     })
   }
 
+  if (userStore.hasPermission('system.schedules.manage')) {
+    items.push({
+      name: '定时任务',
+      path: '/schedules',
+      icon: CalendarClock,
+      activeIcon: CalendarClock
+    })
+  }
+
   return items
 })
 
@@ -192,6 +225,7 @@ const initAgentNavigation = async () => {
 
 const handleSelectChat = (threadId) => {
   if (!threadId) return
+  chatThreadsStore.clearUnread(threadId)
   chatThreadsStore.setCurrentThreadId(threadId)
   router.push({ name: 'AgentCompWithThreadId', params: { thread_id: threadId } })
 }
@@ -353,6 +387,8 @@ provide('settingsModal', {
           :chats-list="threads"
           :has-more-chats="hasMoreThreads"
           :is-loading-more="isLoadingMoreThreads"
+          :streaming-thread-ids="streamingThreadIds"
+          :unread-thread-ids="unreadThreadIds"
           @select-chat="handleSelectChat"
           @delete-chat="handleDeleteChat"
           @rename-chat="handleRenameChat"

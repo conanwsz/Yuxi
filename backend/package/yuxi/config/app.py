@@ -16,6 +16,7 @@ from yuxi.utils.logging_config import logger
 
 READONLY_CONFIG_FIELDS = frozenset({"save_dir"})
 DEFAULT_OCR_ENGINE = "rapid_ocr"
+DEFAULT_WEEKLY_TOKEN_QUOTA = 10_000_000
 
 
 def _get_available_ocr_engines() -> set[str]:
@@ -27,6 +28,16 @@ def _normalize_default_ocr_engine(value: Any) -> str:
     if engine not in _get_available_ocr_engines():
         raise ValueError(f"不支持的默认 OCR 引擎: {engine}")
     return engine
+
+
+def _normalize_default_weekly_token_quota(value: Any) -> int:
+    try:
+        quota = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("默认每周 token 额度必须是整数") from exc
+    if quota <= 0:
+        raise ValueError("默认每周 token 额度必须大于 0")
+    return quota
 
 
 class Config(BaseModel):
@@ -61,6 +72,10 @@ class Config(BaseModel):
         description="内容审查LLM模型",
     )
     default_ocr_engine: str = Field(default=DEFAULT_OCR_ENGINE, description="默认 OCR 解析引擎")
+    default_weekly_token_quota: int = Field(
+        default=DEFAULT_WEEKLY_TOKEN_QUOTA,
+        description="默认每周 token 额度",
+    )
 
     sandbox_provider: str = Field(default="provisioner", description="沙箱提供者")
     sandbox_provisioner_url: str = Field(default="http://sandbox-provisioner:8002", description="沙箱服务地址")
@@ -204,6 +219,8 @@ class Config(BaseModel):
     def _normalize_config_value(self, key: str, value: Any) -> Any:
         if key == "default_ocr_engine":
             return _normalize_default_ocr_engine(value)
+        if key == "default_weekly_token_quota":
+            return _normalize_default_weekly_token_quota(value)
         return value
 
 

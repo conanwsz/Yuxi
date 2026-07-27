@@ -9,8 +9,12 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from server.routers.auth_router import TokenQuotaMode
 from server.utils.auth_middleware import get_current_user, get_db, get_required_user
 from yuxi.config import UserConfig, UserConfigSchema
+from yuxi.services.token_quota_service import (
+    get_user_token_quota_payload_with_breakdown,
+)
 from yuxi.storage.minio import upload_image_to_minio
 from yuxi.storage.postgres.models_business import APIKey, AgentEnv, User
 from yuxi.utils.auth_utils import AuthUtils
@@ -65,6 +69,12 @@ class AgentEnvResponse(BaseModel):
     updated_at: str | None = None
 
 
+class UserTokenQuotaResponse(BaseModel):
+    token_quota_mode: TokenQuotaMode | None = None
+    weekly_token_quota: int | None = None
+    token_quota: dict[str, Any] | None = None
+
+
 async def get_logged_in_user(user: User | None = Depends(get_current_user)) -> User:
     if user is None:
         raise HTTPException(
@@ -92,6 +102,14 @@ async def update_user_config(
 ):
     user_config = await UserConfig(uid=current_user.uid, schema=data).save(db)
     return user_config.dump_config()
+
+
+@user_router.get("/token-quota", response_model=UserTokenQuotaResponse)
+async def read_current_user_token_quota(
+    current_user: User = Depends(get_logged_in_user),
+    db: AsyncSession = Depends(get_db),
+):
+    return UserTokenQuotaResponse(**(await get_user_token_quota_payload_with_breakdown(db, current_user)))
 
 
 @user_router.post("/upload-image", response_model=dict)

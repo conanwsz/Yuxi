@@ -16,7 +16,11 @@
             @click="$emit('select-chat', chat.id)"
             @click.middle="$emit('delete-chat', chat.id)"
           >
-            <span class="conversation-title">{{ chat.title || '新的对话' }}</span>
+            <span
+              class="conversation-title"
+              :class="{ streaming: streamingThreadIds.has(chat.id) }"
+            >{{ chat.title || '新的对话' }}</span>
+            <span v-if="showUnreadDot(chat.id)" class="unread-dot"></span>
             <span class="actions-mask"></span>
             <span class="conversation-actions" @click.stop>
               <a-dropdown :trigger="['click']">
@@ -101,6 +105,14 @@ const props = defineProps({
   showHistory: {
     type: Boolean,
     default: true
+  },
+  streamingThreadIds: {
+    type: Set,
+    default: () => new Set()
+  },
+  unreadThreadIds: {
+    type: Set,
+    default: () => new Set()
   }
 })
 
@@ -114,15 +126,21 @@ const emit = defineEmits([
 
 const listCollapsed = ref(false)
 
+const showUnreadDot = (chatId) => {
+  return chatId !== props.currentChatId && props.unreadThreadIds.has(chatId)
+}
+
 const sortedChats = computed(() => {
   return [...props.chatsList].sort((a, b) => {
     if (a.is_pinned !== b.is_pinned) {
       return a.is_pinned ? -1 : 1
     }
-    const dateA = parseToShanghai(b.created_at)
-    const dateB = parseToShanghai(a.created_at)
-    if (!dateA || !dateB) return 0
-    return dateA.diff(dateB)
+    // 按更新时间倒序：有最新回复的会话跳到最上面（类似微信/聊天 app 行为）。
+    // 兜底：如果 updated_at 缺失，回退到 created_at。
+    const aTime = parseToShanghai(a.updated_at || a.created_at)
+    const bTime = parseToShanghai(b.updated_at || b.created_at)
+    if (!aTime || !bTime) return 0
+    return bTime.diff(aTime)
   })
 })
 
@@ -176,6 +194,29 @@ const renameChat = async (chatId) => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+
+  &.streaming {
+    animation: title-pulse 1.2s ease-in-out infinite;
+  }
+}
+
+@keyframes title-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.unread-dot {
+  width: 8px;
+  height: 8px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: var(--main-color);
+  flex-shrink: 0;
 }
 
 .history-panel {

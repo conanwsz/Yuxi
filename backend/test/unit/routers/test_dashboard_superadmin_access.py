@@ -7,6 +7,7 @@ from fastapi.routing import APIRoute
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from server.routers.dashboard_router import (
+    _get_model_display_names,
     dashboard,
     get_all_conversations,
     get_conversation_detail,
@@ -168,3 +169,21 @@ async def test_tool_stats_superadmin_include_all_departments(dashboard_session):
     assert stats.total_calls == 2
     assert stats.successful_calls == 2
     assert {tool["tool_name"] for tool in stats.most_used_tools} == {"dept_a_tool", "dept_b_tool"}
+
+
+async def test_model_call_stats_use_configured_display_names(monkeypatch):
+    class Model:
+        def __init__(self, model_id, display_name):
+            self.model_id = model_id
+            self.display_name = display_name
+
+    monkeypatch.setattr(
+        "server.routers.dashboard_router.model_cache.get_all_specs",
+        lambda model_type: [Model("Qwen3.5", "Qwen 3.5 Plus"), Model("deepseek-v4", "DeepSeek V4")],
+    )
+    monkeypatch.setattr(
+        "server.routers.dashboard_router.model_cache.get_model_info",
+        lambda spec: None,
+    )
+
+    assert _get_model_display_names(["qwen3_5", "unknown_model"]) == {"qwen3_5": "Qwen 3.5 Plus"}

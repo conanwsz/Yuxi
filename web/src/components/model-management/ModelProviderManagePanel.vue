@@ -519,6 +519,10 @@ const normalizeModel = (model = {}) => ({
   context_length: model.context_length || null,
   dimension: model.dimension || null,
   batch_size: model.batch_size || null,
+  token_coefficient:
+    Number.isFinite(Number(model.token_coefficient)) && Number(model.token_coefficient) > 0
+      ? Number(model.token_coefficient)
+      : 1,
   supported_parameters: model.supported_parameters || [],
   extra: model.extra || {}
 })
@@ -619,6 +623,16 @@ const saveModelConfig = async () => {
     if (!provider) return
 
     let enabledModels
+    const normalizedEditingModel = { ...editingModel.value }
+    if (normalizedEditingModel.type === 'chat') {
+      const coefficient = Number(normalizedEditingModel.token_coefficient)
+      normalizedEditingModel.token_coefficient =
+        Number.isFinite(coefficient) && coefficient > 0
+          ? Math.min(100, Math.max(0.01, coefficient))
+          : 1
+    } else {
+      delete normalizedEditingModel.token_coefficient
+    }
     if (isCreating.value) {
       const newId = (editingModel.value.id || '').trim()
       if (!newId) {
@@ -629,11 +643,11 @@ const saveModelConfig = async () => {
         message.error('模型 ID 已存在')
         return
       }
-      const newModel = { ...editingModel.value, id: newId, source: 'manual', enabled: true }
+      const newModel = { ...normalizedEditingModel, id: newId, source: 'manual', enabled: true }
       enabledModels = [...(provider.enabled_models || []), newModel]
     } else {
       enabledModels = (provider.enabled_models || []).map((m) =>
-        m.id === editingModel.value.id ? { ...editingModel.value } : m
+        m.id === editingModel.value.id ? { ...normalizedEditingModel } : m
       )
     }
 
@@ -953,6 +967,7 @@ defineExpose({
               <span class="col-name">模型</span>
               <span class="col-type">类型</span>
               <span class="col-context">上下文</span>
+              <span class="col-coefficient">系数</span>
               <span class="col-dim">维度</span>
               <span class="col-ops">操作</span>
             </div>
@@ -978,6 +993,9 @@ defineExpose({
                 </span>
               </span>
               <span class="col-context">{{ formatContextLength(model.context_length) }}</span>
+              <span class="col-coefficient">
+                {{ model.type === 'chat' ? model.token_coefficient || 1 : '-' }}
+              </span>
               <span class="col-dim">
                 <span
                   v-if="model.type === 'embedding' && !model.dimension"
@@ -1149,6 +1167,17 @@ defineExpose({
         </div>
 
         <div class="form-row">
+          <label class="form-label" v-if="editingModel.type === 'chat'">
+            <span>Token 系数</span>
+            <a-input-number
+              v-model:value="editingModel.token_coefficient"
+              :min="0.01"
+              :max="100"
+              :step="0.01"
+              :precision="4"
+              class="full-width-input"
+            />
+          </label>
           <label class="form-label" v-if="editingModel.type === 'embedding'">
             <span>维度</span>
             <a-input-number v-model:value="editingModel.dimension" :min="1" />
@@ -1251,7 +1280,7 @@ defineExpose({
 .table-head,
 .table-row {
   display: grid;
-  grid-template-columns: 1fr 80px 70px 60px 150px;
+  grid-template-columns: minmax(0, 1fr) 88px 72px 72px 60px 150px;
   gap: 8px;
   align-items: center;
 }
@@ -1311,6 +1340,7 @@ defineExpose({
 }
 
 .col-context,
+.col-coefficient,
 .col-dim {
   color: var(--gray-600);
   font-size: 12px;
@@ -1506,6 +1536,10 @@ defineExpose({
 
 .full-width {
   grid-column: 1 / -1;
+}
+
+.full-width-input {
+  width: 100%;
 }
 
 .form-switch {
