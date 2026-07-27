@@ -19,6 +19,7 @@
 - 修复个人 Token 用量面板"剩余额度"始终为空：`get_user_token_quota_payload` 错误地用 `remaining_weighted_tokens` 覆盖了 `remaining`，导致前端读取不到值；现删除冗余的字段映射层，直接透传 `status()` 返回的原始字段。
 - 优化 Token 额度显示：从用户视角清理掉"继承系统默认"、"累计消耗 Tokens"、"按自然周滚动重置"、"额度说明"等说明性文案；所有展示已用/剩余额度的位置（个人用量卡片、用户列表行、用户详情面板）改为数字 + 进度条 + 百分比，进度条按用量自动切色（< 70% 主色、70–90% 警告、> 90% 错误），不限额模式走"不限"徽标分支；编辑表单的"周额度"选项简化为"继承 / 自定义 / 不限"并去除 help text。
 - API Key 调用权限化：权限目录新增 `apikey.manage`（管理 API Key）与 `apikey.invoke`（通过 API Key 调用）两项权限；`admin` / `superadmin` 角色默认带这两项，`user` 默认不带。`/api/user/apikey/*` 改用 `require_permission("apikey.manage")` 守卫；`auth_middleware` 在 API Key 鉴权时强制要求关联用户拥有 `apikey.invoke`，缺失则返回 403。设置弹窗左侧"API Keys"菜单项按 `apikey.manage` 显隐，权限管理页通过后端 `permission_catalog` 自动展示新分组；存量 admin/superadmin 用户的 Key 在 `apikey_permission_v1` 迁移后继续可用，普通用户的存量 Key 调用立即失败，需要管理员在权限管理页显式授权后才会重新生效。JWT 登录请求不受影响。
+- 会话页 UX 修复：发送消息后右侧立刻从"开始界面"切到"会话视图"（不再短暂停留在 `randomGreeting`），欢迎界面渲染条件从 `!conversations.length` 收紧为 `!currentChatId`；Token 超额（HTTP 429 `token_quota_exceeded`）、权限不足（HTTP 403，含 API Key 鉴权失败）与其他 4xx/5xx 错误改用 `ChatAlertBanner` 内联展示在会话流末尾，并通过 `useThreadAlerts` composable 持有——仅前端内存、刷新即清、永不入 LLM 上下文；新增 `categorizeChatError` 统一识别 4 类错误，SSE error event 与 `useAgentRunStream` 的 catch 分支都会调用。
 - Token 额度重置时间改为本地可读格式（如 `2026-07-27 00:00`），不再附带 `+08:00`。
 - 设置弹窗默认打开"账户设置"页签，不再按角色跳转；普通用户隐藏"基本设置"菜单（权限从 `system.config.read` 收紧为 `system.config.update`）。
 - 修复 Dashboard 模型调用统计展示：后端会把消息中保存的运行时模型 ID 映射到模型供应商配置的 `display_name`，前端图例与悬浮提示优先显示该名称；统计分组与历史数据键继续使用模型 ID，避免改变已有计数。

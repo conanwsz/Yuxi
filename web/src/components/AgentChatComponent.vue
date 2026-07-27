@@ -105,9 +105,17 @@
                   :sources="getConversationSources(row.conv)"
                 />
               </div>
-              <div v-else class="chat-inline-notice">
+              <div v-else-if="row.type === 'notice'" class="chat-inline-notice">
                 <span>{{ row.notice.message }}</span>
               </div>
+              <ChatAlertBanner
+                v-else-if="row.type === 'alert'"
+                :kind="row.alert.kind"
+                :title="row.alert.title"
+                :body="row.alert.body"
+                class="chat-alert-row"
+                @dismiss="dismissThreadAlert(currentChatId, row.alert.id)"
+              />
             </template>
 
             <!-- 生成中的加载状态 - 增强条件支持主聊天和resume流程 -->
@@ -122,7 +130,7 @@
               </div>
             </div>
           </div>
-          <div class="bottom" :class="{ 'start-screen': !conversations.length }">
+          <div class="bottom" :class="{ 'start-screen': !currentChatId }">
             <!-- 人工审批弹窗 - 放在输入框上方 -->
             <HumanApprovalModal
               :visible="currentApprovalModalVisible"
@@ -139,7 +147,7 @@
               </div>
 
               <!-- 打招呼区域 - 在输入框上方 -->
-              <div v-if="!conversations.length" class="chat-greeting-input">
+              <div v-if="!currentChatId" class="chat-greeting-input">
                 <h1>{{ randomGreeting }}</h1>
               </div>
 
@@ -592,6 +600,7 @@ import ModelSelectorComponent from '@/components/ModelSelectorComponent.vue'
 import AgentMessageComponent from '@/components/AgentMessageComponent.vue'
 import RefsComponent from '@/components/RefsComponent.vue'
 import ToolCallsGroupComponent from '@/components/ToolCallsGroupComponent.vue'
+import ChatAlertBanner from '@/components/ChatAlertBanner.vue'
 import { handleChatError, handleValidationError } from '@/utils/errorHandler'
 import { ScrollController } from '@/utils/scrollController'
 import { AgentValidator } from '@/utils/agentValidator'
@@ -605,6 +614,7 @@ import { agentApi, threadApi } from '@/apis'
 import HumanApprovalModal from '@/components/HumanApprovalModal.vue'
 import { useApproval } from '@/composables/useApproval'
 import { useAgentThreadState } from '@/composables/useAgentThreadState'
+import { useThreadAlerts } from '@/composables/useThreadAlerts'
 import { useAgentRunStream } from '@/composables/useAgentRunStream'
 import { useAgentStreamHandler } from '@/composables/useAgentStreamHandler'
 import { useStreamSmoother } from '@/composables/useStreamSmoother'
@@ -680,6 +690,9 @@ const { getThreadState, resetOnGoingConv, stopThreadStream } = useAgentThreadSta
   onBeforeResetThread: (threadId) => streamSmoother.resetThread(threadId),
   onBeforeCleanupThread: (threadId) => streamSmoother.resetThread(threadId)
 })
+
+// 会话级内联告警（仅前端内存，不入 LLM 上下文）
+const { dismissThreadAlert, getThreadAlerts, pushAlertFromError } = useThreadAlerts()
 
 // 组件级别的消息、附件与提示状态
 const threadMessages = ref({})
@@ -1734,6 +1747,8 @@ const conversations = computed(() => {
   return activeRunHistoryConvs
 })
 
+const currentThreadAlerts = computed(() => getThreadAlerts(currentChatId.value))
+
 const conversationRows = computed(() => {
   const rows = conversations.value.map((conv, index) => ({
     type: 'conversation',
@@ -1754,6 +1769,15 @@ const conversationRows = computed(() => {
       type: 'notice',
       key: currentThreadConfigNotice.value.id,
       notice: currentThreadConfigNotice.value
+    })
+  }
+
+  // 会话级内联告警（仅前端、不入 LLM 上下文）渲染在最后
+  for (const alert of currentThreadAlerts.value) {
+    rows.push({
+      type: 'alert',
+      key: `alert-${alert.id}`,
+      alert
     })
   }
 
@@ -2320,6 +2344,11 @@ const { startRunStream, resumeActiveRunForThread, stopRunStreamSubscription } = 
     }
     // 收到回复后让会话上浮到列表顶部
     touchedThreadIds.forEach((id) => chatThreadsStore.touchThread(id))
+  },
+  // SSE error event / catch 分支：内联告警到会话流
+  onStreamAlert: (threadId, errorLike) => {
+    if (!threadId) return
+    pushAlertFromError(threadId, errorLike)
   }
 })
 
@@ -2558,7 +2587,11 @@ const handleSendMessage = async ({ image } = {}) => {
     threadState.pendingRequestId = null
     rollbackAttachments(threadId, previousAttachments)
     resetOnGoingConv(threadId)
-    handleChatError(error, 'send')
+    // 优先内联到会话流（不依赖 toast，刷新后消失，不入 LLM 上下文）
+    const alertId = pushAlertFromError(threadId, error)
+    if (!alertId) {
+      handleChatError(error, 'send')
+    }
   }
 }
 
