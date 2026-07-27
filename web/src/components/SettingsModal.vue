@@ -186,11 +186,12 @@
               <AccountSettingsComponent />
               <div class="settings-inline-card token-quota-card">
                 <div class="quota-card-header">
-                  <div>
-                    <div class="section-title">个人 Token 用量</div>
-                    <p class="section-description">查看当前自然周额度、消耗进度与模型折算明细。</p>
-                  </div>
-                  <a-button class="lucide-icon-btn" :loading="tokenQuotaLoading" @click="loadTokenQuota">
+                  <div class="section-title">个人 Token 用量</div>
+                  <a-button
+                    class="lucide-icon-btn"
+                    :loading="tokenQuotaLoading"
+                    @click="loadTokenQuota"
+                  >
                     <RefreshCw :size="14" :class="{ spin: tokenQuotaLoading }" />
                     刷新
                   </a-button>
@@ -203,25 +204,33 @@
                     :message="tokenQuotaError"
                     class="quota-alert"
                   />
-                  <div v-else class="quota-summary-grid">
-                    <div class="quota-summary-item">
-                      <span class="quota-summary-label">{{ tokenQuota.weekLabel || '本周额度' }}</span>
-                      <span class="quota-summary-value">{{ formatQuotaMetric(tokenQuota.quota) }}</span>
-                      <span class="quota-summary-note">{{ tokenQuotaModeLabel }}</span>
-                    </div>
-                    <div class="quota-summary-item">
-                      <span class="quota-summary-label">本周已用</span>
-                      <span class="quota-summary-value">{{ formatQuotaMetric(tokenQuota.used) }}</span>
-                      <span class="quota-summary-note">
-                        {{ tokenQuota.used === null ? '暂无统计' : '累计消耗 Tokens' }}
+                  <div v-else class="quota-usage-block">
+                    <div v-if="tokenQuota.mode === 'unlimited'" class="quota-usage-unlimited">
+                      <a-tag class="quota-unlimited-tag">不限</a-tag>
+                      <span class="quota-usage-text">
+                        本周已用
+                        <strong>{{ formatQuotaMetric(tokenQuota.used) }}</strong>
+                        <span class="quota-usage-suffix">Token</span>
                       </span>
                     </div>
-                    <div class="quota-summary-item">
-                      <span class="quota-summary-label">剩余额度</span>
-                      <span class="quota-summary-value">{{ formatQuotaMetric(tokenQuota.remaining) }}</span>
-                      <span class="quota-summary-note">
-                        {{ tokenQuota.resetAt ? `下次重置：${tokenQuota.resetAt}` : '按自然周滚动重置' }}
-                      </span>
+                    <div v-else class="quota-usage-row">
+                      <div class="quota-usage-text">
+                        <strong>{{ formatQuotaMetric(tokenQuota.used) }}</strong>
+                        <span class="quota-usage-suffix"
+                          >/ {{ formatQuotaMetric(tokenQuota.quota) }} Token</span
+                        >
+                        <span class="quota-usage-percent">{{ quotaUsedPercent }}%</span>
+                      </div>
+                      <a-progress
+                        class="quota-usage-progress"
+                        :percent="quotaUsedPercent"
+                        :stroke-color="quotaProgressColor"
+                        :show-info="false"
+                        :stroke-width="6"
+                      />
+                      <div v-if="tokenQuota.resetAt" class="quota-usage-reset">
+                        重置于 {{ tokenQuota.resetAt }}
+                      </div>
                     </div>
                   </div>
                   <div v-if="tokenQuotaModels.length" class="quota-model-list">
@@ -242,7 +251,9 @@
                       >
                         <span class="quota-model-name">{{ getModelQuotaLabel(item) }}</span>
                         <span>{{ formatQuotaMetric(normalizeQuotaNumber(item.used)) }}</span>
-                        <span>{{ formatQuotaMetric(normalizeQuotaNumber(item.effective_used)) }}</span>
+                        <span>{{
+                          formatQuotaMetric(normalizeQuotaNumber(item.effective_used))
+                        }}</span>
                       </div>
                     </div>
                   </div>
@@ -267,7 +278,10 @@
             <UserManagementComponent />
           </div>
 
-          <div v-show="activeTab === 'department'" v-if="userStore.hasPermission('departments.read')">
+          <div
+            v-show="activeTab === 'department'"
+            v-if="userStore.hasPermission('departments.read')"
+          >
             <DepartmentManagementComponent />
           </div>
 
@@ -329,26 +343,17 @@ const tokenQuota = ref({
   used: null,
   remaining: null,
   models: [],
-  weekLabel: '本周额度',
   resetAt: ''
 })
 
 const STAR_CARD_STORAGE_KEY = 'yuxi-settings-star-card-dismissed'
 const projectRepoUrl = 'https://github.com/xerrors/Yuxi'
-const TOKEN_QUOTA_MODE_LABELS = {
-  inherit: '继承系统默认',
-  custom: '自定义额度',
-  unlimited: '不限'
-}
 
 const visible = computed({
   get: () => props.visible,
   set: (value) => emit('update:visible', value)
 })
 
-const tokenQuotaModeLabel = computed(
-  () => TOKEN_QUOTA_MODE_LABELS[tokenQuota.value.mode] || TOKEN_QUOTA_MODE_LABELS.inherit
-)
 const tokenQuotaModels = computed(() =>
   Array.isArray(tokenQuota.value.by_model)
     ? tokenQuota.value.by_model
@@ -356,6 +361,22 @@ const tokenQuotaModels = computed(() =>
       ? tokenQuota.value.models
       : []
 )
+
+const quotaUsedPercent = computed(() => {
+  if (tokenQuota.value.mode === 'unlimited') return 0
+  const quota = tokenQuota.value.quota
+  const used = tokenQuota.value.used
+  if (!Number.isFinite(quota) || quota <= 0 || !Number.isFinite(used)) return 0
+  const percent = (used / quota) * 100
+  return Math.max(0, Math.min(100, Math.round(percent)))
+})
+
+const quotaProgressColor = computed(() => {
+  const percent = quotaUsedPercent.value
+  if (percent >= 90) return 'var(--color-error-500)'
+  if (percent >= 70) return 'var(--color-warning-500)'
+  return 'var(--main-500)'
+})
 
 const availableTabs = computed(() => {
   const tabs = []
@@ -370,7 +391,9 @@ const availableTabs = computed(() => {
 const getQuotaPayload = (response) => {
   const payload = response?.data && typeof response.data === 'object' ? response.data : response
   if (!payload || typeof payload !== 'object') return {}
-  return payload.token_quota && typeof payload.token_quota === 'object' ? payload.token_quota : payload
+  return payload.token_quota && typeof payload.token_quota === 'object'
+    ? payload.token_quota
+    : payload
 }
 
 const normalizeQuotaNumber = (value) => {
@@ -402,7 +425,6 @@ const loadTokenQuota = async () => {
       remaining: normalizeQuotaNumber(payload.remaining),
       by_model: Array.isArray(payload.by_model) ? payload.by_model : [],
       models: Array.isArray(payload.models) ? payload.models : [],
-      weekLabel: payload.week_label || '本周额度',
       resetAt: payload.reset_at || ''
     }
   } catch (error) {
@@ -745,39 +767,76 @@ watch(
       margin-bottom: 12px;
     }
 
-    .quota-summary-grid {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 12px;
-    }
-
-    .quota-summary-item {
+    .quota-usage-block {
       display: flex;
       flex-direction: column;
       gap: 6px;
-      padding: 14px 16px;
-      border-radius: 10px;
-      background: var(--gray-25);
-      border: 1px solid var(--gray-100);
     }
 
-    .quota-summary-label {
-      color: var(--gray-600);
-      font-size: 12px;
-      font-weight: 500;
+    .quota-usage-row {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
     }
 
-    .quota-summary-value {
+    .quota-usage-text {
+      display: inline-flex;
+      align-items: baseline;
+      gap: 6px;
+      font-size: 14px;
+      color: var(--gray-700);
+    }
+
+    .quota-usage-text strong {
       color: var(--gray-900);
       font-size: 22px;
       font-weight: 600;
+      font-variant-numeric: tabular-nums;
       line-height: 1.1;
     }
 
-    .quota-summary-note {
+    .quota-usage-suffix {
+      color: var(--gray-500);
+      font-size: 13px;
+      font-weight: 400;
+    }
+
+    .quota-usage-percent {
+      margin-left: 6px;
+      color: var(--gray-600);
+      font-size: 13px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .quota-usage-progress {
+      margin: 0;
+    }
+
+    .quota-usage-reset {
       color: var(--gray-500);
       font-size: 12px;
-      line-height: 1.4;
+    }
+
+    .quota-usage-unlimited {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 14px;
+      color: var(--gray-700);
+    }
+
+    .quota-usage-unlimited strong {
+      color: var(--gray-900);
+      font-size: 22px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      line-height: 1.1;
+    }
+
+    .quota-unlimited-tag {
+      margin: 0;
+      font-size: 12px;
     }
 
     .quota-model-list {
@@ -845,10 +904,6 @@ watch(
       .quota-card-header {
         flex-direction: column;
         align-items: stretch;
-      }
-
-      .quota-summary-grid {
-        grid-template-columns: 1fr;
       }
 
       .quota-model-row {

@@ -17,6 +17,7 @@
 
 - 新增用户 Chat 模型 Token 周额度：系统提供每自然周 1000 万加权 Token 的全局默认值，用户可继承默认、设置自定义额度或不限额；每个 Chat 模型可配置 Token 系数，主智能体、工具循环、子智能体、摘要、定时任务和外部 Agent 调用统一按真实或估算 usage 写入独立账本，并在额度耗尽后拒绝新的模型调用。AgentRun worker 在流式执行前预检额度并注入运行级 BillingContext，同步 `/api/agent/runs`、`/api/chat/call` 与 `/api/user/token-quota` 路径超额时返回 HTTP 429 + `token_quota_exceeded` 结构化错误（含 quota/used/remaining/reset_at），运行中触发的超额标记为 `failed / token_quota_exceeded`，Schedule 因额度不足标记为 `skipped`；用户、AgentRun 与 Schedule 的 `billing_event_id` 用 LangChain `run_id` 幂等，避免重复结算。用户和管理员可查看本周已用、剩余及重置时间，现有 Dashboard 原始 Token 趋势保持不变。
 - 修复个人 Token 用量面板"剩余额度"始终为空：`get_user_token_quota_payload` 错误地用 `remaining_weighted_tokens` 覆盖了 `remaining`，导致前端读取不到值；现删除冗余的字段映射层，直接透传 `status()` 返回的原始字段。
+- 优化 Token 额度显示：从用户视角清理掉"继承系统默认"、"累计消耗 Tokens"、"按自然周滚动重置"、"额度说明"等说明性文案；所有展示已用/剩余额度的位置（个人用量卡片、用户列表行、用户详情面板）改为数字 + 进度条 + 百分比，进度条按用量自动切色（< 70% 主色、70–90% 警告、> 90% 错误），不限额模式走"不限"徽标分支；编辑表单的"周额度"选项简化为"继承 / 自定义 / 不限"并去除 help text。
 - Token 额度重置时间改为本地可读格式（如 `2026-07-27 00:00`），不再附带 `+08:00`。
 - 设置弹窗默认打开"账户设置"页签，不再按角色跳转；普通用户隐藏"基本设置"菜单（权限从 `system.config.read` 收紧为 `system.config.update`）。
 - 修复 Dashboard 模型调用统计展示：后端会把消息中保存的运行时模型 ID 映射到模型供应商配置的 `display_name`，前端图例与悬浮提示优先显示该名称；统计分组与历史数据键继续使用模型 ID，避免改变已有计数。

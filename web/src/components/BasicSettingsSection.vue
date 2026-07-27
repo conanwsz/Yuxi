@@ -74,12 +74,12 @@
       </div>
 
       <template v-if="userStore.hasPermission('system.config.update')">
-        <div class="section-title">Token 周额度</div>
+        <div class="section-title">周额度默认值</div>
         <div class="settings-panel">
           <div class="setting-row two-cols">
             <div class="col-item">
               <div class="setting-label">
-                {{ items?.default_weekly_token_quota?.des || '系统默认周额度' }}
+                {{ items?.default_weekly_token_quota?.des || '周额度' }}
               </div>
               <div class="setting-content">
                 <a-input-number
@@ -88,13 +88,9 @@
                   :min="0"
                   :step="10000"
                   :precision="0"
-                  placeholder="请输入系统默认周额度"
+                  placeholder="请输入 Token 数"
                   @change="handleDefaultWeeklyQuotaChange"
                 />
-                <div class="setting-help">
-                  用户选择“继承”时，将使用这里配置的每周 Token 上限。1 M Token = 1,000,000
-                  Tokens。
-                </div>
               </div>
             </div>
           </div>
