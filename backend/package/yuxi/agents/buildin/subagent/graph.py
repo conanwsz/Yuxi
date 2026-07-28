@@ -83,7 +83,7 @@ async def _build_middlewares(context):
         PatchToolCallsMiddleware(),
         sanitize_model_content,
         _SubAgentToolFilterMiddleware(),
-        ModelRetryMiddleware(),
+        ModelRetryMiddleware(on_failure="error"),
         TokenUsageMiddleware(),
     ]
 

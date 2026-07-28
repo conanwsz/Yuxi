@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -99,6 +100,78 @@ class _FakeConvRepo:
         return []
 
 
+@pytest.mark.asyncio
+async def test_stream_agent_chat_hides_internal_model_error_from_user_payloads(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    raw_error = "Post http://172.24.18.31:19996/v1/chat/completions failed"
+    saved_errors: list[dict] = []
+
+    class FakeAgent:
+        context_schema = _FakeContext
+
+        async def stream_messages_with_state(self, messages, input_context=None, **kwargs):
+            del messages, input_context, kwargs
+            if False:
+                yield None
+            raise RuntimeError(raw_error)
+
+    async def fake_resolve_agent_runtime(**_kwargs):
+        return SimpleNamespace(slug="test-agent", backend_id="ChatbotAgent"), FakeAgent(), {}
+
+    async def fake_build_agent_input_context(*_args, **_kwargs):
+        return {"thread_id": "thread-1", "uid": "user-1"}
+
+    async def fake_noop(*_args, **_kwargs):
+        return None
+
+    async def fake_bind_request_attachments(**_kwargs):
+        return []
+
+    async def fake_save_partial_message(_repo, _thread_id, **kwargs):
+        saved_errors.append(kwargs)
+
+    @asynccontextmanager
+    async def fake_session_context():
+        yield object()
+
+    monkeypatch.setattr(svc, "_resolve_agent_runtime", fake_resolve_agent_runtime)
+    monkeypatch.setattr(svc, "build_agent_input_context", fake_build_agent_input_context)
+    monkeypatch.setattr(svc, "_ensure_thread_bound_agent", fake_noop)
+    monkeypatch.setattr(svc, "_bind_request_attachments", fake_bind_request_attachments)
+    monkeypatch.setattr(svc, "ConversationRepository", _FakeConvRepo)
+    monkeypatch.setattr(svc, "save_partial_message", fake_save_partial_message)
+    monkeypatch.setattr(svc.pg_manager, "get_async_session_context", fake_session_context)
+    monkeypatch.setattr(svc.content_guard, "check", lambda _content: False)
+    monkeypatch.setattr(
+        svc,
+        "_build_langfuse_run_context",
+        lambda **_kwargs: SimpleNamespace(callbacks=[], metadata={}, tags=[]),
+    )
+    monkeypatch.setattr(svc, "flush_langfuse", lambda: None)
+
+    chunks = []
+    async for raw in svc.stream_agent_chat(
+        agent_slug="test-agent",
+        thread_id="thread-1",
+        meta={"request_id": "req-1", "run_id": "run-1"},
+        input_message=build_chat_input_message("hello"),
+        current_user=SimpleNamespace(id=1, uid="user-1", role="user", department_id="dept-1"),
+        db=_FakeSession(),
+        save_user_message=False,
+    ):
+        chunks.append(json.loads(raw.decode("utf-8")))
+
+    error_chunk = chunks[-1]
+    assert error_chunk["status"] == "error"
+    assert error_chunk["error_type"] == svc.AGENT_EXECUTION_ERROR_TYPE
+    assert error_chunk["error_message"] == svc.AGENT_EXECUTION_ERROR_MESSAGE
+    assert saved_errors[-1]["error_type"] == svc.AGENT_EXECUTION_ERROR_TYPE
+    assert saved_errors[-1]["error_message"] == svc.AGENT_EXECUTION_ERROR_MESSAGE
+    assert raw_error not in json.dumps(chunks, ensure_ascii=False)
+    assert raw_error not in str(saved_errors)
+
+
 def test_build_langfuse_run_context_reads_evaluation_from_invocation_meta(monkeypatch: pytest.MonkeyPatch):
     calls: dict[str, object] = {}
 
@@ -143,6 +216,7 @@ async def test_stream_agent_chat_commits_before_stream_and_persists_langfuse_con
 ):
     calls: dict[str, object] = {}
     db = _FakeSession()
+    monkeypatch.setattr("yuxi.agents.context._load_workspace_agent_context", lambda *_args: "")
 
     class FakeAgent:
         context_schema = _FakeContext

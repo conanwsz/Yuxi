@@ -115,7 +115,7 @@
                 :body="row.alert.body"
                 :retry="row.alert.body?.retry"
                 class="chat-alert-row"
-                @dismiss="dismissThreadAlert(currentChatId, row.alert.id)"
+                @dismiss="handleDismissAlert(currentChatId, row.alert)"
                 @retry="(payload) => handleRetry(currentChatId, row.alert.id, payload)"
               />
             </template>
@@ -177,6 +177,7 @@
                       display-name="mini"
                       placeholder="选择模型"
                       @select-model="handleModelSelect"
+                      @invalid-model="handleInvalidModel"
                     />
                   </div>
                   <slot name="input-actions-right" :has-active-thread="!!currentChatId"></slot>
@@ -650,6 +651,7 @@ const { threads, currentThreadId, currentThread } = storeToRefs(chatThreadsStore
 // ==================== LOCAL CHAT & UI STATE ====================
 const userInput = ref('')
 const sendCooldownActive = ref(false)
+const retryInFlight = ref(false)
 let sendCooldownTimer = null
 // 预设的打招呼文本
 const greetingMessages = [
@@ -685,19 +687,28 @@ const setCurrentThreadId = (threadId) => {
 const streamSmoother = useStreamSmoother({
   getThreadState: (threadId) => chatState.threadStates[threadId] || null
 })
-const { getThreadState, resetOnGoingConv, stopThreadStream } = useAgentThreadState({
-  chatState,
-  getCurrentThreadId: () => chatState.currentThreadId,
-  onStopThread: (threadId) => streamSmoother.flushThread(threadId),
-  onBeforeResetThread: (threadId) => streamSmoother.resetThread(threadId),
-  onBeforeCleanupThread: (threadId) => streamSmoother.resetThread(threadId)
-})
+const {
+  getThreadState,
+  clearFailedHumanMessages,
+  reconcileFailedHumanMessages,
+  resetOnGoingConv,
+  stopThreadStream,
+  persistFailedHumanMessages
+} = useAgentThreadState({
+    chatState,
+    getCurrentThreadId: () => chatState.currentThreadId,
+    onStopThread: (threadId) => streamSmoother.flushThread(threadId),
+    onBeforeResetThread: (threadId) => streamSmoother.resetThread(threadId),
+    onBeforeCleanupThread: (threadId) => streamSmoother.resetThread(threadId)
+  })
 
 // 会话级内联告警（仅前端内存，不入 LLM 上下文）
-const { dismissThreadAlert, getThreadAlerts, pushAlertFromError } = useThreadAlerts()
+const { clearThreadAlerts, dismissThreadAlert, getThreadAlerts, pushAlertFromError } =
+  useThreadAlerts()
 
 // 组件级别的消息、附件与提示状态
 const threadMessages = ref({})
+const dismissedPersistedAlertIds = reactive(new Set())
 const threadFilesMap = ref({})
 const threadAttachmentsMap = ref({})
 const attachmentUploadModalOpen = ref(false)
@@ -996,6 +1007,9 @@ const handleModelSelect = (spec) => {
       delete selectedModelByThread[currentChatId.value || DRAFT_MODEL_KEY]
     }
   }
+}
+const handleInvalidModel = ({ fallbackSpec }) => {
+  handleModelSelect(fallbackSpec)
 }
 
 const currentThreadAgentName = computed(() => {
@@ -1615,15 +1629,43 @@ watch(
 )
 
 const historyConversations = computed(() => {
-  return MessageProcessor.convertServerHistoryToMessages(currentThreadMessages.value)
+  return MessageProcessor.convertServerHistoryToMessages(
+    currentThreadMessages.value.filter(
+      (message) =>
+        message?.delivery_status !== 'superseded' &&
+        !message?.extra_metadata?.retry_context_message_ids?.length
+    )
+  )
+})
+
+const persistedFailedHumanMessages = computed(() =>
+  currentThreadMessages.value.filter(
+    (message) => message?.type === 'human' && message?.delivery_status === 'failed'
+  )
+)
+
+const failedHumanConversations = computed(() => {
+  const persistedRequestIds = new Set(
+    persistedFailedHumanMessages.value
+      .map((message) => getMessageRequestId(message))
+      .filter(Boolean)
+  )
+  const messages = (currentThreadState.value?.failedHumanMessages || []).filter(
+    (message) => !persistedRequestIds.has(getMessageRequestId(message))
+  )
+  return messages.map((message) => ({
+    messages: [message],
+    status: 'finished'
+  }))
 })
 
 function getMessageRequestId(message) {
+  if (typeof message?.request_id === 'string' && message.request_id.trim()) {
+    return message.request_id.trim()
+  }
   const metadataRequestId = message?.extra_metadata?.request_id
   if (typeof metadataRequestId === 'string' && metadataRequestId.trim())
     return metadataRequestId.trim()
-  if (typeof message?.request_id === 'string' && message.request_id.trim())
-    return message.request_id.trim()
   if (message?.type === 'human' && typeof message.id === 'string' && message.id.trim()) {
     return message.id.trim()
   }
@@ -1728,7 +1770,7 @@ function mergeActiveRunOngoingIntoHistory(historyConvs, ongoingMessages, activeR
 }
 
 const conversations = computed(() => {
-  const historyConvs = historyConversations.value
+  const historyConvs = [...historyConversations.value, ...failedHumanConversations.value]
   const { historyConvs: mergedHistoryConvs, ongoingMessages: mergedOngoingMessages } =
     mergeOngoingUserMessageIntoHistory(historyConvs, onGoingConvMessages.value)
   const { historyConvs: activeRunHistoryConvs, ongoingMessages: activeRunOngoingMessages } =
@@ -1749,7 +1791,46 @@ const conversations = computed(() => {
   return activeRunHistoryConvs
 })
 
-const currentThreadAlerts = computed(() => getThreadAlerts(currentChatId.value))
+const currentThreadAlerts = computed(() => {
+  // 重试已成功创建 run 后，历史失败快照尚未来得及刷新；生成态不能同时展示旧错误。
+  // 若本次运行再次失败，流结束后会由新的失败记录重新显示提示。
+  if (isProcessing.value) return []
+  const alerts = new Map()
+  for (const message of persistedFailedHumanMessages.value) {
+    const metadata = message.extra_metadata || {}
+    if (
+      metadata.error_type !== 'token_quota_exceeded' ||
+      dismissedPersistedAlertIds.has(message.id)
+    )
+      continue
+    alerts.set('quota_exceeded', {
+      id: `persisted-${message.id}`,
+      messageId: message.id,
+      kind: 'quota_exceeded',
+      title: 'Token 额度已用尽',
+      body: {
+        message: metadata.error_message,
+        quota: metadata.quota,
+        used: metadata.used,
+        remaining: metadata.remaining,
+        reset_at: metadata.reset_at,
+        retry: {
+          text: message.content,
+          imageContent: message.image_content,
+          attachments: metadata.attachments || [],
+          requestId: getMessageRequestId(message)
+        }
+      }
+    })
+  }
+  for (const alert of getThreadAlerts(currentChatId.value)) {
+    // 配额错误由服务端 failed 消息作为刷新后的唯一事实来源。没有对应
+    // failed 消息的 sessionStorage 快照必定过期，不能再把旧红框带回来。
+    if (alert.kind === 'quota_exceeded' && !persistedFailedHumanMessages.value.length) continue
+    alerts.set(alert.kind, alert)
+  }
+  return [...alerts.values()]
+})
 
 const conversationRows = computed(() => {
   const rows = conversations.value.map((conv, index) => ({
@@ -1785,6 +1866,11 @@ const conversationRows = computed(() => {
 
   return rows
 })
+
+const handleDismissAlert = (threadId, alert) => {
+  dismissThreadAlert(threadId, alert.id)
+  if (alert?.messageId) dismissedPersistedAlertIds.add(alert.messageId)
+}
 
 const isLoadingMessages = computed(() => chatUIStore.isLoadingMessages)
 const isStreaming = computed(() => {
@@ -1864,6 +1950,18 @@ const insertOptimisticHumanMessage = (
   threadState.onGoingConv.msgChunks[requestId] = [
     buildOptimisticHumanMessage({ requestId, text, imageContent, attachments })
   ]
+}
+
+const preserveFailedHumanMessage = (threadId, threadState, requestId) => {
+  if (!threadId || !threadState || !requestId) return
+  const optimisticMessage = threadState.onGoingConv.msgChunks[requestId]?.find(
+    (item) => item?.type === 'human' || item?.role === 'user'
+  )
+  if (!optimisticMessage) return
+  if (!threadState.failedHumanMessages.some((message) => message.id === optimisticMessage.id)) {
+    threadState.failedHumanMessages.push(optimisticMessage)
+    persistFailedHumanMessages(threadId, threadState.failedHumanMessages)
+  }
 }
 
 const markAttachmentsRequestId = (threadId, attachments, requestId) => {
@@ -2161,6 +2259,7 @@ const fetchThreadMessages = async ({ agentId, threadId, delay = 0 }) => {
     const response = await agentApi.getAgentHistory(threadId)
     const history = response.history || []
     threadMessages.value[threadId] = history
+    reconcileFailedHumanMessages(threadId, history)
     restoreThreadModelSelection(threadId, history, response.model_spec)
   } catch (error) {
     handleChatError(error, 'load')
@@ -2476,14 +2575,20 @@ const selectThreadFromRoute = async (threadId) => {
   return true
 }
 
-const handleSendMessage = async ({ image } = {}) => {
+const handleSendMessage = async ({
+  image,
+  retryContextMessages = [],
+  retryContextMessageIds = [],
+  retryFailedRequestId = null,
+  forceRetry = false
+} = {}) => {
   const text = userInput.value.trim()
   const imageContent = image?.imageContent || null
   if (
     (!text && !image) ||
     !currentAgent.value ||
     isProcessing.value ||
-    sendCooldownActive.value ||
+    (sendCooldownActive.value && !forceRetry) ||
     props.sendDisabled
   )
     return
@@ -2571,7 +2676,10 @@ const handleSendMessage = async ({ image } = {}) => {
       thread_id: threadId,
       meta: {
         request_id: requestId,
-        attachment_file_ids: pendingAttachmentFileIds
+        attachment_file_ids: pendingAttachmentFileIds,
+        retry_context_messages: retryContextMessages,
+        retry_context_message_ids: retryContextMessageIds,
+        retry_failed_request_id: retryFailedRequestId
       },
       image_content: imageContent,
       model_spec: modelSpec
@@ -2580,18 +2688,23 @@ const handleSendMessage = async ({ image } = {}) => {
     if (!runId) {
       throw new Error('创建 run 失败：缺少 run_id')
     }
+    // 2xx 代表服务端已接受本次请求。先删除同 thread 的旧前端告警；
+    // 若 worker 随后失败，SSE 错误路径会写入一条新的告警。
+    clearThreadAlerts(threadId)
+    clearFailedHumanMessages(threadId)
     await startRunStream(threadId, runId, 0)
     // 发送消息后让会话上浮到列表顶部
     chatThreadsStore.touchThread(threadId)
   } catch (error) {
+    // 创建 run 被拒绝（如额度用尽）时，后端不会保存这条用户消息。先移到线程本地历史，
+    // 再重置流式缓存，确保之后的发送不会把它覆盖掉。
+    preserveFailedHumanMessage(threadId, threadState, requestId)
+    resetOnGoingConv(threadId)
     threadState.isStreaming = false
     threadState.replyLoadingVisible = false
     threadState.pendingRequestId = null
     rollbackAttachments(threadId, previousAttachments)
-    // 【改：3a3da0ba 之前调 resetOnGoingConv(threadId)，但这会把乐观插入的 user 消息也清掉，
-    //   用户视角下"刚发的那条字消失"。现在保留 onGoingConv 里的 user 消息，靠告警条 + 重试按钮
-    //   让用户能再发一次。配额恢复后点重试，user 消息会自动消失（被新一轮乐观插入 resetOnGoingConv 接管）。
-    //   同步清掉 activeRunId，否则 isProcessing 计算属性还以为在跑。
+    // 同步清掉 activeRunId，否则 isProcessing 计算属性还以为在跑。
     threadState.activeRunId = null
     const retryPayload = {
       text,
@@ -2601,6 +2714,13 @@ const handleSendMessage = async ({ image } = {}) => {
     }
     // 优先内联到会话流（不依赖 toast，刷新后消失，不入 LLM 上下文）
     const alertId = pushAlertFromError(threadId, error, { retry: retryPayload })
+    if (alertId) {
+      try {
+        await fetchThreadMessages({ agentId: currentAgentId.value, threadId })
+      } catch {
+        // 网络异常时仍保留当前页面的临时告警。
+      }
+    }
     if (!alertId) {
       handleChatError(error, 'send')
     }
@@ -2609,7 +2729,7 @@ const handleSendMessage = async ({ image } = {}) => {
 
 // 发送或中断
 const handleSendOrStop = async (payload) => {
-  if (sendCooldownActive.value) {
+  if (sendCooldownActive.value && !payload?.forceRetry) {
     return
   }
 
@@ -2635,11 +2755,11 @@ const handleSendOrStop = async (payload) => {
 // 重试：来自告警条的"重试"按钮。拿之前缓存的请求载荷回填，然后重新调 handleSendOrStop。
 // 1. rollbackAttachments 已经把 attachments 的 request_id 解绑了——它们已经自动回到
 //    currentPendingThreadAttachments（filter !attachment.request_id），所以无需手动放回。
-// 2. 上一次的乐观 user 消息还留在 threadState.onGoingConv.msgChunks[oldRequestId]，
-//    handleSendMessage 自己开头的 resetOnGoingConv 会接管清空，所以这里不动。
+// 2. 上一次失败的用户消息已经保存在 failedHumanMessages；重试时会按顺序作为本次请求上下文传给 Agent。
 // 3. 主动 dismiss 告警——重试成功后告警条不应再停留。
 const handleRetry = async (threadId, alertId, retryPayload) => {
   if (!threadId || !retryPayload) return
+  if (retryInFlight.value) return
   if (threadId !== currentChatId.value) {
     // 不在当前会话里的告警点重试：先切到该 thread，再触发一次"重试"。
     // 这里保守处理：直接 no-op，避免误把其他会话的载荷塞到当前输入框。
@@ -2650,15 +2770,40 @@ const handleRetry = async (threadId, alertId, retryPayload) => {
     message.info('当前会话正在处理中，请稍后再试')
     return
   }
-  // 先回填文本（handleSendMessage 内部会先读 userInput.value 再清空）
-  userInput.value = retryPayload.text || ''
-  // 关闭告警条
-  dismissThreadAlert(threadId, alertId)
-  // 触发重发：构造和首次发送一样的 payload 形状
-  const imagePayload = retryPayload.imageContent
-    ? { image: { imageContent: retryPayload.imageContent } }
-    : {}
-  await handleSendOrStop(imagePayload)
+  const threadState = getThreadState(threadId)
+  if (!threadState) return
+  retryInFlight.value = true
+  try {
+    // 先回填文本（handleSendMessage 内部会先读 userInput.value 再清空）
+    userInput.value = retryPayload.text || ''
+    const retryContextMessages = [
+      ...persistedFailedHumanMessages.value,
+      ...threadState.failedHumanMessages
+    ]
+      .filter((message) => getMessageRequestId(message) !== retryPayload.requestId)
+      .map((message) => message.content)
+      .filter((content) => typeof content === 'string' && content.trim())
+    const retryContextMessageIds = persistedFailedHumanMessages.value
+      .map((message) => message.id)
+      .filter((messageId) => Number.isInteger(messageId) && messageId > 0)
+    threadState.failedHumanMessages.splice(0)
+    persistFailedHumanMessages(threadId, threadState.failedHumanMessages)
+    // 关闭告警条
+    dismissThreadAlert(threadId, alertId)
+    // 触发重发：构造和首次发送一样的 payload 形状
+    const imagePayload = retryPayload.imageContent
+      ? { image: { imageContent: retryPayload.imageContent } }
+      : {}
+    await handleSendOrStop({
+      ...imagePayload,
+      retryContextMessages,
+      retryContextMessageIds,
+      retryFailedRequestId: retryPayload.requestId,
+      forceRetry: true
+    })
+  } finally {
+    retryInFlight.value = false
+  }
 }
 
 // ==================== 人工审批处理 ====================

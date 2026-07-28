@@ -128,7 +128,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['select-model'])
+const emit = defineEmits(['select-model', 'invalid-model'])
 
 // v2 模型数据：每次展开下拉时实时从后端拉取
 const v2Models = ref({})
@@ -136,6 +136,19 @@ const loadingV2Models = ref(false)
 const dropdownOpen = ref(false)
 const modelSearchKeyword = ref('')
 let fetchV2ModelsPromise = null
+
+const reconcileModelSelection = (spec) => {
+  const models = Object.values(v2Models.value).flatMap(
+    (providerData) => providerData.models || []
+  )
+  if (!spec || !models.length || models.some((model) => model.spec === spec)) return
+
+  const fallbackModel = models.find((model) => model.is_default) || models[0]
+  emit('invalid-model', {
+    unavailableSpec: spec,
+    fallbackSpec: fallbackModel.spec
+  })
+}
 
 const filteredV2Models = computed(() => {
   const keyword = modelSearchKeyword.value.trim().toLowerCase()
@@ -199,6 +212,7 @@ const fetchV2Models = async () => {
       const response = await modelProviderApi.getV2Models('chat')
       if (response.success) {
         v2Models.value = response.data || {}
+        reconcileModelSelection(props.model_spec)
       }
     } catch (error) {
       console.warn('Failed to load v2 models:', error)
@@ -259,6 +273,7 @@ watch(
   (spec, previousSpec) => {
     if (spec !== previousSpec) {
       state.currentModelStatus = null
+      reconcileModelSelection(spec)
     }
   }
 )

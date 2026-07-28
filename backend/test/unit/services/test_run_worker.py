@@ -104,6 +104,7 @@ async def test_process_agent_run_restores_invocation_meta(monkeypatch: pytest.Mo
             extra_metadata={
                 "source": "agent_call",
                 "agent_invocation_meta": {"trace_id": "trace-1"},
+                "retry_context_messages": ["first", "second"],
                 "evaluation": {"dataset_name": "legacy-top-level"},
                 "custom_variables": {"system_prompt": "legacy"},
             },
@@ -133,6 +134,7 @@ async def test_process_agent_run_restores_invocation_meta(monkeypatch: pytest.Mo
     assert meta["agent_invocation_meta"] == {"trace_id": "trace-1"}
     assert "evaluation" not in meta
     assert "custom_variables" not in meta
+    assert captured["prior_human_messages"] == ["first", "second"]
     metadata_event = next(event for event in events if event["event_type"] == "metadata")
     assert metadata_event["payload"]["agent_invocation_meta"] == {"trace_id": "trace-1"}
     assert "evaluation" not in metadata_event["payload"]
@@ -145,29 +147,46 @@ async def test_process_agent_run_non_retryable_error_marks_failed(monkeypatch: p
     run_obj = _build_run()
     _patch_common(monkeypatch, run_obj)
 
-    terminal_statuses: list[str] = []
-    events: list[str] = []
+    raw_error = "Post http://172.24.18.31:19996/v1/chat/completions failed"
+    terminal_errors: list[dict] = []
+    events: list[dict] = []
 
     async def fake_append_event(run_id: str, event_type: str, payload: dict, **kwargs):
-        del run_id, payload, kwargs
-        events.append(event_type)
+        del run_id, kwargs
+        events.append({"event_type": event_type, "payload": payload})
 
     async def fake_mark_terminal(run_id: str, status: str, error_type=None, error_message=None):
-        del run_id, error_type, error_message
-        terminal_statuses.append(status)
+        terminal_errors.append(
+            {
+                "run_id": run_id,
+                "status": status,
+                "error_type": error_type,
+                "error_message": error_message,
+            }
+        )
 
     monkeypatch.setattr(run_worker, "append_run_event", fake_append_event)
     monkeypatch.setattr(run_worker, "mark_run_terminal", fake_mark_terminal)
     monkeypatch.setattr(
         run_worker,
         "_consume_stream_with_cancel",
-        lambda stream, run_ctx: _RaisingAsyncIter(RuntimeError("boom")),
+        lambda stream, run_ctx: _RaisingAsyncIter(RuntimeError(raw_error)),
     )
 
     await run_worker.process_agent_run({"job_try": 1}, "run-1")
 
-    assert "error" in events
-    assert terminal_statuses == ["failed"]
+    error_event = next(item for item in events if item["event_type"] == "error")
+    assert error_event["payload"]["chunk"]["error_message"] == run_worker.AGENT_EXECUTION_ERROR_MESSAGE
+    assert terminal_errors == [
+        {
+            "run_id": "run-1",
+            "status": "failed",
+            "error_type": "worker_error",
+            "error_message": run_worker.AGENT_EXECUTION_ERROR_MESSAGE,
+        }
+    ]
+    assert raw_error not in str(events)
+    assert raw_error not in str(terminal_errors)
 
 
 @pytest.mark.asyncio

@@ -22,6 +22,7 @@ from yuxi.storage.postgres.models_business import User
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.utils import logger
 from yuxi.services.permission_service import has_permission
+from yuxi.services.resource_access_service import get_default_model_for_type
 from yuxi.services.resource_access_runtime_service import filter_model_infos_for_user, hydrate_user_resource_access
 
 model_providers = APIRouter(prefix="/system/model-providers", tags=["model-providers"])
@@ -228,17 +229,14 @@ async def get_v2_models(
     await hydrate_user_resource_access(db, current_user)
     grouped = model_cache.get_specs_grouped_by_provider(model_type)
     providers = await get_all_model_providers(db)
+    default_model_spec = get_default_model_for_type(current_user.resource_access, model_type)
     provider_name_by_id = {
         provider.provider_id: provider.display_name or provider.provider_id for provider in providers
     }
 
     result = {}
     for provider_id, models in grouped.items():
-        visible_models = (
-            models
-            if has_permission(current_user, "models.manage")
-            else filter_model_infos_for_user(current_user, models, model_type=model_type)
-        )
+        visible_models = filter_model_infos_for_user(current_user, models, model_type=model_type)
         if not visible_models:
             continue
         result[provider_id] = {
@@ -249,6 +247,7 @@ async def get_v2_models(
                     "spec": m.spec,
                     "model_id": m.model_id,
                     "display_name": m.display_name,
+                    "is_default": m.spec == default_model_spec,
                     "dimension": m.dimension,
                     "batch_size": m.batch_size,
                 }

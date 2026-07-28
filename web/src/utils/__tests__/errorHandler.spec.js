@@ -78,6 +78,21 @@ describe('categorizeChatError', () => {
     assert.equal(result.body.message, '额度已尽')
   })
 
+  it('无 HTTP 状态的智能体运行错误使用后端安全文案内联展示', () => {
+    const sseEvent = {
+      payload: {
+        chunk: {
+          error_type: 'agent_execution_error',
+          error_message: '智能体运行失败，请稍后重试'
+        }
+      }
+    }
+    const result = categorizeChatError(sseEvent)
+    assert.equal(result.kind, 'generic_error')
+    assert.equal(result.title, '智能体运行失败')
+    assert.equal(result.body.message, '智能体运行失败，请稍后重试')
+  })
+
   it('没有 HTTP 上下文的裸 Error 返回 null（不强制内联）', () => {
     assert.equal(categorizeChatError(new Error('前端逻辑错误')), null)
   })

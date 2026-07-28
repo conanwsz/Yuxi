@@ -3,6 +3,7 @@
 import json
 import sys
 import os
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -293,6 +294,70 @@ async def test_stream_agent_resume_commits_before_stream_and_routes_subagent_chu
     assert finished["status"] == "finished"
     assert finished["meta"]["agent_slug"] == "main-agent"
     assert "agent_id" not in finished["meta"]
+
+
+@pytest.mark.asyncio
+async def test_stream_agent_resume_hides_internal_model_error(monkeypatch):
+    raw_error = "Post http://172.24.18.31:19996/v1/chat/completions failed"
+    saved_errors: list[dict] = []
+    db = _FakeSession()
+
+    class FakeContext:
+        def update(self, _values):
+            return None
+
+    class FakeAgent:
+        context_schema = FakeContext
+
+        async def stream_resume_with_state(self, resume_command, input_context=None, **kwargs):
+            del resume_command, input_context, kwargs
+            if False:
+                yield None
+            raise RuntimeError(raw_error)
+
+    async def fake_resolve_agent_runtime(**_kwargs):
+        return SimpleNamespace(slug="main-agent", backend_id="ChatbotAgent"), FakeAgent(), {}
+
+    async def fake_build_agent_input_context(*_args, **_kwargs):
+        return {"thread_id": "thread-1", "uid": "user-1"}
+
+    async def fake_save_partial_message(_repo, _thread_id, **kwargs):
+        saved_errors.append(kwargs)
+
+    @asynccontextmanager
+    async def fake_session_context():
+        yield object()
+
+    monkeypatch.setattr(svc, "_resolve_agent_runtime", fake_resolve_agent_runtime)
+    monkeypatch.setattr(svc, "build_agent_input_context", fake_build_agent_input_context)
+    monkeypatch.setattr(svc, "ConversationRepository", lambda _db: object())
+    monkeypatch.setattr(svc, "save_partial_message", fake_save_partial_message)
+    monkeypatch.setattr(svc.pg_manager, "get_async_session_context", fake_session_context)
+    monkeypatch.setattr(
+        svc,
+        "_build_langfuse_run_context",
+        lambda **_kwargs: SimpleNamespace(callbacks=[], metadata={}, tags=[]),
+    )
+    monkeypatch.setattr(svc, "flush_langfuse", lambda: None)
+
+    chunks = []
+    async for raw in stream_agent_resume(
+        thread_id="thread-1",
+        resume_input={"ok": True},
+        meta={"request_id": "req-1", "run_id": "run-1"},
+        current_user=SimpleNamespace(uid="user-1"),
+        db=db,
+    ):
+        chunks.append(json.loads(raw.decode("utf-8")))
+
+    error_chunk = chunks[-1]
+    assert error_chunk["status"] == "error"
+    assert error_chunk["error_type"] == svc.AGENT_EXECUTION_ERROR_TYPE
+    assert error_chunk["error_message"] == svc.AGENT_EXECUTION_ERROR_MESSAGE
+    assert saved_errors[-1]["error_type"] == svc.AGENT_EXECUTION_ERROR_TYPE
+    assert saved_errors[-1]["error_message"] == svc.AGENT_EXECUTION_ERROR_MESSAGE
+    assert raw_error not in json.dumps(chunks, ensure_ascii=False)
+    assert raw_error not in str(saved_errors)
 
 
 class TestCoerceInterruptPayload:

@@ -19,7 +19,7 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from langchain.messages import AIMessage, AIMessageChunk
+from langchain.messages import AIMessage, AIMessageChunk, HumanMessage
 from langgraph.types import Command
 from yuxi import config as conf
 from yuxi.agents.buildin import agent_manager
@@ -46,6 +46,9 @@ from yuxi.utils.question_utils import (
     normalize_questions as _normalize_interrupt_questions,
 )
 from yuxi.utils.thread_utils import extract_thread_id as _metadata_thread_id
+
+AGENT_EXECUTION_ERROR_TYPE = "agent_execution_error"
+AGENT_EXECUTION_ERROR_MESSAGE = "智能体运行失败，请稍后重试"
 
 
 def _build_state_files(attachments: list[dict]) -> dict:
@@ -777,6 +780,7 @@ async def stream_agent_chat(
     current_user,
     db,
     save_user_message: bool = True,
+    prior_human_messages: list[str] | None = None,
 ) -> AsyncIterator[bytes]:
     start_time = asyncio.get_event_loop().time()
 
@@ -834,7 +838,10 @@ async def stream_agent_chat(
         }
     )
 
-    messages = [human_message]
+    messages = [
+        *(HumanMessage(content=content) for content in prior_human_messages or []),
+        human_message,
+    ]
     input_context = await build_agent_input_context(
         agent_config,
         thread_id=thread_id,
@@ -1042,7 +1049,7 @@ async def stream_agent_chat(
             )
         except Exception as e:
             logger.exception(f"Error saving messages from LangGraph state: {e}")
-            yield make_chunk(status="warning", message=f"消息保存失败: {e}", meta=meta)
+            yield make_chunk(status="warning", message="消息保存失败，请稍后重试", meta=meta)
 
         if interrupted:
             return
@@ -1080,10 +1087,10 @@ async def stream_agent_chat(
         yield make_chunk(status="interrupted", message="对话已中断", meta=meta)
 
     except Exception as e:
-        logger.exception(f"Error streaming messages: {e}")
-
-        error_msg = f"Error streaming messages: {e}"
-        error_type = "unexpected_error"
+        logger.exception(
+            f"Error streaming messages "
+            f"(run_id={meta.get('run_id')}, thread_id={thread_id}, request_id={meta.get('request_id')}): {e}"
+        )
 
         full_msg = _ensure_full_msg(full_msg, accumulated_content)
 
@@ -1093,14 +1100,19 @@ async def stream_agent_chat(
                 new_conv_repo,
                 thread_id,
                 full_msg=full_msg,
-                error_message=error_msg,
-                error_type=error_type,
+                error_message=AGENT_EXECUTION_ERROR_MESSAGE,
+                error_type=AGENT_EXECUTION_ERROR_TYPE,
                 trace_info=trace_info,
                 run_id=meta.get("run_id"),
                 request_id=meta.get("request_id"),
             )
 
-        yield make_chunk(status="error", error_type=error_type, error_message=error_msg, meta=meta)
+        yield make_chunk(
+            status="error",
+            error_type=AGENT_EXECUTION_ERROR_TYPE,
+            error_message=AGENT_EXECUTION_ERROR_MESSAGE,
+            meta=meta,
+        )
     finally:
         flush_langfuse()
 
@@ -1272,7 +1284,7 @@ async def stream_agent_resume(
             )
         except Exception as e:
             logger.exception(f"Error saving messages from LangGraph state: {e}")
-            yield make_resume_chunk(status="warning", message=f"消息保存失败: {e}", meta=meta)
+            yield make_resume_chunk(status="warning", message="消息保存失败，请稍后重试", meta=meta)
 
         if interrupted:
             return
@@ -1297,21 +1309,28 @@ async def stream_agent_resume(
         yield make_resume_chunk(status="interrupted", message="对话恢复已中断", meta=meta)
 
     except Exception as e:
-        logger.exception(f"Error during resume: {e}")
+        logger.exception(
+            f"Error during resume "
+            f"(run_id={meta.get('run_id')}, thread_id={thread_id}, request_id={meta.get('request_id')}): {e}"
+        )
 
         async with pg_manager.get_async_session_context() as new_db:
             new_conv_repo = ConversationRepository(new_db)
             await save_partial_message(
                 new_conv_repo,
                 thread_id,
-                error_message=f"Error during resume: {e}",
-                error_type="resume_error",
+                error_message=AGENT_EXECUTION_ERROR_MESSAGE,
+                error_type=AGENT_EXECUTION_ERROR_TYPE,
                 trace_info=trace_info,
                 run_id=meta.get("run_id"),
                 request_id=meta.get("request_id"),
             )
 
-        yield make_resume_chunk(message=f"Error during resume: {e}", status="error")
+        yield make_resume_chunk(
+            status="error",
+            error_type=AGENT_EXECUTION_ERROR_TYPE,
+            error_message=AGENT_EXECUTION_ERROR_MESSAGE,
+        )
     finally:
         flush_langfuse()
 

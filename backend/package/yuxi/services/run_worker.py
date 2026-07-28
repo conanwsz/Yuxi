@@ -18,7 +18,7 @@ from yuxi.config import config as sys_config
 from yuxi.repositories.agent_repository import AgentRepository
 from yuxi.repositories.agent_run_repository import TERMINAL_RUN_STATUSES, AgentRunRepository
 from yuxi.services.agent_run_service import resolve_agent_run_model_spec, validate_agent_context_resource_access
-from yuxi.services.chat_service import stream_agent_chat, stream_agent_resume
+from yuxi.services.chat_service import AGENT_EXECUTION_ERROR_MESSAGE, stream_agent_chat, stream_agent_resume
 from yuxi.services.input_message_service import restore_chat_input_message
 from yuxi.services.resource_access_runtime_service import hydrate_user_resource_access
 from yuxi.services.run_queue_service import (
@@ -286,6 +286,12 @@ def _is_retryable_exception(exc: Exception) -> bool:
     return isinstance(exc, (RetryableRunError, OperationalError, ConnectionError, TimeoutError, asyncio.TimeoutError))
 
 
+def _public_worker_error_message(exc: Exception) -> str:
+    if isinstance(exc, NonRetryableRunError):
+        return str(exc)
+    return AGENT_EXECUTION_ERROR_MESSAGE
+
+
 def _iter_json_chunks(chunk_bytes: bytes) -> list[dict]:
     text = chunk_bytes.decode("utf-8")
     chunks: list[dict] = []
@@ -402,6 +408,12 @@ async def process_agent_run(ctx, run_id: str):
     thread_id = run.conversation_thread_id
     input_metadata = input_message.extra_metadata
     image_content = input_message.image_content
+    retry_context_messages = input_metadata.get("retry_context_messages") or []
+    if not isinstance(retry_context_messages, list):
+        retry_context_messages = []
+    retry_context_messages = [
+        message.strip() for message in retry_context_messages if isinstance(message, str) and message.strip()
+    ]
 
     if run_type not in SUPPORTED_RUN_TYPES:
         await mark_run_terminal(run_id, "failed", "invalid_run_type", f"不支持的 run_type: {run_type}")
@@ -499,6 +511,7 @@ async def process_agent_run(ctx, run_id: str):
                     thread_id=thread_id,
                     meta=meta,
                     input_message=normalized_input_message,
+                    prior_human_messages=retry_context_messages,
                     current_user=user,
                     db=db,
                     save_user_message=False,
@@ -590,13 +603,14 @@ async def process_agent_run(ctx, run_id: str):
         logger.info(f"Run cancelled: {run_id}")
     except Exception as e:
         await writer.flush()
+        public_error_message = _public_worker_error_message(e)
         if _is_retryable_exception(e):
             job_try = _job_try(ctx)
             logger.warning(f"Run retryable failure {run_id} (try={job_try}): {e}")
             retryable_error_chunk = {
                 "status": "error",
                 "error_type": "retryable_worker_error",
-                "error_message": str(e),
+                "error_message": public_error_message,
                 "request_id": request_id,
                 "retryable": True,
                 "job_try": job_try,
@@ -612,7 +626,7 @@ async def process_agent_run(ctx, run_id: str):
                     run_id,
                     "failed",
                     error_type="retryable_worker_error",
-                    error_message=str(e),
+                    error_message=public_error_message,
                 )
                 await _append_end_event(
                     run_id,
@@ -620,18 +634,18 @@ async def process_agent_run(ctx, run_id: str):
                     thread_id=thread_id,
                     payload={"chunk": retryable_error_chunk},
                 )
-                logger.error(f"Run failed after retries exhausted {run_id}: {e}")
+                logger.exception(f"Run failed after retries exhausted {run_id}: {e}")
                 return
 
             if isinstance(e, RetryableRunError):
                 raise
             raise RetryableRunError(str(e)) from e
 
-        logger.error(f"Run failed {run_id}: {e}")
+        logger.exception(f"Run failed {run_id}: {e}")
         error_chunk = {
             "status": "error",
             "error_type": "worker_error",
-            "error_message": str(e),
+            "error_message": public_error_message,
             "request_id": request_id,
             "retryable": False,
         }
@@ -641,7 +655,7 @@ async def process_agent_run(ctx, run_id: str):
             {"chunk": error_chunk, "retryable": False},
             thread_id=thread_id,
         )
-        await mark_run_terminal(run_id, "failed", error_type="worker_error", error_message=str(e))
+        await mark_run_terminal(run_id, "failed", error_type="worker_error", error_message=public_error_message)
         await _append_end_event(run_id, "failed", thread_id=thread_id, payload={"chunk": error_chunk})
         return
     finally:

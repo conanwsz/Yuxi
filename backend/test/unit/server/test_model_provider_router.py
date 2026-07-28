@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 
 from server.routers import model_provider_router
@@ -54,3 +56,54 @@ async def test_update_provider_commits_before_refreshing_cache(monkeypatch):
 
     assert result == {"success": True, "data": {"provider_id": "alibaba"}}
     assert calls == ["update", "commit", "refresh"]
+
+
+@pytest.mark.asyncio
+async def test_v2_models_respects_resource_scope_for_model_managers(monkeypatch):
+    from yuxi.models.providers.cache import model_cache
+
+    allowed_model = SimpleNamespace(
+        spec="provider:allowed",
+        model_id="allowed",
+        model_type="chat",
+        display_name="Allowed",
+        dimension=None,
+        batch_size=40,
+    )
+    forbidden_model = SimpleNamespace(
+        spec="provider:forbidden",
+        model_id="forbidden",
+        model_type="chat",
+        display_name="Forbidden",
+        dimension=None,
+        batch_size=40,
+    )
+    user = SimpleNamespace(
+        role="admin",
+        permission_keys={"models.manage"},
+        resource_access={
+            "models": {
+                "mode": "selected",
+                "allowed": [allowed_model.spec],
+                "defaults": {"chat": allowed_model.spec},
+            },
+            "tools": {"mode": "all", "allowed": []},
+            "mcp_servers": {"mode": "all", "allowed": []},
+        },
+    )
+
+    monkeypatch.setattr(
+        model_cache,
+        "get_specs_grouped_by_provider",
+        lambda model_type: {"provider": [allowed_model, forbidden_model]},
+    )
+
+    async def fake_get_all_model_providers(db):
+        return [SimpleNamespace(provider_id="provider", display_name="Provider")]
+
+    monkeypatch.setattr(model_provider_router, "get_all_model_providers", fake_get_all_model_providers)
+
+    result = await model_provider_router.get_v2_models(current_user=user, db=SimpleNamespace())
+
+    assert [model["spec"] for model in result["data"]["provider"]["models"]] == [allowed_model.spec]
+    assert result["data"]["provider"]["models"][0]["is_default"] is True

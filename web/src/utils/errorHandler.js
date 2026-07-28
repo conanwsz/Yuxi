@@ -238,6 +238,18 @@ export function categorizeChatError(error) {
     }
   }
 
+  // Run/SSE 错误不一定带 HTTP 状态；只要后端给出了结构化 error_type，
+  // 就按会话内错误展示。正文仅使用后端已经脱敏的用户文案。
+  if (isSseErrorEvent && detail?.error_type) {
+    return {
+      kind: 'generic_error',
+      title: detail.error_type === 'agent_execution_error' ? '智能体运行失败' : '请求失败',
+      body: {
+        message: errorMessage || '请稍后重试'
+      }
+    }
+  }
+
   // 裸 Error（没 HTTP 上下文）一般来自前端逻辑，不该内联
   return null
 }

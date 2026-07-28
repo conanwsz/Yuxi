@@ -3,7 +3,7 @@ import { computed, reactive } from 'vue'
 import { categorizeChatError } from '../utils/errorHandler.js'
 
 /**
- * 会话级别的内联告警池（仅前端内存，不持久化、不入 LLM 上下文）。
+ * 会话级别的内联告警池（持久化在浏览器会话存储，不入 LLM 上下文）。
  *
  * 用法：在 AgentChatComponent 等长生命周期组件 mount 时调用一次 `useThreadAlerts()`，
  * 共享一个 reactive threadAlerts 状态；模板里通过 `getThreadAlerts(threadId)`
@@ -12,10 +12,30 @@ import { categorizeChatError } from '../utils/errorHandler.js'
  * 关键不变量：
  * 1. 切 thread 不会清空旧告警——告警是"那一刻的状态"，换 thread 之后仍然可以看到。
  *    切回原 thread 时会重新出现。
- * 2. 刷新页面会丢失所有告警——这是显式契约：UI-only。
+ * 2. 刷新页面后会从浏览器会话存储恢复，关闭或重试后才移除。
  * 3. 告警永远不会被任何 backend API 带上，也不会进入 `threadMessages` / `agentApi.*` 调用。
  */
 let _sharedAlerts = null
+const THREAD_ALERTS_STORAGE_KEY = 'yuxi.thread-alerts'
+
+const loadThreadAlerts = () => {
+  if (typeof sessionStorage === 'undefined') return {}
+  try {
+    const stored = JSON.parse(sessionStorage.getItem(THREAD_ALERTS_STORAGE_KEY) || '{}')
+    return stored && typeof stored === 'object' && !Array.isArray(stored) ? stored : {}
+  } catch {
+    return {}
+  }
+}
+
+const persistThreadAlerts = (alerts) => {
+  if (typeof sessionStorage === 'undefined') return
+  try {
+    sessionStorage.setItem(THREAD_ALERTS_STORAGE_KEY, JSON.stringify(alerts))
+  } catch {
+    // 本地存储不可用时仍保留当前页面内的告警。
+  }
+}
 
 const _generateId = () => {
   // 不依赖 crypto.randomUUID（部分测试环境缺失），简单够用
@@ -24,7 +44,7 @@ const _generateId = () => {
 
 const _ensureShared = () => {
   if (!_sharedAlerts) {
-    _sharedAlerts = reactive({})
+    _sharedAlerts = reactive(loadThreadAlerts())
   }
   return _sharedAlerts
 }
@@ -34,7 +54,7 @@ export function useThreadAlerts() {
 
   /**
    * 往指定 thread 推一条告警。category 必须来自 `categorizeChatError` 的返回结构。
-   * 重复同 kind 的告警会被去重，避免配额刷新后短时间内连续刷出多条。
+   * 重复同 kind 的告警会被合并，避免同一错误反复出现多条提示。
    *
    * @param {string} threadId
    * @param {{ kind: string, httpStatus?: number, title: string, body: object }|null|undefined} category
@@ -49,17 +69,20 @@ export function useThreadAlerts() {
       threadAlerts[threadId] = []
     }
     const list = threadAlerts[threadId]
-    // 同 kind 已有告警且 createdAt 在 5s 内 → 不重复入栈
-    const now = Date.now()
-    const recentSame = list.find((a) => a.kind === category.kind && now - (a.createdAt || 0) < 5000)
-    if (recentSame) {
-      // 5s 内重复：把最新的 retry 覆盖上去（同一 kind 错误再次发生时，载荷可能变了）
-      if (options.retry) {
-        recentSame.body = { ...(recentSame.body || {}), retry: options.retry }
+    const existingSame = list.find((alert) => alert.kind === category.kind)
+    if (existingSame) {
+      // 同一错误再次发生时，保留一个提示框，并更新其中的文案和重试载荷。
+      existingSame.title = category.title
+      existingSame.body = {
+        ...(category.body || {}),
+        ...(options.retry ? { retry: options.retry } : {})
       }
-      return recentSame.id
+      existingSame.httpStatus = category.httpStatus
+      persistThreadAlerts(threadAlerts)
+      return existingSame.id
     }
 
+    const now = Date.now()
     const alert = {
       id: _generateId(),
       kind: category.kind,
@@ -69,6 +92,7 @@ export function useThreadAlerts() {
       createdAt: now
     }
     list.push(alert)
+    persistThreadAlerts(threadAlerts)
     return alert.id
   }
 
@@ -85,6 +109,7 @@ export function useThreadAlerts() {
     if (list.length === 0) {
       delete threadAlerts[threadId]
     }
+    persistThreadAlerts(threadAlerts)
     return list.length
   }
 
@@ -94,6 +119,7 @@ export function useThreadAlerts() {
   const clearThreadAlerts = (threadId) => {
     if (!threadId) return
     delete threadAlerts[threadId]
+    persistThreadAlerts(threadAlerts)
   }
 
   /**
@@ -107,6 +133,7 @@ export function useThreadAlerts() {
         delete threadAlerts[key]
       }
     }
+    persistThreadAlerts(threadAlerts)
   }
 
   /**

@@ -30,10 +30,11 @@ describe('useThreadAlerts', () => {
     assert.equal(list[0].title, 'Token 额度已用尽')
   })
 
-  it('同 kind 在 5s 内重复 push 会被去重', async () => {
+  it('同 kind 重复 push 始终合并为一条告警', async () => {
     const { pushThreadAlert, getThreadAlerts } = useThreadAlerts()
     const threadId = 'thread-dedupe'
     const id1 = pushThreadAlert(threadId, quotaCategory)
+    getThreadAlerts(threadId)[0].createdAt -= 6000
     await sleep(50)
     const id2 = pushThreadAlert(threadId, quotaCategory)
     assert.equal(id1, id2)
@@ -127,12 +128,13 @@ describe('useThreadAlerts', () => {
     assert.equal(list[0].body.retry, undefined)
   })
 
-  it('5s 内同 kind 重复 push 时，最新 retry 覆盖旧 retry', async () => {
+  it('同 kind 重复 push 时，最新 retry 覆盖旧 retry', async () => {
     const { pushThreadAlert, getThreadAlerts } = useThreadAlerts()
     const threadId = 'thread-retry-dedupe'
     const retry1 = { text: 'first', imageContent: null, attachments: [], requestId: 'r-1' }
     const retry2 = { text: 'second', imageContent: null, attachments: [], requestId: 'r-2' }
     pushThreadAlert(threadId, quotaCategory, { retry: retry1 })
+    getThreadAlerts(threadId)[0].createdAt -= 6000
     await sleep(20)
     pushThreadAlert(threadId, quotaCategory, { retry: retry2 })
     const list = getThreadAlerts(threadId)
@@ -151,5 +153,22 @@ describe('useThreadAlerts', () => {
     assert.ok(id)
     const list = getThreadAlerts('thread-retry-3')
     assert.equal(list[0].body.retry.text, 'retry-text')
+  })
+
+  it('写入浏览器会话存储，供刷新后恢复', () => {
+    const originalStorage = globalThis.sessionStorage
+    const values = new Map()
+    globalThis.sessionStorage = {
+      getItem: (key) => values.get(key) || null,
+      setItem: (key, value) => values.set(key, value)
+    }
+
+    const { pushThreadAlert } = useThreadAlerts()
+    pushThreadAlert('thread-storage', quotaCategory)
+    const stored = JSON.parse(values.get('yuxi.thread-alerts'))
+    assert.equal(stored['thread-storage'][0].kind, 'quota_exceeded')
+
+    if (originalStorage === undefined) delete globalThis.sessionStorage
+    else globalThis.sessionStorage = originalStorage
   })
 })
