@@ -7,7 +7,41 @@ description: "深度研究编排方法论：澄清范围、拆解规划、并行
 
 当任务目标是产出**多来源、可追溯、经过核验**的深度研究结论（科研综述、行业/竞品调研、技术选型、专题分析等）时，使用此技能组织整个研究过程。本技能的核心是**编排**：你负责整体把控与子智能体调度，把繁重的检索与核验工作派发出去，自己专注规划与综合。
 
-## 可用子智能体
+## 可用工具与子智能体
+
+### 网页搜索工具
+
+通过 `tavily_search` 工具执行单次网页搜索（slot 名固定为 `tavily_search`，实际 backend 链由环境变量决定）。
+
+**后端链**（`YUXI_SEARCH_BACKEND`，逗号分隔，按顺序 fallback）：
+
+| 值 | 行为 |
+| --- | --- |
+| `duckduckgo` | 仅 DuckDuckGo（`ddgs` 库，零成本、零 API key） |
+| `tavily` | 仅 Tavily（需 `TAVILY_API_KEYS` 或 `TAVILY_API_KEY`） |
+| `duckduckgo,tavily` | 先 DuckDuckGo，失败时 fallback 到 Tavily |
+| `tavily,duckduckgo` | 先 Tavily，失败时 fallback 到 DuckDuckGo（生产推荐，Tavily 数据质量优先） |
+| `auto`（默认） | 有 Tavily key 走 `tavily,duckduckgo`，否则仅 `duckduckgo` |
+
+**多 Tavily key 轮询**（`TAVILY_API_KEYS=key1,key2,key3`）：
+
+- 多个 key 按 round-robin 顺序使用，平摊每 key 的额度/限速。
+- 失败的 key（HTTP 401/403/429）自动熔断 `YUXI_SEARCH_KEY_COOLDOWN` 秒（默认 60），冷却期内跳过，冷却后自动恢复。
+- backend 级别失败（5xx/timeout/connection error）不熔断 key，整个 Tavily 跳过，fallback 到链上后一个 backend。
+- 兼容旧的 `TAVILY_API_KEY=key1`（单 key 模式）。
+
+**返回结构**（统一 JSON）：
+
+```json
+{
+  "query": "...",
+  "results": [{"title": "...", "url": "...", "snippet": "..."}]
+}
+```
+
+所有 backend 都失败时返回 `results=[]` 加 `error` 字段，不抛异常（让 Agent 看到结果而不是直接崩溃）。子智能体只需按工具签名调用，不需要关心后端实现。
+
+### 可用子智能体
 
 通过 `task` 工具调度（可并行多开，互不依赖的子任务同时派发）：
 
