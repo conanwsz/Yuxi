@@ -72,8 +72,7 @@ const agentStats = computed(() => ({
 }))
 const canManageAgent = (agent) => !!agent?.can_manage
 const canUseAgent = (agent) => !!agent?.can_access
-const canEditAgent = (agent) =>
-  userStore.hasPermission('agents.update') && canManageAgent(agent)
+const canEditAgent = (agent) => userStore.hasPermission('agents.update') && canManageAgent(agent)
 const canDeleteAgent = (agent) =>
   userStore.hasPermission('agents.delete') && !!agent?.can_delete && !isBuiltinAgent(agent)
 const getAgentDefaultIconSrc = (agent) => (agent.id ? generatePixelAvatar(agent.id) : '')

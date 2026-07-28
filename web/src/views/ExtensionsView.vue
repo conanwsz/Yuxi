@@ -11,7 +11,10 @@
     />
 
     <div v-if="!isDetailPage" class="extensions-content">
-      <div v-if="userStore.hasPermission('knowledge.read') && activeTab === 'knowledge'" class="tab-panel">
+      <div
+        v-if="userStore.hasPermission('knowledge.read') && activeTab === 'knowledge'"
+        class="tab-panel"
+      >
         <DataBaseView ref="knowledgeRef" embedded />
       </div>
       <div v-if="userStore.hasPermission('tools.read') && activeTab === 'tools'" class="tab-panel">

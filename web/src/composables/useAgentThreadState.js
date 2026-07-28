@@ -105,7 +105,9 @@ export function useAgentThreadState({
     )
     const remaining = threadState.failedHumanMessages.filter(
       (failedMessage) =>
-        !completedMessages.some((serverMessage) => isCompletedReplacement(failedMessage, serverMessage))
+        !completedMessages.some((serverMessage) =>
+          isCompletedReplacement(failedMessage, serverMessage)
+        )
     )
     if (remaining.length === threadState.failedHumanMessages.length) return
 

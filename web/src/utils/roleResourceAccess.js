@@ -18,8 +18,13 @@ const EMPTY_DEFAULTS = Object.freeze({
   rerank: null
 })
 
-const uniqueStrings = (values) =>
-  [...new Set((Array.isArray(values) ? values : []).filter((value) => typeof value === 'string' && value.trim()))]
+const uniqueStrings = (values) => [
+  ...new Set(
+    (Array.isArray(values) ? values : []).filter(
+      (value) => typeof value === 'string' && value.trim()
+    )
+  )
+]
 
 const normalizeMode = (value, fallback = 'none') =>
   ['all', 'selected', 'none'].includes(value) ? value : fallback
@@ -52,7 +57,9 @@ export function normalizeResourceAccess(resourceAccess, fallback = createAllReso
     models: {
       mode: normalizeMode(resourceAccess?.models?.mode, normalizedFallback.models.mode),
       allowed: uniqueStrings(resourceAccess?.models?.allowed || normalizedFallback.models.allowed),
-      defaults: normalizeDefaults(resourceAccess?.models?.defaults || normalizedFallback.models.defaults)
+      defaults: normalizeDefaults(
+        resourceAccess?.models?.defaults || normalizedFallback.models.defaults
+      )
     },
     tools: {
       mode: normalizeMode(resourceAccess?.tools?.mode, normalizedFallback.tools.mode),
@@ -60,12 +67,15 @@ export function normalizeResourceAccess(resourceAccess, fallback = createAllReso
     },
     mcp_servers: {
       mode: normalizeMode(resourceAccess?.mcp_servers?.mode, normalizedFallback.mcp_servers.mode),
-      allowed: uniqueStrings(resourceAccess?.mcp_servers?.allowed || normalizedFallback.mcp_servers.allowed)
+      allowed: uniqueStrings(
+        resourceAccess?.mcp_servers?.allowed || normalizedFallback.mcp_servers.allowed
+      )
     }
   }
 }
 
-const firstDefined = (...values) => values.find((value) => value !== undefined && value !== null && value !== '')
+const firstDefined = (...values) =>
+  values.find((value) => value !== undefined && value !== null && value !== '')
 
 const getNestedArray = (source, keys) => {
   for (const key of keys) {
@@ -93,8 +103,12 @@ const normalizeCatalogEntry = (item, fallbackLabel) => {
   const key = getItemKey(item)
   return {
     key,
-    name: String(firstDefined(item?.name, item?.display_name, item?.title, key, fallbackLabel) || ''),
-    description: String(firstDefined(item?.description, item?.summary, item?.provider_name, '') || ''),
+    name: String(
+      firstDefined(item?.name, item?.display_name, item?.title, key, fallbackLabel) || ''
+    ),
+    description: String(
+      firstDefined(item?.description, item?.summary, item?.provider_name, '') || ''
+    ),
     enabled: firstDefined(item?.enabled, item?.is_enabled, item?.active, true) !== false
   }
 }
@@ -110,14 +124,20 @@ const normalizeModelEntry = (item) => {
     ) || ''
   ).trim()
   const [providerFromSpec = '', modelFromSpec = ''] = spec.split(':')
-  const providerId = String(firstDefined(item?.provider_id, item?.providerId, providerFromSpec) || '').trim()
-  const modelId = String(firstDefined(item?.model_id, item?.modelId, modelFromSpec, spec) || '').trim()
+  const providerId = String(
+    firstDefined(item?.provider_id, item?.providerId, providerFromSpec) || ''
+  ).trim()
+  const modelId = String(
+    firstDefined(item?.model_id, item?.modelId, modelFromSpec, spec) || ''
+  ).trim()
   const type = String(firstDefined(item?.model_type, item?.type, 'chat') || 'chat').trim()
   return {
     key: spec,
     spec,
     provider_id: providerId,
-    provider_name: String(firstDefined(item?.provider_name, item?.providerName, providerId) || providerId),
+    provider_name: String(
+      firstDefined(item?.provider_name, item?.providerName, providerId) || providerId
+    ),
     model_id: modelId,
     name: String(firstDefined(item?.display_name, item?.name, modelId, spec) || spec),
     description: String(firstDefined(item?.description, item?.summary, '') || ''),

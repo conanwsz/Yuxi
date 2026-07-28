@@ -39,8 +39,14 @@ const infoStore = useInfoStore()
 const taskerStore = useTaskerStore()
 const userStore = useUserStore()
 const { activeCount: activeCountRef, isDrawerOpen } = storeToRefs(taskerStore)
-const { threads, currentThreadId, hasMoreThreads, isLoadingMoreThreads, streamingThreadIds, unreadThreadIds } =
-  storeToRefs(chatThreadsStore)
+const {
+  threads,
+  currentThreadId,
+  hasMoreThreads,
+  isLoadingMoreThreads,
+  streamingThreadIds,
+  unreadThreadIds
+} = storeToRefs(chatThreadsStore)
 
 // Add state for debug modal
 const showDebugModal = ref(false)

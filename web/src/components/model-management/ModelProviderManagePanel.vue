@@ -754,7 +754,11 @@ defineExpose({
               >（已启用 {{ provider.enabled_models.length }} 个）</span
             >
           </button>
-          <span v-if="userStore.hasPermission('models.manage')" class="provider-enable-switch" @click.stop>
+          <span
+            v-if="userStore.hasPermission('models.manage')"
+            class="provider-enable-switch"
+            @click.stop
+          >
             <a-switch
               size="small"
               :checked="provider.is_enabled"

@@ -695,12 +695,12 @@ const {
   stopThreadStream,
   persistFailedHumanMessages
 } = useAgentThreadState({
-    chatState,
-    getCurrentThreadId: () => chatState.currentThreadId,
-    onStopThread: (threadId) => streamSmoother.flushThread(threadId),
-    onBeforeResetThread: (threadId) => streamSmoother.resetThread(threadId),
-    onBeforeCleanupThread: (threadId) => streamSmoother.resetThread(threadId)
-  })
+  chatState,
+  getCurrentThreadId: () => chatState.currentThreadId,
+  onStopThread: (threadId) => streamSmoother.flushThread(threadId),
+  onBeforeResetThread: (threadId) => streamSmoother.resetThread(threadId),
+  onBeforeCleanupThread: (threadId) => streamSmoother.resetThread(threadId)
+})
 
 // 会话级内联告警（仅前端内存，不入 LLM 上下文）
 const { clearThreadAlerts, dismissThreadAlert, getThreadAlerts, pushAlertFromError } =

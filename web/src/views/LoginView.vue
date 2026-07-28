@@ -203,7 +203,6 @@
         </div>
       </div>
     </main>
-
   </div>
 </template>
 
@@ -612,7 +611,6 @@ onUnmounted(() => {
     color: var(--gray-700);
     font-weight: 600;
   }
-
 }
 
 .brand-logo {

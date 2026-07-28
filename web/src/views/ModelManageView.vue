@@ -83,10 +83,16 @@ watch(activeTab, (tab) => {
     </PageHeader>
 
     <div class="model-manage-content">
-      <div v-if="userStore.hasPermission('agents.read') && activeTab === 'agents'" class="tab-panel">
+      <div
+        v-if="userStore.hasPermission('agents.read') && activeTab === 'agents'"
+        class="tab-panel"
+      >
         <AgentManagePanel ref="agentPanelRef" />
       </div>
-      <div v-if="userStore.hasPermission('models.read') && activeTab === 'providers'" class="tab-panel">
+      <div
+        v-if="userStore.hasPermission('models.read') && activeTab === 'providers'"
+        class="tab-panel"
+      >
         <ModelProviderManagePanel ref="providerPanelRef" />
       </div>
     </div>

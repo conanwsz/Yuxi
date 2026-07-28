@@ -138,9 +138,7 @@ const modelSearchKeyword = ref('')
 let fetchV2ModelsPromise = null
 
 const reconcileModelSelection = (spec) => {
-  const models = Object.values(v2Models.value).flatMap(
-    (providerData) => providerData.models || []
-  )
+  const models = Object.values(v2Models.value).flatMap((providerData) => providerData.models || [])
   if (!spec || !models.length || models.some((model) => model.spec === spec)) return
 
   const fallbackModel = models.find((model) => model.is_default) || models[0]

@@ -10,8 +10,18 @@
 const WEEK_LABELS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
 
 const MONTH_LABELS = [
-  '1月', '2月', '3月', '4月', '5月', '6月',
-  '7月', '8月', '9月', '10月', '11月', '12月'
+  '1月',
+  '2月',
+  '3月',
+  '4月',
+  '5月',
+  '6月',
+  '7月',
+  '8月',
+  '9月',
+  '10月',
+  '11月',
+  '12月'
 ]
 
 /**
@@ -38,7 +48,16 @@ export function parseCron(cron) {
 export function humanizeCron(cron) {
   const parsed = parseCron(cron)
   if (!parsed) {
-    return { type: 'custom', value: 0, minute: 0, hour: 0, dayOfWeek: 1, dayOfMonth: 1, label: cron || '', raw: cron }
+    return {
+      type: 'custom',
+      value: 0,
+      minute: 0,
+      hour: 0,
+      dayOfWeek: 1,
+      dayOfMonth: 1,
+      label: cron || '',
+      raw: cron
+    }
   }
   const { minute, hour, dom, month, dow } = parsed
 
@@ -75,8 +94,13 @@ export function humanizeCron(cron) {
 
   // 每天 HH:MM: minute/hour 是具体值，dom/month/dow 都是 *
   if (
-    minute !== '*' && hour !== '*' && dom === '*' && month === '*' && dow === '*' &&
-    /^\d+$/.test(minute) && /^\d+$/.test(hour)
+    minute !== '*' &&
+    hour !== '*' &&
+    dom === '*' &&
+    month === '*' &&
+    dow === '*' &&
+    /^\d+$/.test(minute) &&
+    /^\d+$/.test(hour)
   ) {
     const h = parseInt(hour, 10)
     const m = parseInt(minute, 10)
@@ -94,8 +118,13 @@ export function humanizeCron(cron) {
 
   // 每周 (周 D) HH:MM: minute/hour 具体，dom/month = *，dow 是数字
   if (
-    minute !== '*' && hour !== '*' && dom === '*' && month === '*' &&
-    /^\d+$/.test(minute) && /^\d+$/.test(hour) && /^\d+$/.test(dow)
+    minute !== '*' &&
+    hour !== '*' &&
+    dom === '*' &&
+    month === '*' &&
+    /^\d+$/.test(minute) &&
+    /^\d+$/.test(hour) &&
+    /^\d+$/.test(dow)
   ) {
     const h = parseInt(hour, 10)
     const m = parseInt(minute, 10)
@@ -114,8 +143,13 @@ export function humanizeCron(cron) {
 
   // 每月 D 日 HH:MM: minute/hour/dom 具体，month/dow = *
   if (
-    minute !== '*' && hour !== '*' && /^\d+$/.test(dom) && month === '*' && dow === '*' &&
-    /^\d+$/.test(minute) && /^\d+$/.test(hour)
+    minute !== '*' &&
+    hour !== '*' &&
+    /^\d+$/.test(dom) &&
+    month === '*' &&
+    dow === '*' &&
+    /^\d+$/.test(minute) &&
+    /^\d+$/.test(hour)
   ) {
     const h = parseInt(hour, 10)
     const m = parseInt(minute, 10)

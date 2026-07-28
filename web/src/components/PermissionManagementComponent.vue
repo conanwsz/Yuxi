@@ -37,7 +37,12 @@
               >
                 删除角色
               </a-button>
-              <a-button type="primary" :disabled="!selectedRole.editable" :loading="saving" @click="saveRole">
+              <a-button
+                type="primary"
+                :disabled="!selectedRole.editable"
+                :loading="saving"
+                @click="saveRole"
+              >
                 保存权限
               </a-button>
             </div>
@@ -53,7 +58,11 @@
           <div class="role-fields">
             <a-form layout="vertical">
               <a-form-item label="角色名称">
-                <a-input v-model:value="draftName" :disabled="selectedRole.is_system" maxlength="100" />
+                <a-input
+                  v-model:value="draftName"
+                  :disabled="selectedRole.is_system"
+                  maxlength="100"
+                />
               </a-form-item>
               <a-form-item label="描述">
                 <a-textarea v-model:value="draftDescription" maxlength="255" />
@@ -126,14 +135,21 @@
 
               <template v-if="group.key === 'models'">
                 <div v-if="filteredModelSections.length" class="model-sections">
-                  <section v-for="section in filteredModelSections" :key="section.type" class="model-section">
+                  <section
+                    v-for="section in filteredModelSections"
+                    :key="section.type"
+                    class="model-section"
+                  >
                     <div class="model-section-header">
                       <div>
                         <div class="model-section-title">{{ section.label }}</div>
                         <div class="model-section-meta">{{ section.items.length }} 个模型</div>
                       </div>
                       <a-select
-                        v-if="draftResourceAccess.models.mode === 'selected' && section.defaultOptions.length"
+                        v-if="
+                          draftResourceAccess.models.mode === 'selected' &&
+                          section.defaultOptions.length
+                        "
                         :value="draftResourceAccess.models.defaults[section.type]"
                         class="default-model-select"
                         :options="section.defaultOptions"
@@ -160,22 +176,29 @@
                             <a-checkbox
                               :checked="isResourceChecked('models', item.spec)"
                               :disabled="
-                                !selectedRole.editable || draftResourceAccess.models.mode !== 'selected'
+                                !selectedRole.editable ||
+                                draftResourceAccess.models.mode !== 'selected'
                               "
-                              @change="toggleResourceItem('models', item.spec, $event.target.checked)"
+                              @change="
+                                toggleResourceItem('models', item.spec, $event.target.checked)
+                              "
                             />
                             <div class="entry-main">
                               <div class="entry-title-row">
                                 <span class="entry-title">{{ item.name }}</span>
                                 <span v-if="!item.enabled" class="entry-tag warning">未启用</span>
                                 <span
-                                  v-if="draftResourceAccess.models.defaults[section.type] === item.spec"
+                                  v-if="
+                                    draftResourceAccess.models.defaults[section.type] === item.spec
+                                  "
                                   class="entry-tag success"
                                 >
                                   默认
                                 </span>
                               </div>
-                              <div class="entry-description">{{ item.description || item.spec }}</div>
+                              <div class="entry-description">
+                                {{ item.description || item.spec }}
+                              </div>
                             </div>
                             <span class="entry-key">{{ item.spec }}</span>
                           </label>
@@ -197,7 +220,9 @@
                   >
                     <a-checkbox
                       :checked="isResourceChecked(group.key, item.key)"
-                      :disabled="!selectedRole.editable || draftResourceAccess[group.key].mode !== 'selected'"
+                      :disabled="
+                        !selectedRole.editable || draftResourceAccess[group.key].mode !== 'selected'
+                      "
                       @change="toggleResourceItem(group.key, item.key, $event.target.checked)"
                     />
                     <div class="entry-main">
@@ -219,7 +244,9 @@
                   <a-tag
                     v-for="entry in offlineEntries(group.key)"
                     :key="entry.key"
-                    :closable="selectedRole.editable && draftResourceAccess[group.key].mode === 'selected'"
+                    :closable="
+                      selectedRole.editable && draftResourceAccess[group.key].mode === 'selected'
+                    "
                     color="orange"
                     @close.prevent="removeOfflineEntry(group.key, entry.key)"
                   >
@@ -234,7 +261,12 @@
       </div>
     </a-spin>
 
-    <a-modal v-model:open="createVisible" title="新建角色" :confirm-loading="saving" @ok="createRole">
+    <a-modal
+      v-model:open="createVisible"
+      title="新建角色"
+      :confirm-loading="saving"
+      @ok="createRole"
+    >
       <a-form layout="vertical">
         <a-form-item label="角色名称" required>
           <a-input v-model:value="createForm.name" maxlength="100" />
@@ -292,7 +324,10 @@ const createForm = reactive({ key: '', name: '', description: '' })
 const resourceSearch = reactive({ models: '', tools: '', mcp_servers: '' })
 
 const visibleRoles = computed(() => roles.value.filter((role) => role.key !== 'superadmin'))
-const resourceGroups = Object.entries(RESOURCE_GROUP_CONFIG).map(([key, config]) => ({ key, ...config }))
+const resourceGroups = Object.entries(RESOURCE_GROUP_CONFIG).map(([key, config]) => ({
+  key,
+  ...config
+}))
 const resourceModeOptions = RESOURCE_MODE_OPTIONS
 
 const filteredCatalogEntries = (groupKey) => {
@@ -300,7 +335,11 @@ const filteredCatalogEntries = (groupKey) => {
   const entries = resourceCatalog.value[groupKey] || []
   if (!keyword) return entries
   return entries.filter((item) =>
-    [item.name, item.key, item.description].some((field) => String(field || '').toLowerCase().includes(keyword))
+    [item.name, item.key, item.description].some((field) =>
+      String(field || '')
+        .toLowerCase()
+        .includes(keyword)
+    )
   )
 }
 
@@ -312,7 +351,9 @@ const filteredModelSections = computed(() => {
       .filter((item) => {
         if (!keyword) return true
         return [item.name, item.spec, item.provider_name, item.description].some((field) =>
-          String(field || '').toLowerCase().includes(keyword)
+          String(field || '')
+            .toLowerCase()
+            .includes(keyword)
         )
       })
       .sort((a, b) => {
@@ -447,11 +488,11 @@ const updateModelDefault = (type, value) => {
 const offlineEntries = (groupKey) => {
   const group = draftResourceAccess.value[groupKey]
   if (!group || group.mode !== 'selected') return []
-  const currentKeys = new Set((resourceCatalog.value[groupKey] || []).map((item) => item.key || item.spec))
+  const currentKeys = new Set(
+    (resourceCatalog.value[groupKey] || []).map((item) => item.key || item.spec)
+  )
   if (groupKey === 'models') {
-    return group.allowed
-      .filter((key) => !currentKeys.has(key))
-      .map((key) => ({ key, label: key }))
+    return group.allowed.filter((key) => !currentKeys.has(key)).map((key) => ({ key, label: key }))
   }
   return group.allowed.filter((key) => !currentKeys.has(key)).map((key) => ({ key, label: key }))
 }
@@ -467,7 +508,9 @@ const getResourceSummary = (groupKey) => {
   if (group.mode === 'none') return '无权限'
   const offlineCount = offlineEntries(groupKey).length
   const allowedCount = group.allowed.length
-  return offlineCount ? `已授权 ${allowedCount} 项（含 ${offlineCount} 项下线）` : `已授权 ${allowedCount} 项`
+  return offlineCount
+    ? `已授权 ${allowedCount} 项（含 ${offlineCount} 项下线）`
+    : `已授权 ${allowedCount} 项`
 }
 
 const buildResourceAccessPayload = () => {
@@ -475,7 +518,8 @@ const buildResourceAccessPayload = () => {
   const modelAllowed = new Set(access.models.allowed)
   for (const type of MODEL_TYPES) {
     if (access.models.mode !== 'selected') {
-      access.models.defaults[type] = access.models.mode === 'all' ? access.models.defaults[type] : null
+      access.models.defaults[type] =
+        access.models.mode === 'all' ? access.models.defaults[type] : null
       continue
     }
     if (!modelAllowed.has(access.models.defaults[type])) {
@@ -490,7 +534,10 @@ const buildResourceAccessPayload = () => {
 
 const validateDraft = () => {
   if (!selectedRole.value?.is_system && !draftName.value.trim()) return '角色名称不能为空'
-  if (draftResourceAccess.value.models.mode === 'selected' && missingModelDefaultTypes.value.length) {
+  if (
+    draftResourceAccess.value.models.mode === 'selected' &&
+    missingModelDefaultTypes.value.length
+  ) {
     return `请为以下模型类型选择默认模型：${missingModelDefaultLabels.value}`
   }
   return null

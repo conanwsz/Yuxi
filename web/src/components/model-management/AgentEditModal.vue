@@ -81,7 +81,8 @@ const getDefaultBackendId = () => DEFAULT_AGENT_BACKEND_ID
 const isSubAgentBackend = (backendId) => backendId === SUB_AGENT_BACKEND_ID
 
 const getInitialShareConfig = () => ({
-  access_level: userStore.hasPermission('agents.share') && userStore.userRole !== 'user' ? 'global' : 'user',
+  access_level:
+    userStore.hasPermission('agents.share') && userStore.userRole !== 'user' ? 'global' : 'user',
   department_ids: [],
   user_uids: userStore.uid ? [userStore.uid] : []
 })
@@ -101,8 +102,7 @@ const normalizeShareConfigForPayload = (sourceConfig, builtin = false) => {
     department_ids: accessLevel === 'department' ? config.department_ids || [] : [],
     excluded_department_ids:
       accessLevel === 'department' ? config.excluded_department_ids || [] : [],
-    user_uids:
-      accessLevel === 'department' || accessLevel === 'user' ? config.user_uids || [] : []
+    user_uids: accessLevel === 'department' || accessLevel === 'user' ? config.user_uids || [] : []
   }
 }
 

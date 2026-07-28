@@ -31,7 +31,8 @@
 
     <!-- 描述 -->
     <p class="schedule-description">
-      配置定时触发规则，到点自动创建 AgentRun 投到 ARQ 队列执行。频率以服务器时间（Asia/Shanghai）为准。
+      配置定时触发规则，到点自动创建 AgentRun 投到 ARQ
+      队列执行。频率以服务器时间（Asia/Shanghai）为准。
     </p>
 
     <!-- 主表格 -->
@@ -54,7 +55,9 @@
           </div>
         </template>
         <template v-else-if="column.key === 'cron'">
-          <a-tag color="blue" class="cell-cron">{{ record.cron_label || record.cron_expression }}</a-tag>
+          <a-tag color="blue" class="cell-cron">{{
+            record.cron_label || record.cron_expression
+          }}</a-tag>
         </template>
         <template v-else-if="column.key === 'enabled'">
           <a-switch
@@ -277,14 +280,11 @@
       :footer="null"
       :width="640"
     >
-      <a-descriptions
-        v-if="detailModal.schedule"
-        :column="1"
-        bordered
-        size="small"
-      >
+      <a-descriptions v-if="detailModal.schedule" :column="1" bordered size="small">
         <a-descriptions-item label="名称">{{ detailModal.schedule.name }}</a-descriptions-item>
-        <a-descriptions-item label="描述">{{ detailModal.schedule.description || '—' }}</a-descriptions-item>
+        <a-descriptions-item label="描述">{{
+          detailModal.schedule.description || '—'
+        }}</a-descriptions-item>
         <a-descriptions-item label="智能体">
           <div class="cell-agent">
             <span class="cell-agent-name">{{ detailModal.schedule.agent_name }}</span>
@@ -294,19 +294,25 @@
           <pre class="cell-pre">{{ detailModal.schedule.query }}</pre>
         </a-descriptions-item>
         <a-descriptions-item label="触发规则">
-          <a-tag color="blue">{{ detailModal.schedule.cron_label || detailModal.schedule.cron_expression }}</a-tag>
+          <a-tag color="blue">{{
+            detailModal.schedule.cron_label || detailModal.schedule.cron_expression
+          }}</a-tag>
         </a-descriptions-item>
         <a-descriptions-item label="下次触发">
           <span v-if="detailModal.schedule.next_fire_at">
             {{ formatDateTime(detailModal.schedule.next_fire_at) }}
-            <span class="cell-time-rel">({{ formatRelative(detailModal.schedule.next_fire_at) }})</span>
+            <span class="cell-time-rel"
+              >({{ formatRelative(detailModal.schedule.next_fire_at) }})</span
+            >
           </span>
           <span v-else>—</span>
         </a-descriptions-item>
         <a-descriptions-item label="最近触发">
           <span v-if="detailModal.schedule.last_fired_at">
             {{ formatDateTime(detailModal.schedule.last_fired_at) }}
-            <span class="cell-time-rel">({{ formatRelative(detailModal.schedule.last_fired_at) }})</span>
+            <span class="cell-time-rel"
+              >({{ formatRelative(detailModal.schedule.last_fired_at) }})</span
+            >
           </span>
           <span v-else>—</span>
         </a-descriptions-item>
@@ -330,21 +336,21 @@
       <div v-if="executionsDrawer.loading" class="executions-loading">
         <a-spin />
       </div>
-      <a-empty
-        v-else-if="!executionsDrawer.items.length"
-        description="暂无执行记录"
-      />
+      <a-empty v-else-if="!executionsDrawer.items.length" description="暂无执行记录" />
       <a-list v-else :data-source="executionsDrawer.items" item-layout="vertical">
         <template #renderItem="{ item }">
           <a-list-item :key="item.id">
             <a-list-item-meta>
               <template #title>
                 <a-tag :color="statusColor(item.status)">{{ item.status }}</a-tag>
-                <span class="exec-time">{{ formatDateTime(item.fired_at || item.scheduled_at) }}</span>
+                <span class="exec-time">{{
+                  formatDateTime(item.fired_at || item.scheduled_at)
+                }}</span>
               </template>
               <template #description>
                 <div v-if="item.started_at || item.completed_at" class="exec-detail">
-                  开始 {{ formatDateTime(item.started_at) }} · 完成 {{ formatDateTime(item.completed_at) }}
+                  开始 {{ formatDateTime(item.started_at) }} · 完成
+                  {{ formatDateTime(item.completed_at) }}
                 </div>
                 <div v-if="item.result_summary" class="exec-summary">{{ item.result_summary }}</div>
                 <div v-if="item.error" class="exec-error">错误：{{ item.error }}</div>
@@ -481,13 +487,20 @@ const filteredSchedules = computed(() => {
 
 function statusColor(status) {
   switch (status) {
-    case 'success': return 'green'
-    case 'failed': return 'red'
-    case 'cancelled': return 'orange'
-    case 'running': return 'blue'
-    case 'pending': return 'default'
-    case 'skipped': return 'default'
-    default: return 'default'
+    case 'success':
+      return 'green'
+    case 'failed':
+      return 'red'
+    case 'cancelled':
+      return 'orange'
+    case 'running':
+      return 'blue'
+    case 'pending':
+      return 'default'
+    case 'skipped':
+      return 'default'
+    default:
+      return 'default'
   }
 }
 
@@ -788,12 +801,24 @@ onUnmounted(() => {
   flex-wrap: wrap;
 }
 
-.frequency-type { width: 130px; }
-.frequency-value { width: 100px; }
-.frequency-time { width: 100px; }
-.frequency-week { width: 110px; }
-.frequency-dom { width: 110px; }
-.frequency-minute { width: 100px; }
+.frequency-type {
+  width: 130px;
+}
+.frequency-value {
+  width: 100px;
+}
+.frequency-time {
+  width: 100px;
+}
+.frequency-week {
+  width: 110px;
+}
+.frequency-dom {
+  width: 110px;
+}
+.frequency-minute {
+  width: 100px;
+}
 
 .form-unit {
   color: var(--gray-7, #5b6168);

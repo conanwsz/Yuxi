@@ -354,9 +354,9 @@ const normalizeActiveConfig = () => {
     config.org_scope_version = 2
     config.department_ids = normalizeDepartmentIds(config.department_ids)
     const allowedExclusions = new Set(exclusionOptions.value.map((item) => item.value))
-    config.excluded_department_ids = normalizeDepartmentIds(
-      config.excluded_department_ids
-    ).filter((id) => allowedExclusions.has(id))
+    config.excluded_department_ids = normalizeDepartmentIds(config.excluded_department_ids).filter(
+      (id) => allowedExclusions.has(id)
+    )
     config.user_uids = normalizeUserUids(config.user_uids)
     ensureCurrentDepartment()
     return
@@ -379,9 +379,7 @@ const initConfig = () => {
     ? requestedAccessLevel
     : normalizedAllowedAccessLevels.value[0]
   config.department_ids = normalizeDepartmentIds(props.modelValue?.department_ids)
-  config.excluded_department_ids = normalizeDepartmentIds(
-    props.modelValue?.excluded_department_ids
-  )
+  config.excluded_department_ids = normalizeDepartmentIds(props.modelValue?.excluded_department_ids)
   config.user_uids = normalizeUserUids(props.modelValue?.user_uids)
   normalizeActiveConfig()
   nextTick(() => {
