@@ -5,8 +5,8 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import (
-    BigInteger,
     JSON,
+    BigInteger,
     Boolean,
     CheckConstraint,
     Column,
@@ -39,6 +39,7 @@ def _format_naive_utc(value: datetime | None) -> str | None:
     if value.tzinfo is not None:
         value = value.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
     return value.isoformat() + "Z"
+
 
 MAX_LOGIN_FAILED_ATTEMPTS = 5
 LOGIN_LOCK_DURATION_SECONDS = 300

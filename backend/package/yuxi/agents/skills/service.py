@@ -20,11 +20,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from yuxi import config as sys_config
 from yuxi.agents.mcp.service import get_enabled_mcp_server_slugs
 from yuxi.agents.skills.repository import SkillRepository
-from yuxi.storage.postgres.models_business import Department, DepartmentClosure, Skill, User
-from yuxi.utils.logging_config import logger
-from yuxi.utils.share_config import SHARE_ACCESS_LEVELS, normalize_share_config
-from yuxi.services.permission_service import has_permission
 from yuxi.services.organization_scope_service import share_config_allows_user
+from yuxi.services.permission_service import has_permission
 from yuxi.services.resource_access_runtime_service import (
     assert_mcp_slugs_allowed,
     assert_tool_slugs_allowed,
@@ -33,6 +30,9 @@ from yuxi.services.resource_access_runtime_service import (
     hydrate_user_resource_access,
     resolve_allowed_mcp_slugs,
 )
+from yuxi.storage.postgres.models_business import Department, DepartmentClosure, Skill, User
+from yuxi.utils.logging_config import logger
+from yuxi.utils.share_config import SHARE_ACCESS_LEVELS, normalize_share_config
 
 SKILL_SLUG_PATTERN = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 SKILL_NAME_PATTERN = SKILL_SLUG_PATTERN

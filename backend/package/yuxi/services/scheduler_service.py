@@ -17,10 +17,8 @@ import zoneinfo
 from datetime import datetime, timedelta
 from typing import Any
 
-from croniter import croniter
+from croniter import CroniterBadCronError, croniter
 from fastapi import HTTPException
-from croniter import CroniterBadCronError
-
 from yuxi.repositories.schedule_repository import (
     ScheduleExecutionRepository,
     ScheduleRepository,
@@ -43,7 +41,6 @@ from yuxi.storage.postgres.models_business import (
 )
 from yuxi.utils.datetime_utils import utc_now_naive
 from yuxi.utils.logging_config import logger
-
 
 # ---- 常量 ---------------------------------------------------------------
 TICK_INTERVAL_SECONDS = 10.0
