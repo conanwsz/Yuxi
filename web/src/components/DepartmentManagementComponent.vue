@@ -1,10 +1,7 @@
 <template>
   <div class="department-management">
     <div class="header-section">
-      <div>
-        <div class="section-title">部门管理</div>
-        <p class="section-description">按主体和上下级维护组织架构；管理范围自动覆盖所选部门的整棵子树。</p>
-      </div>
+      <div class="section-title">部门管理</div>
       <a-space>
         <a-button class="lucide-icon-btn" :loading="state.refreshing" @click="refresh">
           <template #icon><RefreshCw :size="16" :class="{ spin: state.refreshing }" /></template>
@@ -20,13 +17,6 @@
         </a-button>
       </a-space>
     </div>
-
-    <a-alert
-      class="scope-hint"
-      type="info"
-      show-icon
-      message="部门成员身份与管理权限相互独立；归属部门不会自动成为该部门管理员。"
-    />
 
     <a-spin :spinning="state.loading">
       <a-alert v-if="state.error" type="error" :message="state.error" show-icon />
@@ -64,12 +54,22 @@
           <template v-else-if="column.key === 'action'">
             <a-space size="small">
               <a-tooltip v-if="userStore.hasPermission('departments.create')" title="新建子部门">
-                <a-button type="text" size="small" class="lucide-icon-btn" @click="openCreate(record)">
+                <a-button
+                  type="text"
+                  size="small"
+                  class="lucide-icon-btn"
+                  @click="openCreate(record)"
+                >
                   <Plus :size="15" />
                 </a-button>
               </a-tooltip>
               <a-tooltip v-if="userStore.hasPermission('departments.update')" title="编辑部门">
-                <a-button type="text" size="small" class="lucide-icon-btn" @click="openEdit(record)">
+                <a-button
+                  type="text"
+                  size="small"
+                  class="lucide-icon-btn"
+                  @click="openEdit(record)"
+                >
                   <SquarePen :size="15" />
                 </a-button>
               </a-tooltip>
@@ -89,7 +89,9 @@
                 </a-button>
               </a-tooltip>
               <a-tooltip
-                v-else-if="record.status === 'inactive' && userStore.hasPermission('departments.update')"
+                v-else-if="
+                  record.status === 'inactive' && userStore.hasPermission('departments.update')
+                "
                 title="恢复部门"
               >
                 <a-button type="text" size="small" class="lucide-icon-btn" @click="restore(record)">
@@ -113,7 +115,11 @@
     >
       <a-form layout="vertical">
         <a-form-item label="部门名称" required>
-          <a-input v-model:value="state.form.name" :maxlength="50" placeholder="同一上级下名称不能重复" />
+          <a-input
+            v-model:value="state.form.name"
+            :maxlength="50"
+            placeholder="同一上级下名称不能重复"
+          />
         </a-form-item>
         <a-form-item label="上级部门">
           <a-select
@@ -132,7 +138,12 @@
           <a-input-number v-model:value="state.form.sortOrder" :min="0" style="width: 100%" />
         </a-form-item>
         <a-form-item label="描述">
-          <a-textarea v-model:value="state.form.description" :rows="3" :maxlength="255" show-count />
+          <a-textarea
+            v-model:value="state.form.description"
+            :rows="3"
+            :maxlength="255"
+            show-count
+          />
         </a-form-item>
       </a-form>
     </a-modal>
@@ -179,10 +190,11 @@ const state = reactive({
 
 const descendantIds = (record) => {
   const ids = new Set([record.id])
-  const visit = (nodes) => nodes.forEach((node) => {
-    if (ids.has(node.parent_id)) ids.add(node.id)
-    visit(node.children || [])
-  })
+  const visit = (nodes) =>
+    nodes.forEach((node) => {
+      if (ids.has(node.parent_id)) ids.add(node.id)
+      visit(node.children || [])
+    })
   visit(state.tree)
   return ids
 }
@@ -268,18 +280,20 @@ const submit = async () => {
   }
 }
 
-const confirmArchive = (record) => Modal.confirm({
-  title: `停用“${record.name}”`,
-  content: '停用前需要先迁移直属成员，并处理所有启用中的子部门。停用后该节点不再产生新的资源访问权限。',
-  okText: '停用',
-  okType: 'danger',
-  cancelText: '取消',
-  async onOk() {
-    await departmentApi.archiveDepartment(record.id)
-    message.success('部门已停用')
-    await load()
-  }
-})
+const confirmArchive = (record) =>
+  Modal.confirm({
+    title: `停用“${record.name}”`,
+    content:
+      '停用前需要先迁移直属成员，并处理所有启用中的子部门。停用后该节点不再产生新的资源访问权限。',
+    okText: '停用',
+    okType: 'danger',
+    cancelText: '取消',
+    async onOk() {
+      await departmentApi.archiveDepartment(record.id)
+      message.success('部门已停用')
+      await load()
+    }
+  })
 
 const restore = async (record) => {
   try {
@@ -311,19 +325,9 @@ onMounted(load)
     font-weight: 500;
   }
 
-  .section-description,
   .path-text,
   .help-text {
     color: var(--gray-600);
-  }
-
-  .section-description {
-    margin: 0;
-    font-size: 14px;
-  }
-
-  .scope-hint {
-    margin-bottom: 16px;
   }
 
   .department-table {
@@ -359,6 +363,8 @@ onMounted(load)
 }
 
 @keyframes spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 </style>

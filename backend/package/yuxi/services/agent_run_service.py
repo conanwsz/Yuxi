@@ -37,6 +37,13 @@ from yuxi.services.input_message_service import (
     AgentRunInputMessage,
     build_resume_input_message,
 )
+from yuxi.services.resource_access_runtime_service import (
+    assert_mcp_slugs_allowed,
+    assert_model_spec_allowed,
+    assert_tool_slugs_allowed,
+    hydrate_user_resource_access,
+    resolve_role_default_model_spec,
+)
 from yuxi.services.run_queue_service import (
     build_run_event_envelope,
     get_arq_pool,
@@ -45,13 +52,6 @@ from yuxi.services.run_queue_service import (
     list_run_stream_events,
     normalize_after_seq,
     publish_cancel_signal,
-)
-from yuxi.services.resource_access_runtime_service import (
-    assert_mcp_slugs_allowed,
-    assert_model_spec_allowed,
-    assert_tool_slugs_allowed,
-    hydrate_user_resource_access,
-    resolve_role_default_model_spec,
 )
 from yuxi.services.token_quota_service import (
     TokenQuotaExceededError,
@@ -108,10 +108,6 @@ async def validate_agent_context_resource_access(
         return
 
     await hydrate_user_resource_access(db, user)
-
-    model_spec = context.get("model")
-    if isinstance(model_spec, str) and model_spec.strip():
-        assert_model_spec_allowed(user, model_spec, model_type="chat")
 
     if isinstance(context.get("tools"), list):
         assert_tool_slugs_allowed(user, context.get("tools") or [])
@@ -478,8 +474,6 @@ async def create_agent_run_view(
             user=scope.current_user,
         )
 
-    await _assert_user_quota_for_run(db=db, user=scope.current_user)
-
     run_input_message = _prepare_run_input_message(
         run_type=run_type,
         input_message=input_message,
@@ -489,12 +483,60 @@ async def create_agent_run_view(
         meta=meta,
     )
 
+    try:
+        await _assert_user_quota_for_run(db=db, user=scope.current_user)
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_429_TOO_MANY_REQUESTS and run_type == "chat":
+            detail = exc.detail if isinstance(exc.detail, dict) else {}
+            failed_metadata = {
+                **run_input_message.extra_metadata,
+                "error_type": detail.get("code", "token_quota_exceeded"),
+                "error_message": detail.get("message", str(exc.detail)),
+                "quota": detail.get("quota"),
+                "used": detail.get("used"),
+                "remaining": detail.get("remaining"),
+                "reset_at": detail.get("reset_at"),
+            }
+            retry_failed_request_id = run_input_message.extra_metadata.get("retry_failed_request_id")
+            failed_message = None
+            if retry_failed_request_id:
+                result = await db.execute(
+                    select(Message).where(
+                        Message.conversation_id == scope.conversation.id,
+                        Message.request_id == retry_failed_request_id,
+                        Message.delivery_status == "failed",
+                    )
+                )
+                failed_message = result.scalar_one_or_none()
+            if failed_message:
+                failed_metadata["request_id"] = (
+                    failed_message.extra_metadata.get("request_id") or failed_message.request_id
+                )
+                failed_message.extra_metadata = failed_metadata
+            else:
+                await create_agent_run_input_message(
+                    db=db,
+                    conversation_id=scope.conversation.id,
+                    request_id=request_id,
+                    input_message=run_input_message.with_metadata(failed_metadata),
+                    delivery_status="failed",
+                )
+            await db.commit()
+        raise
+
     persisted_input_message = await create_agent_run_input_message(
         db=db,
         conversation_id=scope.conversation.id,
         request_id=request_id,
         input_message=run_input_message,
     )
+    if run_type == "chat" and isinstance(scope.current_user, User):
+        result = await db.execute(select(Message).where(Message.conversation_id == scope.conversation.id))
+        _resolve_failed_chat_messages_after_success(
+            messages=result.scalars(),
+            input_metadata=run_input_message.extra_metadata,
+            request_id=request_id,
+        )
     input_payload = {"model_spec": resolved_model_spec}
 
     run, created = await persist_agent_run_record(
@@ -528,6 +570,57 @@ class AgentRunCreationScope:
     parent_run: Any | None = None
 
 
+def _resolve_failed_chat_messages_after_success(
+    *,
+    messages: Any,
+    input_metadata: dict[str, Any],
+    request_id: str,
+) -> None:
+    """Resolve only the failures that this successful chat actually replaces.
+
+    A normal new question supersedes earlier unsent questions.  A retry instead
+    completes only the failed questions explicitly supplied as retry context.
+    Keeping those paths separate prevents an unrelated successful question from
+    turning failed input into a misleading historical conversation.
+    """
+    retry_message_ids = {
+        message_id
+        for message_id in input_metadata.get("retry_context_message_ids", [])
+        if isinstance(message_id, int) and message_id > 0
+    }
+    retry_request_id = input_metadata.get("retry_failed_request_id")
+    is_retry = bool(retry_message_ids or retry_request_id)
+
+    for message in messages:
+        metadata = dict(message.extra_metadata or {})
+        if message.delivery_status == "failed":
+            is_retried_message = message.id in retry_message_ids or (
+                isinstance(retry_request_id, str) and message.request_id == retry_request_id
+            )
+            if is_retry and is_retried_message:
+                message.delivery_status = "complete"
+                metadata["replayed_by_request_id"] = request_id
+                message.extra_metadata = metadata
+            elif not is_retry:
+                message.delivery_status = "superseded"
+                metadata["superseded_by_request_id"] = request_id
+                message.extra_metadata = metadata
+            continue
+
+        # Repair records produced by the earlier broad "mark every failure
+        # complete" implementation.  They have an error snapshot but no
+        # successful retry relationship and must not render as chat history.
+        if (
+            not is_retry
+            and message.delivery_status == "complete"
+            and metadata.get("error_type")
+            and metadata.get("replayed_by_request_id")
+        ):
+            message.delivery_status = "superseded"
+            metadata["superseded_by_request_id"] = request_id
+            message.extra_metadata = metadata
+
+
 def _prepare_run_input_message(
     *,
     run_type: Literal["chat", "resume"],
@@ -544,6 +637,19 @@ def _prepare_run_input_message(
         metadata["source"] = source
     if isinstance(meta.get("agent_invocation_meta"), dict):
         metadata["agent_invocation_meta"] = meta["agent_invocation_meta"]
+    if retry_context_messages := meta.get("retry_context_messages"):
+        if isinstance(retry_context_messages, list):
+            metadata["retry_context_messages"] = [
+                message.strip() for message in retry_context_messages if isinstance(message, str) and message.strip()
+            ]
+    if retry_context_message_ids := meta.get("retry_context_message_ids"):
+        if isinstance(retry_context_message_ids, list):
+            metadata["retry_context_message_ids"] = [
+                message_id for message_id in retry_context_message_ids if isinstance(message_id, int) and message_id > 0
+            ]
+    if retry_failed_request_id := meta.get("retry_failed_request_id"):
+        if isinstance(retry_failed_request_id, str) and retry_failed_request_id.strip():
+            metadata["retry_failed_request_id"] = retry_failed_request_id.strip()
     if run_type == "chat":
         if input_message is None:
             raise HTTPException(status_code=422, detail="input_message 不能为空")
@@ -597,6 +703,7 @@ async def create_agent_run_input_message(
     conversation_id: int,
     request_id: str,
     input_message: AgentRunInputMessage,
+    delivery_status: str = "complete",
 ) -> Message:
     """先落库输入消息；run 创建后再回填 run_id，避免 Message 外键先指向不存在的 run。"""
     message = Message(
@@ -606,7 +713,7 @@ async def create_agent_run_input_message(
         message_type=input_message.message_type,
         image_content=input_message.image_content,
         request_id=request_id,
-        delivery_status="complete",
+        delivery_status=delivery_status,
         extra_metadata=input_message.extra_metadata,
     )
     db.add(message)

@@ -65,6 +65,25 @@ async def test_validate_agent_context_skips_unavailable_skills(monkeypatch: pyte
     )
 
 
+@pytest.mark.asyncio
+async def test_validate_agent_context_defers_model_check_to_resolved_run_snapshot(monkeypatch: pytest.MonkeyPatch):
+    async def fake_hydrate_user_resource_access(db, user):
+        del db
+        return user
+
+    def fail_if_configured_model_is_checked(*args, **kwargs):
+        raise AssertionError("configured model must not override the resolved run model")
+
+    monkeypatch.setattr(agent_run_service, "hydrate_user_resource_access", fake_hydrate_user_resource_access)
+    monkeypatch.setattr(agent_run_service, "assert_model_spec_allowed", fail_if_configured_model_is_checked)
+
+    await agent_run_service.validate_agent_context_resource_access(
+        db=object(),
+        user=SimpleNamespace(role="user"),
+        context={"model": "provider:forbidden"},
+    )
+
+
 def test_prepare_run_input_message_keeps_invocation_meta_namespaced():
     input_message = agent_run_service._prepare_run_input_message(
         run_type="chat",
@@ -85,6 +104,79 @@ def test_prepare_run_input_message_keeps_invocation_meta_namespaced():
     assert input_message.extra_metadata["model_spec"] == "provider:model"
     assert "evaluation" not in input_message.extra_metadata
     assert "custom_variables" not in input_message.extra_metadata
+
+
+def test_prepare_run_input_message_keeps_retry_context_messages():
+    input_message = agent_run_service._prepare_run_input_message(
+        run_type="chat",
+        input_message=build_chat_input_message("latest"),
+        resume=None,
+        request_id="req-1",
+        model_spec="provider:model",
+        meta={"retry_context_messages": [" first ", "", 1, "second"]},
+    )
+
+    assert input_message.extra_metadata["retry_context_messages"] == ["first", "second"]
+
+
+def test_successful_new_chat_supersedes_failed_messages_without_turning_them_into_history():
+    failed_message = SimpleNamespace(
+        id=1,
+        request_id="failed-request",
+        delivery_status="failed",
+        extra_metadata={"error_type": "token_quota_exceeded"},
+    )
+
+    agent_run_service._resolve_failed_chat_messages_after_success(
+        messages=[failed_message], input_metadata={}, request_id="new-request"
+    )
+
+    assert failed_message.delivery_status == "superseded"
+    assert failed_message.extra_metadata["superseded_by_request_id"] == "new-request"
+
+
+def test_successful_retry_completes_only_its_explicit_failed_messages():
+    retried_message = SimpleNamespace(
+        id=1,
+        request_id="failed-request",
+        delivery_status="failed",
+        extra_metadata={"error_type": "token_quota_exceeded"},
+    )
+    unrelated_message = SimpleNamespace(
+        id=2,
+        request_id="other-failed-request",
+        delivery_status="failed",
+        extra_metadata={"error_type": "token_quota_exceeded"},
+    )
+
+    agent_run_service._resolve_failed_chat_messages_after_success(
+        messages=[retried_message, unrelated_message],
+        input_metadata={"retry_context_message_ids": [1], "retry_failed_request_id": "failed-request"},
+        request_id="retry-request",
+    )
+
+    assert retried_message.delivery_status == "complete"
+    assert retried_message.extra_metadata["replayed_by_request_id"] == "retry-request"
+    assert unrelated_message.delivery_status == "failed"
+
+
+def test_successful_new_chat_repairs_old_incorrectly_completed_quota_message():
+    stale_message = SimpleNamespace(
+        id=1,
+        request_id="failed-request",
+        delivery_status="complete",
+        extra_metadata={
+            "error_type": "token_quota_exceeded",
+            "replayed_by_request_id": "unrelated-success-request",
+        },
+    )
+
+    agent_run_service._resolve_failed_chat_messages_after_success(
+        messages=[stale_message], input_metadata={}, request_id="new-request"
+    )
+
+    assert stale_message.delivery_status == "superseded"
+    assert stale_message.extra_metadata["superseded_by_request_id"] == "new-request"
 
 
 def _progress_event(seq: str, chunks: list[dict]) -> dict:

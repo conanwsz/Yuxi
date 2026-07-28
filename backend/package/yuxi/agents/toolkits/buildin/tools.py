@@ -21,8 +21,9 @@ from yuxi.utils.paths import (
 )
 from yuxi.utils.question_utils import normalize_questions
 
-# Lazy initialization for TavilySearch (only when API key is available)
-_tavily_search_instance = None
+# 统一的网页搜索 backend 抽象: 优先 Tavily (有 API key), 回退到 DuckDuckGo (零成本)。
+# 详细 backend 选择规则见 ``search.create_search_tool``。
+_SEARCH_SLUG = "tavily_search"  # 保持向后兼容的 slot 名, 避免改 skill 的 tool_dependencies
 
 _PRESENT_ARTIFACTS_INTERNAL_DIR_NAMES = frozenset(
     {CONVERSATION_HISTORY_DIR_NAME, LARGE_TOOL_RESULTS_DIR_NAME, "large_tool_history"}
@@ -33,37 +34,55 @@ _OCR_PREVIEW_LIMIT = 1200
 _SAFE_OUTPUT_STEM_RE = re.compile(r"[^A-Za-z0-9._\-\u4e00-\u9fff]+")
 
 
-def _create_tavily_search():
-    """Create and register TavilySearch tool with metadata."""
-    global _tavily_search_instance
-    if _tavily_search_instance is None:
-        from langchain_tavily import TavilySearch
+def _register_search_tool() -> None:
+    """注册网页搜索工具, backend 由 ``YUXI_SEARCH_BACKEND`` env 控制。
 
-        _tavily_search_instance = TavilySearch()
+    slot 名固定为 ``tavily_search`` 以兼容既有 skill 的 tool_dependencies。
+    """
+    from yuxi.agents.toolkits.buildin.search import (
+        create_search_tool,
+        resolve_search_backend,
+        search_tool_metadata,
+    )
 
-    return _tavily_search_instance
+    backend = resolve_search_backend()
+    search_instance = create_search_tool()
+    if search_instance is None:
+        logger.warning(
+            "Search tool unavailable: backend=%s, TAVILY_API_KEY set=%s",
+            backend,
+            bool(os.getenv("TAVILY_API_KEY")),
+        )
+        return
 
+    meta = search_tool_metadata(backend)
+    # 让返回的 tool 名称仍然叫 tavily_search, 不管实际 backend 是什么
+    if hasattr(search_instance, "name") and search_instance.name != _SEARCH_SLUG:
+        try:
+            search_instance.name = _SEARCH_SLUG
+        except Exception:  # noqa: BLE001
+            pass
 
-# 注册 TavilySearch 工具（延迟初始化）
-def _register_tavily_tool():
-    """Register TavilySearch tool with extra metadata."""
-    tavily_instance = _create_tavily_search()
-    # 手动注册到全局注册表
-    _extra_registry["tavily_search"] = ToolExtraMetadata(
+    _extra_registry[_SEARCH_SLUG] = ToolExtraMetadata(
         category="buildin",
         tags=["搜索"],
-        display_name="Tavily 网页搜索",
+        display_name=meta["display_name"],
+        config_guide=meta["config_guide"],
     )
-    # 添加到工具实例列表
-    _all_tool_instances.append(tavily_instance)
+    _all_tool_instances.append(search_instance)
+    logger.info(
+        "Registered search tool: slug=%s, backend=%s, display_name=%s",
+        _SEARCH_SLUG,
+        backend,
+        meta["display_name"],
+    )
 
 
-# 模块加载时注册
-if os.getenv("TAVILY_API_KEY"):
-    try:
-        _register_tavily_tool()
-    except Exception as e:
-        logger.warning(f"Failed to register TavilySearch tool: {e}")
+# 模块加载时无条件注册: backend 选不出来时只 warning, 不影响其他工具。
+try:
+    _register_search_tool()
+except Exception as e:  # noqa: BLE001
+    logger.warning(f"Failed to register search tool: {e}")
 
 
 class PresentArtifactsInput(BaseModel):

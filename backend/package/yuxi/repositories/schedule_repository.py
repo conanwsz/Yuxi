@@ -12,10 +12,10 @@ from sqlalchemy import and_, delete, or_, select
 
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_business import (
+    SCHEDULE_EXECUTION_TERMINAL_STATUSES,
     Agent,
     Schedule,
     ScheduleExecution,
-    SCHEDULE_EXECUTION_TERMINAL_STATUSES,
 )
 from yuxi.utils.datetime_utils import utc_now_naive
 
@@ -36,9 +36,7 @@ class ScheduleRepository:
         if not slugs:
             return {}
         async with pg_manager.get_async_session_context() as session:
-            result = await session.execute(
-                select(Agent.slug, Agent.name).where(Agent.slug.in_(slugs))
-            )
+            result = await session.execute(select(Agent.slug, Agent.name).where(Agent.slug.in_(slugs)))
             return {slug: name for slug, name in result.all()}
 
     async def list_schedules(self, *, enabled: bool | None = None) -> list[Schedule]:
@@ -70,9 +68,7 @@ class ScheduleRepository:
             await session.refresh(record)
             return record
 
-    async def update_last_fired_at(
-        self, *, schedule_id: str, last_fired_at: datetime
-    ) -> Schedule | None:
+    async def update_last_fired_at(self, *, schedule_id: str, last_fired_at: datetime) -> Schedule | None:
         """仅更新 last_fired_at，不动 next_fire_at。
 
         立即触发（fire）使用：派发后把 last_fired_at 标为「刚刚 fire 的时刻」，
@@ -106,9 +102,7 @@ class ScheduleRepository:
             await session.refresh(record)
             return record
 
-    async def fetch_due_schedule_ids(
-        self, *, now: datetime, limit: int = 20
-    ) -> list[str]:
+    async def fetch_due_schedule_ids(self, *, now: datetime, limit: int = 20) -> list[str]:
         """拉取到点可触发的 schedule id 列表（不加锁，由调用方在事务内使用 SKIP LOCKED）。"""
         async with pg_manager.get_async_session_context() as session:
             stmt = (
@@ -176,9 +170,7 @@ class ScheduleExecutionRepository:
 
     async def get_by_id(self, execution_id: str) -> ScheduleExecution | None:
         async with pg_manager.get_async_session_context() as session:
-            result = await session.execute(
-                select(ScheduleExecution).where(ScheduleExecution.id == execution_id)
-            )
+            result = await session.execute(select(ScheduleExecution).where(ScheduleExecution.id == execution_id))
             return result.scalar_one_or_none()
 
     async def create(self, data: dict[str, Any]) -> ScheduleExecution:
@@ -191,9 +183,7 @@ class ScheduleExecutionRepository:
 
     async def update(self, execution_id: str, data: dict[str, Any]) -> ScheduleExecution | None:
         async with pg_manager.get_async_session_context() as session:
-            result = await session.execute(
-                select(ScheduleExecution).where(ScheduleExecution.id == execution_id)
-            )
+            result = await session.execute(select(ScheduleExecution).where(ScheduleExecution.id == execution_id))
             record = result.scalar_one_or_none()
             if record is None:
                 return None

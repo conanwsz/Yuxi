@@ -19,6 +19,7 @@ dependencies = [
     "chardet>=5.0.0",
     "colorlog>=6.9.0",
     "dashscope>=1.23.2",
+    "ddgs>=9.0",
     "deepagents>=0.6.7",
     "docling>=2.68.0",
     "docx2txt>=0.9",

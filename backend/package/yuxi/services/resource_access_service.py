@@ -7,7 +7,6 @@ from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-
 from yuxi.storage.postgres.models_business import MCPServer, ModelProvider, Role, User
 
 RESOURCE_ACCESS_MODES = {"all", "selected", "none"}
@@ -271,9 +270,7 @@ def _normalize_model_group(
             "mode": "all",
             "allowed": [],
             "defaults": {
-                model_type: defaults[model_type]
-                for model_type in MODEL_RESOURCE_TYPES
-                if model_type in defaults
+                model_type: defaults[model_type] for model_type in MODEL_RESOURCE_TYPES if model_type in defaults
             },
         }
 
@@ -283,11 +280,7 @@ def _normalize_model_group(
     return {
         "mode": "selected",
         "allowed": allowed,
-        "defaults": {
-            model_type: defaults[model_type]
-            for model_type in MODEL_RESOURCE_TYPES
-            if model_type in defaults
-        },
+        "defaults": {model_type: defaults[model_type] for model_type in MODEL_RESOURCE_TYPES if model_type in defaults},
     }
 
 
@@ -342,9 +335,7 @@ def _normalize_basic_group(
     if mode == "all":
         return {"mode": "all", "allowed": []}
     if not allowed:
-        raise ResourceAccessValidationError(
-            f"resource_access.{_resource_field_name(group_name)}.allowed 不能为空"
-        )
+        raise ResourceAccessValidationError(f"resource_access.{_resource_field_name(group_name)}.allowed 不能为空")
     return {"mode": "selected", "allowed": allowed}
 
 

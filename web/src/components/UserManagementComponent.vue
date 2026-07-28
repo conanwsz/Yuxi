@@ -179,9 +179,7 @@
                 <template v-else-if="column.key === 'department'">
                   <div class="table-department">
                     <span>{{ user.department_path || user.department_name || '未分配部门' }}</span>
-                    <span class="table-secondary">
-                      兼职：{{ partTimeLabel(user) }}
-                    </span>
+                    <span class="table-secondary"> 兼职：{{ partTimeLabel(user) }} </span>
                   </div>
                 </template>
 
@@ -191,8 +189,35 @@
 
                 <template v-else-if="column.key === 'weeklyQuota'">
                   <div class="table-weekly-quota">
-                    <span class="table-weekly-primary">{{ formatWeeklyQuotaPrimary(user) }}</span>
-                    <span class="table-secondary">{{ formatWeeklyQuotaSecondary(user) }}</span>
+                    <div class="table-weekly-line">
+                      <span class="table-weekly-primary">{{ formatWeeklyQuotaPrimary(user) }}</span>
+                      <span
+                        v-if="
+                          getUserTokenQuotaMode(user) !== 'unlimited' &&
+                          getUserEffectiveWeeklyQuota(user)
+                        "
+                        class="table-weekly-percent"
+                      >
+                        {{ weeklyQuotaUsedPercent(user) }}%
+                      </span>
+                    </div>
+                    <a-progress
+                      v-if="
+                        getUserTokenQuotaMode(user) !== 'unlimited' &&
+                        getUserEffectiveWeeklyQuota(user)
+                      "
+                      class="table-weekly-progress"
+                      :percent="weeklyQuotaUsedPercent(user)"
+                      :stroke-color="weeklyQuotaProgressColor(user)"
+                      :show-info="false"
+                      :stroke-width="3"
+                    />
+                    <span
+                      v-else-if="getUserTokenQuotaMode(user) === 'unlimited'"
+                      class="table-secondary table-weekly-unlimited"
+                    >
+                      不限
+                    </span>
                   </div>
                 </template>
 
@@ -248,7 +273,9 @@
                   <span class="dept-text">
                     {{ user.role_name || roleName(user.role) }}
                     <template v-if="user.department_path"> · {{ user.department_path }}</template>
-                    <template v-else-if="user.department_name"> · {{ user.department_name }}</template>
+                    <template v-else-if="user.department_name">
+                      · {{ user.department_name }}</template
+                    >
                     <template v-if="user.is_disabled"> · 已禁用</template>
                   </span>
                 </div>
@@ -315,10 +342,24 @@
                     <span class="info-label">Token 周额度:</span>
                     <span class="info-value quota-text">{{ formatWeeklyQuotaPrimary(user) }}</span>
                   </div>
-                  <div class="info-item" v-if="formatWeeklyQuotaSecondary(user) !== '-'">
-                    <span class="info-label">额度说明:</span>
-                    <span class="info-value quota-subtext">
-                      {{ formatWeeklyQuotaSecondary(user) }}
+                  <div
+                    v-if="
+                      getUserTokenQuotaMode(user) !== 'unlimited' &&
+                      getUserEffectiveWeeklyQuota(user)
+                    "
+                    class="info-item quota-progress-item"
+                  >
+                    <a-progress
+                      class="quota-progress-bar"
+                      :percent="weeklyQuotaUsedPercent(user)"
+                      :stroke-color="weeklyQuotaProgressColor(user)"
+                      :show-info="false"
+                      :stroke-width="6"
+                    />
+                    <span class="quota-progress-text">
+                      已用 {{ formatTokenCount(getUserWeeklyUsage(user)) }} /
+                      {{ formatTokenCount(getUserEffectiveWeeklyQuota(user)) }}
+                      ({{ weeklyQuotaUsedPercent(user) }}%)
                     </span>
                   </div>
                   <div class="info-item">
@@ -427,7 +468,7 @@
           <div v-if="!userStore.isSuperAdmin" class="help-text">只有超级管理员可以修改角色</div>
         </a-form-item>
 
-        <a-form-item label="Token 周额度" class="form-item">
+        <a-form-item label="周额度" class="form-item">
           <div class="quota-form-group">
             <a-select v-model:value="userManagement.form.tokenQuotaMode">
               <a-select-option
@@ -445,11 +486,8 @@
               :min="0"
               :step="10000"
               :precision="0"
-              placeholder="请输入自定义周额度"
+              placeholder="请输入 Token 数"
             />
-          </div>
-          <div class="help-text">
-            继承：使用系统默认周额度；自定义：为该用户单独设置；不限：不限制每周 Token。
           </div>
         </a-form-item>
 
@@ -462,14 +500,14 @@
               placeholder="请选择唯一主部门"
               @change="handlePrimaryDepartmentChange"
             >
-            <a-select-option
-              v-for="dept in activeDepartments"
-              :key="dept.id"
-              :value="dept.id"
-              :label="dept.path_label"
-            >
-              {{ dept.path_label }}
-            </a-select-option>
+              <a-select-option
+                v-for="dept in activeDepartments"
+                :key="dept.id"
+                :value="dept.id"
+                :label="dept.path_label"
+              >
+                {{ dept.path_label }}
+              </a-select-option>
             </a-select>
           </a-form-item>
 
@@ -491,7 +529,9 @@
                 {{ dept.path_label }}
               </a-select-option>
             </a-select>
-            <div class="help-text">兼职部门必须与主部门属于同一主体；默认部门用户不能设置兼职。</div>
+            <div class="help-text">
+              兼职部门必须与主部门属于同一主体；默认部门用户不能设置兼职。
+            </div>
           </a-form-item>
 
           <a-form-item label="可管理部门" class="form-item">
@@ -547,13 +587,10 @@ import InfoCard from '@/components/shared/InfoCard.vue'
 const userStore = useUserStore()
 const roles = ref([])
 const tokenQuotaModeOptions = [
-  { value: 'inherit', label: '继承系统默认' },
-  { value: 'custom', label: '自定义额度' },
+  { value: 'inherit', label: '继承' },
+  { value: 'custom', label: '自定义' },
   { value: 'unlimited', label: '不限' }
 ]
-const tokenQuotaModeLabelMap = Object.fromEntries(
-  tokenQuotaModeOptions.map((option) => [option.value, option.label])
-)
 
 const roleName = (key) => {
   const role = roles.value.find((item) => item.key === key)
@@ -597,14 +634,23 @@ const formatWeeklyQuotaPrimary = (user) => {
   const mode = getUserTokenQuotaMode(user)
   if (mode === 'unlimited') return '不限'
   const quota = getUserEffectiveWeeklyQuota(user)
-  if (quota !== null) return `${formatTokenCount(quota)} Tokens`
-  return mode === 'custom' ? '未设置' : '继承系统默认'
+  if (quota !== null) return formatTokenCount(quota)
+  return '-'
 }
 
-const formatWeeklyQuotaSecondary = (user) => {
-  const mode = tokenQuotaModeLabelMap[getUserTokenQuotaMode(user)] || tokenQuotaModeLabelMap.inherit
+const weeklyQuotaUsedPercent = (user) => {
+  const quota = getUserEffectiveWeeklyQuota(user)
   const used = getUserWeeklyUsage(user)
-  return used === null ? mode : `${mode} · 本周已用 ${formatTokenCount(used)}`
+  if (!Number.isFinite(quota) || quota <= 0 || !Number.isFinite(used)) return 0
+  const percent = (used / quota) * 100
+  return Math.max(0, Math.min(100, Math.round(percent)))
+}
+
+const weeklyQuotaProgressColor = (user) => {
+  const percent = weeklyQuotaUsedPercent(user)
+  if (percent >= 90) return 'var(--color-error-500)'
+  if (percent >= 70) return 'var(--color-warning-500)'
+  return 'var(--main-500)'
 }
 
 // 用户管理相关状态
@@ -845,8 +891,7 @@ const partTimeLabel = (user) => {
 }
 
 const isUserLifecycleActionDisabled = (user) =>
-  user.id === userStore.userId ||
-  (userStore.userRole !== 'superadmin' && user.role !== 'user')
+  user.id === userStore.userId || (userStore.userRole !== 'superadmin' && user.role !== 'user')
 
 // 获取用户列表
 const fetchUsers = async () => {
@@ -1418,6 +1463,13 @@ onMounted(async () => {
                 border-bottom: none;
               }
 
+              &.quota-progress-item {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 4px;
+                padding: 6px 0;
+              }
+
               .info-label {
                 font-size: 12px;
                 color: var(--gray-600);
@@ -1438,10 +1490,16 @@ onMounted(async () => {
                 &.phone-text {
                   font-family: 'Monaco', 'Consolas', monospace;
                 }
+              }
 
-                &.quota-subtext {
-                  color: var(--gray-600);
-                }
+              .quota-progress-bar {
+                margin: 0;
+              }
+
+              .quota-progress-text {
+                color: var(--gray-500);
+                font-size: 12px;
+                font-variant-numeric: tabular-nums;
               }
             }
           }
@@ -1538,6 +1596,28 @@ onMounted(async () => {
           font-weight: 500;
           text-overflow: ellipsis;
           white-space: nowrap;
+        }
+
+        .table-weekly-line {
+          display: flex;
+          align-items: baseline;
+          gap: 6px;
+        }
+
+        .table-weekly-percent {
+          color: var(--gray-500);
+          font-size: 12px;
+          font-weight: 500;
+          font-variant-numeric: tabular-nums;
+        }
+
+        .table-weekly-progress {
+          margin: 0;
+          line-height: 1;
+        }
+
+        .table-weekly-unlimited {
+          color: var(--gray-500);
         }
 
         .table-user-id,

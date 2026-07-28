@@ -69,7 +69,10 @@ async def _build_middlewares(context):
             TodoListMiddleware(system_prompt=TODO_MID_PROMPT),
             PatchToolCallsMiddleware(),
             sanitize_model_content,
-            ModelRetryMiddleware(max_retries=getattr(context, "model_retry_times", 2)),
+            ModelRetryMiddleware(
+                max_retries=getattr(context, "model_retry_times", 2),
+                on_failure="error",
+            ),
             TokenUsageMiddleware(),
         ]
     )

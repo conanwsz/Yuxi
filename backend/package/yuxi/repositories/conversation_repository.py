@@ -267,7 +267,10 @@ class ConversationRepository:
                 selectinload(Message.tool_calls),
                 selectinload(Message.feedbacks),
             )
-            .where(Message.conversation_id == conversation_id)
+            .where(
+                Message.conversation_id == conversation_id,
+                Message.delivery_status != "superseded",
+            )
             .order_by(Message.created_at.asc())
         )
 

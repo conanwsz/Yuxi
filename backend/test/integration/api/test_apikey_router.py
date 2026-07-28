@@ -188,3 +188,94 @@ async def test_api_key_auto_binds_to_current_user(test_client, admin_headers):
     finally:
         # Cleanup: delete the test API key
         await test_client.delete(f"{API_KEYS_PATH}{created['id']}", headers=admin_headers)
+
+
+async def test_list_api_keys_requires_apikey_manage_for_regular_user(test_client, standard_user):
+    """普通用户（无 apikey.manage）不能列出 API Key。"""
+    response = await test_client.get(API_KEYS_PATH, headers=standard_user["headers"])
+    assert response.status_code == 403, response.text
+    assert "apikey.manage" in response.text or "缺少权限" in response.text
+
+
+async def test_create_api_key_requires_apikey_manage_for_regular_user(test_client, standard_user):
+    """普通用户（无 apikey.manage）不能创建 API Key。"""
+    response = await test_client.post(API_KEYS_PATH, json={"name": "Forbidden"}, headers=standard_user["headers"])
+    assert response.status_code == 403, response.text
+
+
+async def test_api_key_auth_blocked_when_user_lacks_apikey_invoke(test_client, standard_user, admin_headers):
+    """用户的 API Key 在关联用户没有 apikey.invoke 时被 403 拒绝。
+
+    测试流程：
+    1. admin 给 standard_user 角色加上 apikey.manage + apikey.invoke（让他能创建 key 并调 API）
+    2. standard_user 创建一个 API Key
+    3. 该 Key 调用 /api/agent 应当成功（因为 standard_user 此时已有 apikey.invoke）
+    4. admin 收回 standard_user 角色的 apikey.invoke
+    5. 再次用该 Key 调用 /api/agent 应当返回 403
+    """
+    import time
+
+    role_key = "user"
+    # 0. 读取 user 角色原始权限（通过列表接口拿）
+    list_resp = await test_client.get("/api/roles", headers=admin_headers)
+    assert list_resp.status_code == 200, list_resp.text
+    user_role = next((r for r in list_resp.json().get("roles", []) if r.get("key") == role_key), None)
+    assert user_role is not None, "user role not found"
+    original_perms = list(user_role.get("permissions") or [])
+
+    # 1. 加权限：apikey.manage + apikey.invoke
+    augmented_perms = list(set(original_perms) | {"apikey.manage", "apikey.invoke"})
+    update_resp = await test_client.put(
+        f"/api/roles/{role_key}",
+        json={"permissions": augmented_perms},
+        headers=admin_headers,
+    )
+    assert update_resp.status_code == 200, update_resp.text
+
+    api_key_id = None
+    try:
+        # 2. 创建 Key
+        create_resp = await test_client.post(API_KEYS_PATH, json={"name": "Perm Test"}, headers=standard_user["headers"])
+        assert create_resp.status_code == 200, create_resp.text
+        api_key_secret = create_resp.json()["secret"]
+        api_key_id = create_resp.json()["api_key"]["id"]
+
+        # 3. 此时 Key 可用
+        ok_resp = await test_client.get(
+            PROTECTED_PATH,
+            headers={"Authorization": f"Bearer {api_key_secret}"},
+        )
+        assert ok_resp.status_code == 200, ok_resp.text
+
+        # 4. 收回 apikey.invoke
+        revoke_resp = await test_client.put(
+            f"/api/roles/{role_key}",
+            json={
+                "permissions": [p for p in augmented_perms if p not in {"apikey.manage", "apikey.invoke"}],
+            },
+            headers=admin_headers,
+        )
+        assert revoke_resp.status_code == 200, revoke_resp.text
+
+        # 5. 再次调用应 403
+        # 给缓存留点时间，避免 role 缓存陈旧
+        time.sleep(0.1)
+        denied_resp = await test_client.get(
+            PROTECTED_PATH,
+            headers={"Authorization": f"Bearer {api_key_secret}"},
+        )
+        assert denied_resp.status_code == 403, denied_resp.text
+        assert "apikey.invoke" in denied_resp.text
+
+    finally:
+        # 清理：删除测试 key + 还原 user 角色权限到测试前状态
+        if api_key_id is not None:
+            try:
+                await test_client.delete(f"{API_KEYS_PATH}{api_key_id}", headers=admin_headers)
+            except Exception:
+                pass
+        await test_client.put(
+            f"/api/roles/{role_key}",
+            json={"permissions": original_perms},
+            headers=admin_headers,
+        )

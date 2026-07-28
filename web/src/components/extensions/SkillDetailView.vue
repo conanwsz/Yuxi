@@ -416,7 +416,8 @@ const canShareCurrentSkill = computed(
   () => isSkillInManageableScope.value && userStore.hasPermission('skills.share')
 )
 const canEditSkillSettings = computed(
-  () => canEnableCurrentSkill.value || (!isBuiltinInstalledSkill.value && canShareCurrentSkill.value)
+  () =>
+    canEnableCurrentSkill.value || (!isBuiltinInstalledSkill.value && canShareCurrentSkill.value)
 )
 const isReadOnlySkill = computed(
   () =>

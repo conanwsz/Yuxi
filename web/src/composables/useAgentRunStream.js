@@ -101,7 +101,8 @@ export function useAgentRunStream({
   onScrollToBottom,
   streamSmoother,
   onInterruptDetected = null,
-  onTerminalDetected = null
+  onTerminalDetected = null,
+  onStreamAlert = null
 }) {
   const saveActiveRunSnapshot = (threadId, runId, lastSeq = '0-0') => {
     if (!threadId || !runId) return
@@ -343,6 +344,17 @@ export function useAgentRunStream({
 
         if (event === 'error') {
           sawTerminalEvent = true
+          // 内联告警：把 SSE error event 推给上层做 UI 提示（quota / permission / generic）
+          if (typeof onStreamAlert === 'function') {
+            try {
+              onStreamAlert(threadId, {
+                status: data?.status,
+                payload: payload || {}
+              })
+            } catch (cbErr) {
+              console.warn('onStreamAlert callback failed:', cbErr)
+            }
+          }
           finalizeRunStream(threadId, runId, touchedThreadIds, { delay: 300, scroll: true })
         }
       })
@@ -374,6 +386,15 @@ export function useAgentRunStream({
       if (error?.name !== 'AbortError') {
         streamSmoother?.flushThread(threadId)
         console.error('Run SSE stream error:', error)
+        // 内联告警：网络/解析错误通常没有 HTTP 状态，归类不到具体 kind，
+        // 退到 handleChatError toast；上层 onStreamAlert 内部会对 null category 静默
+        if (typeof onStreamAlert === 'function') {
+          try {
+            onStreamAlert(threadId, error)
+          } catch (cbErr) {
+            console.warn('onStreamAlert callback failed:', cbErr)
+          }
+        }
         handleChatError(error, 'stream')
         scheduleRunReconnect(threadId, runId)
       } else if (ts.activeRunId !== runId) {

@@ -28,8 +28,12 @@ BUILTIN_SKILLS: list[BuiltinSkillSpec] = [
     BuiltinSkillSpec(
         slug="deep-research",
         source_dir=_SKILLS_ROOT / "deep-research",
-        description="深度研究编排方法论：澄清范围、拆解规划、并行调度子智能体调研、对抗式核验、综合成带引用的结构化报告。",
-        version="2026.06.05",
+        description=(
+            "深度研究编排方法论：澄清范围、拆解规划、并行调度子智能体调研、对抗式核验、综合成带引用的结构化报告。"
+            "依赖网页搜索工具 (slot: tavily_search, 实际 backend 链由 YUXI_SEARCH_BACKEND 决定, "
+            "支持多 backend fallback + 多 Tavily key 轮询/熔断, 默认 DuckDuckGo)。"
+        ),
+        version="2026.07.28",
         tool_dependencies=("tavily_search",),
     ),
     BuiltinSkillSpec(

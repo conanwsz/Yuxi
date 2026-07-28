@@ -88,7 +88,9 @@ const handleCallback = async () => {
     message.success('登录成功')
 
     // 优先使用后端经 state 保存的回跳路径；sessionStorage 仅兼容旧后端。
-    const redirectPath = sanitizeRedirect(tokenData.redirect_path || sessionStorage.getItem('oidc_redirect'))
+    const redirectPath = sanitizeRedirect(
+      tokenData.redirect_path || sessionStorage.getItem('oidc_redirect')
+    )
     sessionStorage.removeItem('oidc_redirect')
     clearAutoStartAttempt()
 

@@ -10,7 +10,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.routers.auth_router import TokenQuotaMode
-from server.utils.auth_middleware import get_current_user, get_db, get_required_user
+from server.utils.auth_middleware import get_current_user, get_db, get_required_user, require_permission
 from yuxi.config import UserConfig, UserConfigSchema
 from yuxi.services.token_quota_service import (
     get_user_token_quota_payload_with_breakdown,
@@ -170,7 +170,7 @@ async def get_accessible_api_key(db: AsyncSession, api_key_id: int, current_user
 async def list_api_keys(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
-    current_user: User = Depends(get_required_user),
+    current_user: User = Depends(require_permission("apikey.manage")),
     db: AsyncSession = Depends(get_db),
 ):
     query = select(APIKey).order_by(APIKey.created_at.desc()).offset(skip).limit(limit)
@@ -192,7 +192,7 @@ async def list_api_keys(
 @user_router.post("/apikey/", response_model=APIKeyCreateResponse)
 async def create_api_key(
     data: APIKeyCreate,
-    current_user: User = Depends(get_required_user),
+    current_user: User = Depends(require_permission("apikey.manage")),
     db: AsyncSession = Depends(get_db),
 ):
     if data.user_id and data.user_id != current_user.id and current_user.role != "superadmin":
@@ -239,7 +239,7 @@ async def create_api_key(
 @user_router.get("/apikey/{api_key_id}", response_model=dict)
 async def get_api_key(
     api_key_id: int,
-    current_user: User = Depends(get_required_user),
+    current_user: User = Depends(require_permission("apikey.manage")),
     db: AsyncSession = Depends(get_db),
 ):
     api_key = await get_accessible_api_key(db, api_key_id, current_user)
@@ -250,7 +250,7 @@ async def get_api_key(
 async def update_api_key(
     api_key_id: int,
     data: APIKeyUpdate,
-    current_user: User = Depends(get_required_user),
+    current_user: User = Depends(require_permission("apikey.manage")),
     db: AsyncSession = Depends(get_db),
 ):
     api_key = await get_accessible_api_key(db, api_key_id, current_user)
@@ -271,7 +271,7 @@ async def update_api_key(
 @user_router.delete("/apikey/{api_key_id}", response_model=dict)
 async def delete_api_key(
     api_key_id: int,
-    current_user: User = Depends(get_required_user),
+    current_user: User = Depends(require_permission("apikey.manage")),
     db: AsyncSession = Depends(get_db),
 ):
     api_key = await get_accessible_api_key(db, api_key_id, current_user)
@@ -284,7 +284,7 @@ async def delete_api_key(
 @user_router.post("/apikey/{api_key_id}/regenerate", response_model=APIKeyCreateResponse)
 async def regenerate_api_key(
     api_key_id: int,
-    current_user: User = Depends(get_required_user),
+    current_user: User = Depends(require_permission("apikey.manage")),
     db: AsyncSession = Depends(get_db),
 ):
     api_key = await get_accessible_api_key(db, api_key_id, current_user)

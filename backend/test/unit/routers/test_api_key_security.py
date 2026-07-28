@@ -11,9 +11,10 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from server.routers.auth_router import activate_user, delete_user, disable_user
 from server.routers.user_router import APIKeyCreate, create_api_key
-from server.utils.auth_middleware import _verify_api_key
+from server.utils.auth_middleware import _verify_api_key, get_current_user
 from yuxi.repositories import user_repository as user_repository_module
 from yuxi.repositories.user_repository import UserRepository
+from yuxi.services.permission_service import resolve_user_permissions
 from yuxi.storage.postgres.models_business import (
     APIKey,
     Base,
@@ -119,6 +120,50 @@ async def test_api_key_rejects_deleted_bound_user_without_department_or_superadm
 
     assert user is None
     assert verified_key is None
+
+
+async def test_api_key_auth_blocks_user_without_apikey_invoke_permission(session, monkeypatch):
+    """未获得 apikey.invoke 权限的用户，其 API Key 在 auth_middleware 阶段被 403 拒绝。
+
+    这里通过 stub has_permission 让"非 superadmin 也没有 apikey.invoke"的场景可被触发：
+    superadmin 在 has_permission 内置分支里始终返回 True，所以我们用 monkeypatch 覆盖。
+    """
+    db = session["db"]
+    user = session["regular_user"]
+    secret, key_hash, key_prefix = AuthUtils.generate_api_key()
+    api_key = APIKey(
+        key_hash=key_hash,
+        key_prefix=key_prefix,
+        name="regular user key",
+        user_id=user.id,
+        department_id=session["dept_a"].id,
+        created_by=str(user.id),
+    )
+    db.add(api_key)
+    await db.commit()
+
+    import yuxi.services.permission_service as permission_service_module
+    from yuxi.services.permission_service import has_permission as real_has_permission
+
+    def stub_has_permission(target_user, permission):
+        # 模拟"普通用户没有 apikey.invoke"：对所有非 superadmin 返回 False
+        if target_user.role == "superadmin":
+            return real_has_permission(target_user, permission)
+        if permission == "apikey.invoke":
+            return False
+        return real_has_permission(target_user, permission)
+
+    monkeypatch.setattr(permission_service_module, "has_permission", stub_has_permission)
+    # auth_middleware 通过 from ... import 拿到了原始符号，需要同时 stub
+    from server.utils import auth_middleware as auth_middleware_module
+
+    monkeypatch.setattr(auth_middleware_module, "has_permission", stub_has_permission)
+
+    with pytest.raises(HTTPException) as exc:
+        await get_current_user(authorization=f"Bearer {secret}", db=db)
+
+    assert exc.value.status_code == 403
+    assert "apikey.invoke" in exc.value.detail
 
 
 async def test_api_key_without_user_binding_is_rejected_before_department_mapping(session):

@@ -20,7 +20,6 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
-
 from yuxi.repositories.role_repository import RoleRepository
 from yuxi.services.operation_log_service import log_operation
 from yuxi.services.permission_service import resolve_user_permissions

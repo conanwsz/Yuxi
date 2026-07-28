@@ -78,6 +78,12 @@ async def get_current_user(
             api_key_obj.last_used_at = utc_now_naive()
             await db.commit()
             await resolve_user_permissions(db, user)
+            # API Key 鉴权强制要求关联用户拥有 apikey.invoke 权限
+            if not has_permission(user, "apikey.invoke"):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="API Key 鉴权失败：用户未获得 'apikey.invoke' 权限",
+                )
             await hydrate_user_organization_scope(db, user)
         return user
 

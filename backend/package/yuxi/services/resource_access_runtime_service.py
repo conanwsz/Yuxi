@@ -6,7 +6,6 @@ from typing import Any
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-
 from yuxi.models.providers.cache import ModelInfo, model_cache
 from yuxi.services.resource_access_service import (
     KNOWLEDGE_BASE_TOOL_SLUGS,
@@ -167,11 +166,7 @@ def filter_tool_metadata_for_user(user: User, tools: Iterable[dict[str, Any]]) -
         return items
 
     allowed = _group_allowed(user, "tools")
-    return [
-        tool
-        for tool in items
-        if tool["slug"] in KNOWLEDGE_BASE_TOOL_SLUGS or str(tool.get("slug")) in allowed
-    ]
+    return [tool for tool in items if tool["slug"] in KNOWLEDGE_BASE_TOOL_SLUGS or str(tool.get("slug")) in allowed]
 
 
 def list_tool_slugs_for_user(user: User) -> list[str]:

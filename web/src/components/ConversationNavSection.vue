@@ -19,7 +19,8 @@
             <span
               class="conversation-title"
               :class="{ streaming: streamingThreadIds.has(chat.id) }"
-            >{{ chat.title || '新的对话' }}</span>
+              >{{ chat.title || '新的对话' }}</span
+            >
             <span v-if="showUnreadDot(chat.id)" class="unread-dot"></span>
             <span class="actions-mask"></span>
             <span class="conversation-actions" @click.stop>

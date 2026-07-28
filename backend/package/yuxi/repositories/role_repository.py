@@ -39,8 +39,6 @@ class RoleRepository:
         return int(result.scalar() or 0)
 
     async def delete(self, role: Role) -> None:
-        await self.db.execute(
-            update(User).where(User.role == role.key, User.is_deleted != 0).values(role="user")
-        )
+        await self.db.execute(update(User).where(User.role == role.key, User.is_deleted != 0).values(role="user"))
         await self.db.delete(role)
         await self.db.commit()

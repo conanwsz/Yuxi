@@ -179,10 +179,16 @@ async def test_jwt_and_api_key_resolve_updated_role_permissions_on_every_request
     user_id = None
     api_key_id = None
 
+    # 新建角色预置 apikey.manage + apikey.invoke，才能创建并使用 API Key；
+    # 后续通过 update_role 改为只含 dashboard.read，验证"权限实时刷新"语义
     create_role = await test_client.post(
         "/api/roles",
         headers=admin_headers,
-        json={"key": role_key, "name": f"即时权限 {suffix}", "permissions": []},
+        json={
+            "key": role_key,
+            "name": f"即时权限 {suffix}",
+            "permissions": ["apikey.manage", "apikey.invoke"],
+        },
     )
     assert create_role.status_code == 201, create_role.text
 
@@ -210,14 +216,17 @@ async def test_jwt_and_api_key_resolve_updated_role_permissions_on_every_request
         api_key_id = create_key.json()["api_key"]["id"]
         api_key_headers = {"Authorization": f"Bearer {create_key.json()['secret']}"}
 
+        # 先用 dashboard.read 验证无权限 → 200/403 取决于角色当前权限
         for headers in (jwt_headers, api_key_headers):
             denied = await test_client.get("/api/dashboard/conversations", headers=headers)
             assert denied.status_code == 403, denied.text
 
+        # 在保留 apikey.manage / apikey.invoke 的基础上追加 dashboard.read，
+        # 验证"权限实时刷新"：dashboard 接口从 403 变为 200
         update_role = await test_client.put(
             f"/api/roles/{role_key}",
             headers=admin_headers,
-            json={"permissions": ["dashboard.read"]},
+            json={"permissions": ["apikey.manage", "apikey.invoke", "dashboard.read"]},
         )
         assert update_role.status_code == 200, update_role.text
 

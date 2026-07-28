@@ -772,6 +772,23 @@ class PostgresManager(metaclass=SingletonMeta):
             """,
             "DELETE FROM api_keys WHERE user_id IS NULL",
             "ALTER TABLE IF EXISTS api_keys ALTER COLUMN user_id SET NOT NULL",
+            # API Key 鉴权权限化：admin/superadmin 自动获得 apikey.manage / apikey.invoke；
+            # 普通用户的存量 Key 立即失效（需要管理员在权限管理页显式授权后才会重新生效）
+            """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM app_schema_migrations
+                    WHERE migration_key = 'apikey_permission_v1'
+                ) THEN
+                    UPDATE roles
+                    SET permissions = permissions::jsonb || '["apikey.manage", "apikey.invoke"]'::jsonb
+                    WHERE key IN ('superadmin', 'admin');
+                    INSERT INTO app_schema_migrations (migration_key)
+                    VALUES ('apikey_permission_v1');
+                END IF;
+            END $$
+            """,
             "CREATE UNIQUE INDEX IF NOT EXISTS ix_agents_slug ON agents(slug)",
             "CREATE INDEX IF NOT EXISTS ix_agents_backend_id ON agents(backend_id)",
             "CREATE INDEX IF NOT EXISTS ix_agents_is_subagent ON agents(is_subagent)",

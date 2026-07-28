@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from langchain.agents.middleware import ModelRetryMiddleware
 
 from yuxi.agents.buildin.chatbot import graph as chatbot_graph
 from yuxi.agents.buildin.subagent import graph as subagent_graph
@@ -43,11 +44,14 @@ async def test_chatbot_summary_trim_limit_matches_summary_threshold(monkeypatch:
 
     monkeypatch.setattr(chatbot_graph, "create_subagent_task_middleware", no_subagent_middleware)
 
-    await chatbot_graph._build_middlewares(_context(summary_threshold=123))
+    middlewares = await chatbot_graph._build_middlewares(_context(summary_threshold=123))
 
     assert captured["summary_kwargs"]["trigger"] == ("tokens", 123 * 1024)
     assert captured["summary_kwargs"]["trim_tokens_to_summarize"] == 123 * 1024
     assert captured["summary_kwargs"]["l1_l2_trigger_ratio"] == 0.75
+    retry_middleware = next(item for item in middlewares if isinstance(item, ModelRetryMiddleware))
+    assert retry_middleware.max_retries == 1
+    assert retry_middleware.on_failure == "error"
 
 
 @pytest.mark.unit
@@ -56,8 +60,10 @@ async def test_subagent_summary_trim_limit_matches_summary_threshold(monkeypatch
     captured: dict = {}
     _patch_common_graph_deps(monkeypatch, subagent_graph, captured)
 
-    await subagent_graph._build_middlewares(_context(summary_threshold=64))
+    middlewares = await subagent_graph._build_middlewares(_context(summary_threshold=64))
 
     assert captured["summary_kwargs"]["trigger"] == ("tokens", 64 * 1024)
     assert captured["summary_kwargs"]["trim_tokens_to_summarize"] == 64 * 1024
     assert captured["summary_kwargs"]["l1_l2_trigger_ratio"] == 0.75
+    retry_middleware = next(item for item in middlewares if isinstance(item, ModelRetryMiddleware))
+    assert retry_middleware.on_failure == "error"

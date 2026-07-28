@@ -2,12 +2,7 @@
  * 部门管理 API
  */
 
-import {
-  apiAdminGet,
-  apiAdminPost,
-  apiAdminPut,
-  apiSuperAdminDelete
-} from './base'
+import { apiAdminGet, apiAdminPost, apiAdminPut, apiSuperAdminDelete } from './base'
 
 const BASE_URL = '/api/departments'
 
