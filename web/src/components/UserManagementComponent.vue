@@ -113,7 +113,6 @@
                       type="link"
                       size="small"
                       class="table-action-btn lucide-icon-btn"
-                      :disabled="isUserLifecycleActionDisabled(user)"
                       @click="showEditUserModal(user)"
                     >
                       <template #icon><SquarePen :size="13" /></template>

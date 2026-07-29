@@ -52,7 +52,7 @@ Docker 和 Kubernetes 不是互斥关系。Docker 解决的是“把一个进程
 
 当 `SANDBOX_PROVISIONER_BACKEND=docker` 时，`sandbox-provisioner` 会进入 `LocalContainerProvisionerBackend`。它会检查 Docker 是否可用，解析自身容器里 `/app/saves` 这个挂载点在宿主机上的真实路径，并据此推导出线程数据目录。随后它为每组文件线程与 skills 线程准备一个稳定的 `sandbox_id`，把容器命名为类似 `yuxi-sandbox-<id>` 的形式，并在 Docker 网络中启动真正的沙盒镜像。
 
-这个沙盒镜像默认来自 `SANDBOX_IMAGE`，容器内部监听的端口默认是 `8080`。provisioner 在启动容器时，会把这个端口随机映射到宿主机上的一个可用端口，再用 `DOCKER_SANDBOX_HOST` 拼出形如 `http://host.docker.internal:<random_port>` 的访问地址。Yuxi 后端拿到的就是这个地址。
+这个沙盒镜像默认是 Compose 从 `docker/agent-sandbox/Dockerfile` 构建的 `yuxi-agent-sandbox`。它基于上游 all-in-one sandbox，额外内置仓库中的 Noto Sans CJK SC 字体和 Matplotlib 默认字体配置，确保 Agent 离线生成中文图表时不缺字。`SANDBOX_IMAGE` 可以覆盖该镜像名；容器内部监听的端口默认是 `8080`。provisioner 在启动容器时，会把这个端口随机映射到宿主机上的一个可用端口，再用 `DOCKER_SANDBOX_HOST` 拼出形如 `http://host.docker.internal:<random_port>` 的访问地址。Yuxi 后端拿到的就是这个地址。
 
 Docker 后端在启动沙盒时，会挂载三类关键目录。第一类是用户级 workspace，挂载到容器内的 `/home/gem/user-data/workspace`。第二类是文件线程级 uploads/outputs，分别挂载到 `/home/gem/user-data/uploads` 和 `/home/gem/user-data/outputs`。第三类是 skills 线程可见的 skills 目录，挂载到 `/home/gem/skills`，而且是只读挂载。除此之外，容器的 `/home/gem` 本身还会额外挂一个 `tmpfs`，原因是当前沙盒镜像启动时要求 `/home/gem` 可写，但 Yuxi 希望真正持久化的只有 `user-data` 下面的内容。
 
@@ -71,6 +71,8 @@ Docker 后端在启动沙盒时，会挂载三类关键目录。第一类是用�
 当 `SANDBOX_PROVISIONER_BACKEND=kubernetes` 时，`sandbox-provisioner` 会改用 Kubernetes Python 客户端。它会先加载 kubeconfig 或集群内配置，然后在指定的 namespace 中创建一个沙盒 Pod，再创建一个同名的 NodePort Service，把这个 Service 的 `nodePort` 暴露给 Yuxi 后端使用。
 
 Kubernetes 后端下，沙盒还是同一套镜像，还是暴露同样的 HTTP API，但存储方式和暴露方式变了。它不会依赖宿主机 Docker bind mount，而是要求有一个可写的 PVC。当前实现里真正使用的是 `THREAD_PVC`，Pod 会把这块共享存储挂到 `/mnt/shared-data`，然后用 `subPath` 的方式把 `threads/shared/<uid>/workspace` 挂到 `/home/gem/user-data/workspace`，把 `threads/<file_thread_id>/user-data/uploads` 与 `threads/<file_thread_id>/user-data/outputs` 分别挂到 uploads/outputs，把 `threads/<skills_thread_id>/skills` 挂到 `/home/gem/skills`。这样做的好处是目录结构仍然可以和 Docker 模式保持一致，同时允许子智能体共享父对话文件但隔离 skills。
+
+Compose 构建出的 `yuxi-agent-sandbox` 只存在于本机 Docker daemon。Kubernetes 后端使用该派生镜像时，需要先把它推送到集群可拉取的镜像仓库，再通过 `SANDBOX_IMAGE` 配置完整的远程镜像地址。
 
 需要特别说明的是，代码里虽然读取了 `SKILLS_PVC` 这个环境变量，但当前 Pod 规格实际没有使用单独的 skills PVC，而是统一从 `THREAD_PVC` 中切 `threads/<thread_id>/skills` 这个子路径。因此，如果看到环境变量里同时出现 `SKILLS_PVC` 和 `THREAD_PVC`，应当以 `THREAD_PVC` 的真实挂载语义为准，`SKILLS_PVC` 目前更像一个预留字段。
 
@@ -216,7 +218,7 @@ sandbox-provisioner 的环境变量传递分**两层**，需要分别理解：
 | 变量名 | 说明 | 默认值 |
 |--------|------|--------|
 | `PROVISIONER_BACKEND` | 底层后端类型，`docker` 或 `kubernetes` | `docker` |
-| `SANDBOX_IMAGE` | 沙盒容器镜像 | 详见 compose 文件 |
+| `SANDBOX_IMAGE` | 沙盒容器镜像 | `yuxi-agent-sandbox:0.7.1.beta1` |
 | `SANDBOX_CONTAINER_PORT` | 沙盒容器内部端口 | `8080` |
 | `SANDBOX_IDLE_TIMEOUT_SECONDS` | 空闲回收时间 | `120` |
 | `SANDBOX_HEALTH_TIMEOUT_SECONDS` | 健康检查超时 | `300` |
