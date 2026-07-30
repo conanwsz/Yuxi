@@ -95,6 +95,15 @@ services:
       sandbox-provisioner:
         condition: service_healthy
 
+  agent-sandbox-image:
+    build:
+      context: ./docker/agent-sandbox
+      dockerfile: Dockerfile
+    image: yuxi-agent-sandbox:${YUXI_VERSION:-0.7.1.beta1}
+    entrypoint: ["/bin/true"]
+    network_mode: none
+    restart: "no"
+
   sandbox-provisioner:
     build:
       context: ./docker/sandbox_provisioner
@@ -111,7 +120,7 @@ services:
     environment:
       # Common provisioner settings
       - PROVISIONER_BACKEND=${SANDBOX_PROVISIONER_BACKEND:-docker}
-      - SANDBOX_IMAGE=${SANDBOX_IMAGE:-enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:latest}
+      - SANDBOX_IMAGE=${SANDBOX_IMAGE:-yuxi-agent-sandbox:${YUXI_VERSION:-0.7.1.beta1}}
       - SANDBOX_CONTAINER_PORT=${SANDBOX_CONTAINER_PORT:-8080}
       - MEMORY_SANDBOX_URL_TEMPLATE=${MEMORY_SANDBOX_URL_TEMPLATE:-http://agent-sandbox:8000}
       - SANDBOX_HEALTH_TIMEOUT_SECONDS=${SANDBOX_HEALTH_TIMEOUT_SECONDS:-300}
@@ -139,6 +148,9 @@ services:
       timeout: 5s
       retries: 6
       start_period: 10s
+    depends_on:
+      agent-sandbox-image:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   web:
