@@ -538,6 +538,9 @@ class OIDCUtils:
         if not name:
             name = username
 
+        picture = userinfo.get("picture")
+        avatar = picture.strip() if isinstance(picture, str) and picture.strip() else None
+
         department_name = None
         department_description = None
         if oidc_config.fetch_department_info:
@@ -555,6 +558,7 @@ class OIDCUtils:
             "username": username,
             "email": email,
             "name": name,
+            "avatar": avatar,
             "department_name": department_name,
             "department_description": department_description,
             "raw": userinfo,
@@ -932,7 +936,7 @@ async def create_oidc_user(db, user_info: dict, issuer: str, email: str, departm
                 username=username,
                 uid=uid,
                 phone_number=None,
-                avatar=None,
+                avatar=user_info.get("avatar"),
                 password_hash=password_hash,
                 role=oidc_config.default_role,
                 department_id=department_id,
@@ -979,9 +983,11 @@ async def create_oidc_user(db, user_info: dict, issuer: str, email: str, departm
     )
 
 
-async def update_oidc_user_login(db, user: User) -> None:
-    """更新 OIDC 用户登录时间"""
+async def update_oidc_user_login(db, user: User, avatar: str | None) -> None:
+    """更新 OIDC 用户登录信息"""
     user.last_login = utc_now_naive()
+    if avatar is not None:
+        user.avatar = avatar
     await db.commit()
 
 
@@ -1062,6 +1068,10 @@ async def oidc_callback_handler(
     issuer = id_token_claims["iss"]
     email = normalize_oidc_email(extracted_info.get("email")) or normalize_oidc_email(id_token_claims.get("email"))
     extracted_info["email"] = email
+    if extracted_info.get("avatar") is None:
+        picture = id_token_claims.get("picture")
+        if isinstance(picture, str) and picture.strip():
+            extracted_info["avatar"] = picture.strip()
 
     # 新身份表以 issuer + subject 为主键；旧 uid/占位绑定仅用于兼容并在成功后迁移。
     user_by_identity = await find_user_by_external_identity(db, issuer, sub)
@@ -1140,7 +1150,7 @@ async def oidc_callback_handler(
         user = await bind_external_identity(db, user, issuer, sub, email)
     except OIDCIdentityConflict:
         return _redirect_to_login_with_error("该邮箱已绑定其他第三方身份，请联系管理员处理")
-    await update_oidc_user_login(db, user)
+    await update_oidc_user_login(db, user, extracted_info.get("avatar"))
 
     token_data = {"sub": str(user.id)}
     jwt_token = AuthUtils.create_access_token(token_data)

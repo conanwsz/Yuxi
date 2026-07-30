@@ -104,7 +104,11 @@ async def test_oidc_callback_allows_existing_binding_when_sub_contains_colon(oid
         return {"iss": "https://issuer.example", "sub": "tenant:user"}
 
     async def fake_userinfo(cls, access_token):
-        return {"sub": "tenant:user", "preferred_username": "alice"}
+        return {
+            "sub": "tenant:user",
+            "preferred_username": "alice",
+            "picture": "https://issuer.example/avatars/alice.png",
+        }
 
     async def fake_log_operation(db, user_id, operation, request=None):
         return None
@@ -124,6 +128,8 @@ async def test_oidc_callback_allows_existing_binding_when_sub_contains_colon(oid
     assert identity.issuer == "https://issuer.example"
     assert identity.subject == "tenant:user"
     assert identity.user_id == user.id
+    await oidc_session.refresh(user)
+    assert user.avatar == "https://issuer.example/avatars/alice.png"
 
 
 async def test_oidc_callback_rejects_disabled_user_instead_of_restoring(oidc_session, monkeypatch):
@@ -495,14 +501,31 @@ async def test_created_oidc_user_uses_employee_number_from_email_as_uid(oidc_ses
 
     user = await oidc_service.create_oidc_user(
         oidc_session,
-        {"sub": subject, "name": "张三疯", "username": "zhang-sanfeng"},
+        {
+            "sub": subject,
+            "name": "张三疯",
+            "username": "zhang-sanfeng",
+            "avatar": "https://issuer.example/avatars/zhang.png",
+        },
         "https://issuer.example",
         "790100005580@cn-ne.cn",
     )
 
     assert user.uid == "790100005580"
+    assert user.avatar == "https://issuer.example/avatars/zhang.png"
     identity = await oidc_service.find_user_by_external_identity(oidc_session, "https://issuer.example", subject)
     assert identity.id == user.id
+
+
+async def test_oidc_login_without_avatar_keeps_existing_avatar(oidc_session):
+    user = await _create_user(oidc_session)
+    user.avatar = "/api/files/avatar/alice.png"
+    await oidc_session.commit()
+
+    await oidc_service.update_oidc_user_login(oidc_session, user, None)
+
+    await oidc_session.refresh(user)
+    assert user.avatar == "/api/files/avatar/alice.png"
 
 
 async def test_create_oidc_user_rejects_employee_uid_owned_by_another_account(oidc_session, monkeypatch):
