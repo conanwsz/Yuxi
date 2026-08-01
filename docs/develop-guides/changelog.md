@@ -115,7 +115,7 @@
 - 统一流式事件线程 ID 提取契约：新增共享 `extract_thread_id` 工具，`BaseAgent`、聊天服务和 run worker 统一只读取规范化事件的一层稳定路径，并通过显式 fallback 处理父线程归属，避免递归扫描嵌套 metadata 导致父/子线程事件路由分歧。
 - 新增会话列表实时刷新：首页左侧会话列表在发送消息后和收到回复完成后自动按 `updated_at` 重新排序，最新活动的会话上浮到非置顶区域顶部；前端通过 `chatThreadsStore.touchThread()` 乐观更新 `updated_at`，避免整表刷新和闪烁；置顶会话始终在最上方不受影响，审批中断场景不会误触发刷新。
 - 新增定时任务（Schedule）能力：拥有 `system.schedules.manage` 权限的用户可在 `/api/schedules` 配置按 cron 表达式定时触发的智能体运行，该权限默认授予 admin/superadmin，也可由超级管理员在「权限管理」中授予其他角色；后端 `SchedulerService` 在 API 进程 lifespan 中以 10s tick 周期扫描到点任务，按 croniter 计算下一次触发时间，以 `owner_uid` 身份调用既有 `create_agent_run_view` + `enqueue_agent_run` + `await_agent_run_result` 复用完整 AgentRun 链路；每条触发落地独立的 `schedule_executions` 行并自动建一个 thread=`schedule-<id>` 的「调度对话」便于前端跳转；执行历史保留 90 天（每 tick 顺手清理）。现有角色权限矩阵已通过 `schedule_manage_permission_v1` schema 迁移自动补齐；启停 cron / 时区合法性校验、`POST /fire` 立即触发、删除 schedule 级联清理 execution、优雅停机（取消 tick + 等 in-flight 派发带 10s 超时）均已覆盖。
-- 修复普通用户首次通过 OIDC 登录后侧栏权限菜单缺失、刷新才出现的问题：OIDC code 交换响应现在保留角色名称与完整功能权限，首次进入即可正确显示「智能体扩展」「智能体管理」及其他已授权菜单。
+- 修复普通用户首次登录后侧栏权限菜单缺失、刷新才出现的问题：OIDC code 交换响应保留角色名称与完整功能权限；密码与 OIDC 登录在保存 token 后统一等待 `/api/auth/me` 回填身份和权限，再初始化 Agent 并进入业务页面，首次进入即可正确显示「智能体扩展」「智能体管理」及其他已授权菜单。
 - 修复侧边栏会话列表不实时刷新的问题：发送消息和收到回复后，对应会话不会自动上浮到列表顶部，只有切换智能体或手动刷新才会更新。根因是前端在发送消息（`handleSendMessage`）和 run 结束（`onTerminalDetected`）两个时机都没有更新会话列表项的 `updated_at`，而 `ConversationNavSection` 按 `updated_at` 排序。新增 `chatThreadsStore.touchThread` 方法，在这两个时机乐观更新已存在 thread 的 `updated_at`，触发列表重排，零网络请求、零延迟。
 
 ## v0.7.0 (2026-06-13)

@@ -68,21 +68,8 @@ const handleCallback = async () => {
 
     await router.replace({ path: route.path, query: {} })
 
-    // 更新用户状态
-    userStore.token = tokenData.access_token
-    userStore.userId = tokenData.uid
-    userStore.username = tokenData.username
-    userStore.uid = tokenData.uid || ''
-    userStore.phoneNumber = tokenData.phone_number || ''
-    userStore.avatar = tokenData.avatar || ''
-    userStore.userRole = tokenData.role || 'user'
-    userStore.roleName = tokenData.role_name || tokenData.role || '普通用户'
-    userStore.permissions = tokenData.permissions || []
-    userStore.departmentId = tokenData.department_id || null
-    userStore.departmentName = tokenData.department_name || ''
-
-    // 保存 token 到 localStorage
-    localStorage.setItem('user_token', tokenData.access_token)
+    // 以 /auth/me 作为用户身份与权限的统一真值，完成后再进入业务页面。
+    await userStore.completeLogin(tokenData.access_token)
 
     // 显示成功消息
     message.success('登录成功')
