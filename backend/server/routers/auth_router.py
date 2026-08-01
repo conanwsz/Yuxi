@@ -177,6 +177,8 @@ class OIDCLoginResponse(BaseModel):
     phone_number: str | None = None
     avatar: str | None = None
     role: str
+    role_name: str
+    permissions: list[str] = Field(default_factory=list)
     department_id: int | None = None
     department_name: str | None = None
     redirect_path: str = "/"

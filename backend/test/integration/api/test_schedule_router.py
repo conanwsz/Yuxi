@@ -27,20 +27,61 @@ _SCHEDULE_BASE_PAYLOAD = {
 }
 
 
-async def test_schedule_routes_require_admin(test_client, standard_user):
-    """非 admin 访问应被 403 拒绝。"""
-    headers = standard_user["headers"]
+async def test_standard_user_schedule_access_follows_role_permission(
+    test_client, standard_user, admin_headers
+):
+    """普通用户的定时任务访问应跟随权限管理配置。"""
+    me_response = await test_client.get("/api/auth/me", headers=admin_headers)
+    assert me_response.status_code == 200, me_response.text
+    if me_response.json()["role"] != "superadmin":
+        pytest.skip("Role administration requires a superadmin integration account.")
 
-    list_resp = await test_client.get("/api/schedules", headers=headers)
-    assert list_resp.status_code == 403
+    roles_response = await test_client.get("/api/roles", headers=admin_headers)
+    assert roles_response.status_code == 200, roles_response.text
+    user_role = next(role for role in roles_response.json()["roles"] if role["key"] == "user")
+    original_permissions = list(user_role["permissions"])
+    revoked_permissions = [
+        permission for permission in original_permissions if permission != "system.schedules.manage"
+    ]
+    granted_permissions = sorted(set(original_permissions) | {"system.schedules.manage"})
 
-    detail_resp = await test_client.get(f"/api/schedules/{uuid.uuid4().hex}", headers=headers)
-    assert detail_resp.status_code == 403
+    try:
+        revoke_response = await test_client.put(
+            "/api/roles/user",
+            headers=admin_headers,
+            json={"permissions": revoked_permissions},
+        )
+        assert revoke_response.status_code == 200, revoke_response.text
 
-    fire_resp = await test_client.post(
-        f"/api/schedules/{uuid.uuid4().hex}/fire", headers=headers
-    )
-    assert fire_resp.status_code == 403
+        headers = standard_user["headers"]
+        list_response = await test_client.get("/api/schedules", headers=headers)
+        assert list_response.status_code == 403
+        detail_response = await test_client.get(
+            f"/api/schedules/{uuid.uuid4().hex}", headers=headers
+        )
+        assert detail_response.status_code == 403
+        fire_response = await test_client.post(
+            f"/api/schedules/{uuid.uuid4().hex}/fire", headers=headers
+        )
+        assert fire_response.status_code == 403
+
+        update_response = await test_client.put(
+            "/api/roles/user",
+            headers=admin_headers,
+            json={"permissions": granted_permissions},
+        )
+        assert update_response.status_code == 200, update_response.text
+
+        list_response = await test_client.get("/api/schedules", headers=headers)
+        assert list_response.status_code == 200, list_response.text
+        assert isinstance(list_response.json()["schedules"], list)
+    finally:
+        restore_response = await test_client.put(
+            "/api/roles/user",
+            headers=admin_headers,
+            json={"permissions": original_permissions},
+        )
+        assert restore_response.status_code == 200, restore_response.text
 
 
 async def test_admin_can_create_get_update_delete_schedule(test_client, admin_headers):
