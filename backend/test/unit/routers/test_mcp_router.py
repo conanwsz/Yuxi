@@ -86,6 +86,26 @@ def test_update_mcp_server_status_not_found(monkeypatch):
     assert resp.status_code == 404, resp.text
 
 
+def test_test_mcp_server_reports_connection_failure(monkeypatch):
+    async def fake_get_server_or_404(db, slug):
+        del db, slug
+        return object()
+
+    async def fake_get_all_mcp_tools(slug, *, raise_on_error=False):
+        del slug
+        assert raise_on_error is True
+        raise RuntimeError("connection failed")
+
+    monkeypatch.setattr("server.routers.mcp_router.get_server_or_404", fake_get_server_or_404)
+    monkeypatch.setattr("server.routers.mcp_router.get_all_mcp_tools", fake_get_all_mcp_tools)
+
+    client = TestClient(_build_app())
+    resp = client.post("/api/system/mcp-servers/demo-mcp/test")
+
+    assert resp.status_code == 500
+    assert resp.json()["detail"] == "连接失败: connection failed"
+
+
 def test_get_mcp_servers_normal_user_is_stripped(monkeypatch):
     class DummyServer:
         def __init__(self):

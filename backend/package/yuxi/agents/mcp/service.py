@@ -200,6 +200,7 @@ async def get_mcp_tools(
     disabled_tools: list[str] = None,
     cache: bool = True,
     force_refresh: bool = False,
+    raise_on_error: bool = False,
 ) -> list[Callable[..., Any]]:
     """Get MCP tools for a specific server.
 
@@ -214,6 +215,7 @@ async def get_mcp_tools(
         disabled_tools: List of tool names to filter out from the RETURN value (does not affect cache)
         cache: Whether to use/update the cache (default: True)
         force_refresh: Whether to force a refresh from the server (default: False)
+        raise_on_error: Whether to surface connection errors to the caller (default: False)
     """
     if additional_servers and server_slug in additional_servers:
         server_config = additional_servers[server_slug]
@@ -243,6 +245,8 @@ async def get_mcp_tools(
 
             client = await get_mcp_client({server_slug: client_config})
             if client is None:
+                if raise_on_error:
+                    raise RuntimeError(f"MCP server '{server_slug}' client initialization failed")
                 return []
 
             raw_tools = cast(list[Any], await client.get_tools())
@@ -284,6 +288,8 @@ async def get_mcp_tools(
 
         except Exception as e:
             logger.exception(f"Failed to load tools from MCP server '{server_slug}': {e}")
+            if raise_on_error:
+                raise
             return []
 
     # 3. Filtering (Apply to Return Value Only)
@@ -582,7 +588,7 @@ async def get_servers_config(names: list[str]) -> dict[str, dict[str, Any]]:
     return await _load_enabled_mcp_server_configs(names=names)
 
 
-async def get_all_mcp_tools(server_slug: str) -> list:
+async def get_all_mcp_tools(server_slug: str, *, raise_on_error: bool = False) -> list:
     """Get all tools of an MCP server (no filtering).
 
     For management UI to display tool list, supports viewing all tools and their enabled status.
@@ -606,4 +612,5 @@ async def get_all_mcp_tools(server_slug: str) -> list:
         disabled_tools=[],
         cache=False,
         force_refresh=True,
+        raise_on_error=raise_on_error,
     )

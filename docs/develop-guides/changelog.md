@@ -15,6 +15,7 @@
 
 ### 开发记录
 
+- 修复 stdio MCP 因数据库残留 URL、HTTP 超时等字段而无法连接的问题：运行配置现在严格按传输类型投影，stdio 仅传递命令、参数和环境变量，SSE/Streamable HTTP 仅传递 URL、请求头及超时；MCP 测试、工具列表与刷新接口不再把连接异常误报成“连接成功、0 个工具”。
 - 修复超级管理员无法在用户管理列表编辑本人资料的问题：编辑操作不再复用禁用、删除等账户生命周期操作的“本人不可操作”判断，禁用本人和删除本人等安全限制保持不变。
 - Agent 沙盒镜像内置 Noto Sans CJK SC 中文字体及 Matplotlib 默认字体配置；字体文件和 SIL OFL 许可证随仓库保存，开发与生产 Compose 会先构建 `yuxi-agent-sandbox` 派生镜像，再由 provisioner 按需创建沙盒，避免运行时联网安装字体及中文图表缺字。
 - 网页搜索 backend 抽象化：把单一 `tavily_search` slot 抽成可插拔的 search backend，新增 `YUXI_SEARCH_BACKEND` 环境变量（`auto` / `tavily` / `duckduckgo`）。`auto` 模式下优先 Tavily（需 `TAVILY_API_KEY`），无 key 时自动 fallback 到 DuckDuckGo（`ddgs` 库，零成本、零 API key），使公司无搜索引擎预算环境下 `deep-research` 技能和子智能体网页搜索仍可工作。slot 名 `tavily_search` 保持不变以兼容既有 skill 的 `tool_dependencies`；新增 `yuxi/agents/toolkits/buildin/search.py` 提供统一 `create_search_tool()` 工厂；工具元数据 `display_name` / `config_guide` 提示用户当前 backend 及如何切换。所有搜索结果统一返回结构化 JSON（`{query, results:[{title,url,snippet}]}`），并对网络异常做优雅降级；新增 `test/unit/agents/toolkits/buildin/test_search.py` 覆盖 backend 选择、结果格式化、clamp `max_results` 和 slot 注册。
