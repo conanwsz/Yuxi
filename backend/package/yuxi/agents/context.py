@@ -208,7 +208,9 @@ class BaseContext:
         default=None,
         metadata={
             "name": "知识库",
-            "description": "知识库列表，可以在左侧知识库页面中创建知识库。默认选择当前用户可访问的全部知识库。",
+            "description": (
+                "Agent 运行时可使用的知识库。显式选择由 Agent 授予使用范围；未选择时使用当前用户直接可访问的知识库。"
+            ),
             "type": "list",
             "kind": "knowledges",
         },
@@ -433,6 +435,7 @@ async def resolve_agent_resource_options(
     *,
     db,
     user,
+    bound_knowledge_ids: list[str] | None = None,
 ) -> dict[str, list[dict[str, str]]]:
     fields_to_load = _AGENT_RESOURCE_FIELDS if resource_fields is None else resource_fields
     if not fields_to_load:
@@ -458,7 +461,14 @@ async def resolve_agent_resource_options(
     if "knowledges" in fields_to_load:
         from yuxi.knowledge.runtime import knowledge_base
 
-        databases = await knowledge_base.get_databases_by_user(user)
+        databases = (
+            await knowledge_base.get_databases()
+            if bound_knowledge_ids is not None
+            else await knowledge_base.get_databases_by_user(user)
+        )
+        if bound_knowledge_ids is not None:
+            bound_ids = {str(kb_id).strip() for kb_id in bound_knowledge_ids if str(kb_id).strip()}
+            databases = [database for database in databases if database.kb_id in bound_ids]
         options["knowledges"] = [
             _resource_option(item.kb_id, item.name, item.description) for item in databases if item.kb_id
         ]
@@ -511,7 +521,14 @@ async def normalize_agent_context_config(
     if not fields_to_load:
         return normalized
 
-    resource_options = await resolve_agent_resource_options(fields_to_load, db=db, user=user)
+    selected_knowledges = normalized.get("knowledges")
+    bound_knowledge_ids = selected_knowledges if isinstance(selected_knowledges, list) else None
+    resource_options = await resolve_agent_resource_options(
+        fields_to_load,
+        db=db,
+        user=user,
+        bound_knowledge_ids=bound_knowledge_ids,
+    )
     available = {
         field_name: [option["key"] for option in field_options]
         for field_name, field_options in resource_options.items()

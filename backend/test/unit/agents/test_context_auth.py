@@ -139,6 +139,9 @@ async def test_resolve_agent_resource_options_empty_fields_loads_nothing(monkeyp
 @pytest.mark.asyncio
 async def test_normalize_agent_context_config_expands_null_and_filters_explicit_lists(monkeypatch):
     async def fake_get_databases_by_user(_user):
+        return [_knowledge_summary("kb-a")]
+
+    async def fake_get_databases():
         return [_knowledge_summary("kb-a"), _knowledge_summary("kb-b")]
 
     async def fake_get_all_mcp_servers(_db):
@@ -177,7 +180,12 @@ async def test_normalize_agent_context_config_expands_null_and_filters_explicit_
     monkeypatch.setitem(
         sys.modules,
         "yuxi.knowledge.runtime",
-        types.SimpleNamespace(knowledge_base=types.SimpleNamespace(get_databases_by_user=fake_get_databases_by_user)),
+        types.SimpleNamespace(
+            knowledge_base=types.SimpleNamespace(
+                get_databases=fake_get_databases,
+                get_databases_by_user=fake_get_databases_by_user,
+            )
+        ),
     )
     monkeypatch.setitem(
         sys.modules,
@@ -209,13 +217,12 @@ async def test_normalize_agent_context_config_expands_null_and_filters_explicit_
             "max_execution_steps": 50,
         },
         db=object(),
-        user=types.SimpleNamespace(
-            role="user", uid="u1", department_id=None, resource_access=ALL_RESOURCE_ACCESS
-        ),
+        user=types.SimpleNamespace(role="user", uid="u1", department_id=None, resource_access=ALL_RESOURCE_ACCESS),
         context_schema=ChatBotContext,
     )
 
     assert normalized["tools"] == ["ask_user_question", "web_search"]
+    # Agent 显式绑定的知识库是运行授权，不依赖当前用户是否能在管理页直接读取。
     assert normalized["knowledges"] == ["kb-b"]
     assert normalized["mcps"] == ["mcp-a", "mcp-b"]
     assert normalized["skills"] == []
@@ -229,9 +236,7 @@ async def test_normalize_agent_context_config_expands_null_and_filters_explicit_
     empty_subagents_normalized = await normalize_agent_context_config(
         {"tools": [], "knowledges": [], "mcps": [], "skills": [], "subagents": []},
         db=object(),
-        user=types.SimpleNamespace(
-            role="user", uid="u1", department_id=None, resource_access=ALL_RESOURCE_ACCESS
-        ),
+        user=types.SimpleNamespace(role="user", uid="u1", department_id=None, resource_access=ALL_RESOURCE_ACCESS),
         context_schema=ChatBotContext,
     )
 
@@ -242,6 +247,9 @@ async def test_normalize_agent_context_config_expands_null_and_filters_explicit_
 async def test_prepare_agent_runtime_context_filters_resources_and_derives_runtime_scope(monkeypatch):
     async def fake_get_databases_by_user(_user):
         return [_knowledge_summary("kb-a"), _knowledge_summary("kb-b")]
+
+    async def fake_get_databases():
+        return await fake_get_databases_by_user(None)
 
     async def fake_get_all_mcp_servers(_db):
         return [types.SimpleNamespace(slug="mcp-a", name="MCP A", description="", enabled=True)]
@@ -279,9 +287,7 @@ async def test_prepare_agent_runtime_context_filters_resources_and_derives_runti
     class FakeUserRepository:
         async def get_by_uid_with_db(self, _db, uid):
             assert uid == "u1"
-            return types.SimpleNamespace(
-                role="user", uid="u1", department_id=None, resource_access=ALL_RESOURCE_ACCESS
-            )
+            return types.SimpleNamespace(role="user", uid="u1", department_id=None, resource_access=ALL_RESOURCE_ACCESS)
 
     class FakeAgentRepository:
         def __init__(self, _db):
@@ -323,7 +329,12 @@ async def test_prepare_agent_runtime_context_filters_resources_and_derives_runti
     monkeypatch.setitem(
         sys.modules,
         "yuxi.knowledge.runtime",
-        types.SimpleNamespace(knowledge_base=types.SimpleNamespace(get_databases_by_user=fake_get_databases_by_user)),
+        types.SimpleNamespace(
+            knowledge_base=types.SimpleNamespace(
+                get_databases=fake_get_databases,
+                get_databases_by_user=fake_get_databases_by_user,
+            )
+        ),
     )
     monkeypatch.setitem(
         sys.modules,

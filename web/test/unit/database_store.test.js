@@ -12,6 +12,44 @@ globalThis.localStorage = {
   clear: () => storageValues.clear()
 }
 
+test('普通用户即使拥有知识库读取权限也只加载可使用知识库', async () => {
+  const server = await createServer({
+    server: { middlewareMode: true },
+    appType: 'custom'
+  })
+
+  try {
+    setActivePinia(createPinia())
+    const { databaseApi } = await server.ssrLoadModule('/src/apis/knowledge_api.js')
+    const { useDatabaseStore } = await server.ssrLoadModule('/src/stores/database.js')
+    const { useUserStore } = await server.ssrLoadModule('/src/stores/user.js')
+    const userStore = useUserStore()
+    const requests = []
+
+    userStore.userRole = 'user'
+    userStore.permissions = ['knowledge.read']
+    databaseApi.getDatabases = async () => {
+      requests.push('management')
+      return { databases: [] }
+    }
+    databaseApi.getAccessibleDatabases = async () => {
+      requests.push('accessible')
+      return { databases: [{ kb_id: 'kb_1', created_at: '2026-08-08T00:00:00Z' }] }
+    }
+
+    const store = useDatabaseStore()
+    await store.loadDatabases()
+
+    assert.deepEqual(requests, ['accessible'])
+    assert.deepEqual(
+      store.databases.map((database) => database.kb_id),
+      ['kb_1']
+    )
+  } finally {
+    await server.close()
+  }
+})
+
 test('从二级目录点击全部文件会清空 parent_id 并返回根目录', async () => {
   const server = await createServer({
     server: { middlewareMode: true },
