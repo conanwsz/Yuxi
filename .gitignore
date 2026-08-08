@@ -83,3 +83,8 @@ docs/vibe/*
 
 .taskr/
 web/src/utils/__tests__/
+
+# local agent runtime and verification artifacts
+.harness/
+.omx/
+output/
