@@ -51,16 +51,14 @@ const skillsRef = ref(null)
 const mcpRef = ref(null)
 const toolsRef = ref(null)
 
-const extensionTabs = computed(() =>
-  [
-    ['knowledge.read', { key: 'knowledge', label: '知识库' }],
-    ['tools.read', { key: 'tools', label: '工具' }],
-    ['mcp.read', { key: 'mcp', label: 'MCP' }],
-    ['skills.read', { key: 'skills', label: 'Skills' }]
-  ]
-    .filter(([permission]) => userStore.hasPermission(permission))
-    .map(([, tab]) => tab)
-)
+const adminExtensionTabs = [
+  { key: 'knowledge', label: '知识库' },
+  { key: 'skills', label: '技能' },
+  { key: 'tools', label: '工具' },
+  { key: 'mcp', label: 'MCP' }
+]
+const userExtensionTabs = [{ key: 'skills', label: '技能' }]
+const extensionTabs = computed(() => (userStore.isAdmin ? adminExtensionTabs : userExtensionTabs))
 const allowedTabKeys = computed(() => extensionTabs.value.map((tab) => tab.key))
 const defaultTabKey = computed(() => extensionTabs.value[0]?.key || null)
 

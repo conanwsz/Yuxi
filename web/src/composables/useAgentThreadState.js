@@ -54,6 +54,13 @@ const isCompletedReplacement = (failedMessage, serverMessage) => {
   return failedAt !== null && completedAt !== null && completedAt >= failedAt
 }
 
+const IDLE_QUEUE_SNAPSHOT = Object.freeze({
+  status: 'idle',
+  paused_reason: null,
+  blocking_run_id: null,
+  can_continue: false
+})
+
 export function useAgentThreadState({
   chatState,
   getCurrentThreadId,
@@ -74,16 +81,22 @@ export function useAgentThreadState({
         isStreaming: false,
         runStreamAbortController: null,
         activeRunId: null,
+        activeRunSteerable: false,
         runLastSeq: '0-0',
         lastRetryableJobTry: null,
         replyLoadingVisible: false,
         pendingRequestId: null,
         pendingInterrupt: null,
-        // 请求在后端创建 run 前失败时，用户消息不会进入服务端历史；保存在这里以便后续发送不覆盖它。
+        agentStateRequestVersion: 0,
+        // API 在持久化消息前拒绝请求时，保留完整用户消息；队列接纳或历史补齐后再清理。
         failedHumanMessages: loadFailedHumanMessages(threadId),
         onGoingConv: createOnGoingConvState(),
         agentState: null,
-        contextCompressing: false
+        contextCompressing: false,
+        queuedRequests: [],
+        queueSnapshot: { ...IDLE_QUEUE_SNAPSHOT },
+        continueQueueInFlight: false,
+        requestStreams: {}
       }
     }
     return chatState.threadStates[threadId]
@@ -122,6 +135,13 @@ export function useAgentThreadState({
     }
   }
 
+  const abortAllRequestStreams = (threadState) => {
+    if (!threadState?.requestStreams) return
+    for (const entry of Object.values(threadState.requestStreams)) {
+      entry.controller?.abort()
+    }
+  }
+
   const cleanupThreadState = (threadId) => {
     if (!threadId) return
     const threadState = chatState.threadStates[threadId]
@@ -134,10 +154,14 @@ export function useAgentThreadState({
     if (threadState.runStreamAbortController) {
       threadState.runStreamAbortController.abort()
     }
+    abortAllRequestStreams(threadState)
     delete chatState.threadStates[threadId]
   }
 
-  const resetOnGoingConv = (threadId = null) => {
+  const resetOnGoingConv = (
+    threadId = null,
+    { preserveRunStream = false, preserveRequestStreams = false } = {}
+  ) => {
     const targetThreadId =
       threadId || (typeof getCurrentThreadId === 'function' ? getCurrentThreadId() : null)
 
@@ -149,9 +173,13 @@ export function useAgentThreadState({
         onBeforeResetThread(targetThreadId)
       }
 
-      if (threadState.runStreamAbortController) {
+      if (!preserveRunStream && threadState.runStreamAbortController) {
         threadState.runStreamAbortController.abort()
         threadState.runStreamAbortController = null
+      }
+      if (!preserveRequestStreams && threadState.requestStreams) {
+        abortAllRequestStreams(threadState)
+        threadState.requestStreams = {}
       }
 
       threadState.onGoingConv = createOnGoingConvState()
@@ -174,3 +202,5 @@ export function useAgentThreadState({
     persistFailedHumanMessages
   }
 }
+
+export { IDLE_QUEUE_SNAPSHOT }

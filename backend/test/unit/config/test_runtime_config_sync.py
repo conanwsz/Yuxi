@@ -90,6 +90,16 @@ def test_fresh_import_loads_default_ocr_engine_without_initializing_knowledge_ru
     assert "Failed to load config" not in result.stdout + result.stderr
 
 
+def test_fresh_import_keeps_disable_as_default_ocr_engine(tmp_path):
+    loaded, result = _import_yuxi_in_fresh_process(
+        tmp_path,
+        'default_ocr_engine = "disable"\n',
+    )
+
+    assert loaded["default_ocr_engine"] == "disable"
+    assert "Invalid config key ignored" not in result.stdout + result.stderr
+
+
 def test_fresh_import_ignores_invalid_ocr_engine_and_loads_later_config(tmp_path):
     loaded, _ = _import_yuxi_in_fresh_process(
         tmp_path,
@@ -117,7 +127,6 @@ def test_save_writes_runtime_snapshot_after_base_toml(tmp_path, monkeypatch: pyt
     assert payload["enable_content_guard"] is True
     assert payload["default_ocr_engine"] == "rapid_ocr"
     assert "save_dir" not in payload
-    assert payload["sandbox_provider"] == "provisioner"
     assert "enable_reranker" not in payload
     assert "default_agent_id" not in payload
     # 快照只含公开配置字段，不夹带元数据
@@ -172,7 +181,6 @@ def test_refresh_loads_public_config_from_redis(tmp_path, monkeypatch: pytest.Mo
     payload = {
         "default_model": "test-provider:worker-chat",
         "save_dir": redis_save_dir,
-        "sandbox_virtual_path_prefix": "/redis/user-data",
         "default_ocr_engine": "mineru_ocr",
         "enable_reranker": True,
     }
@@ -186,7 +194,6 @@ def test_refresh_loads_public_config_from_redis(tmp_path, monkeypatch: pytest.Mo
     assert cfg.default_model == "test-provider:worker-chat"
     assert cfg.default_ocr_engine == "mineru_ocr"
     assert cfg.save_dir == str(tmp_path)
-    assert cfg.sandbox_virtual_path_prefix == "/redis/user-data"
     assert str(cfg._config_file) == str(tmp_path / "config" / "base.toml")
     # 快照里的非运行时字段和未知键不会被写回
     assert not hasattr(cfg, "enable_reranker")

@@ -11,7 +11,7 @@ description: "深度研究编排方法论：澄清范围、拆解规划、并行
 
 ### 网页搜索工具
 
-通过 `tavily_search` 工具执行单次网页搜索（slot 名固定为 `tavily_search`，实际 backend 链由环境变量决定）。
+通过 `web_search` 工具执行网页搜索，实际 backend 链由环境变量决定。
 
 **后端链**（`YUXI_SEARCH_BACKEND`，逗号分隔，按顺序 fallback）：
 

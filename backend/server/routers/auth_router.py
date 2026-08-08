@@ -4,7 +4,7 @@ from yuxi.utils import logger
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status, UploadFile, File
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Any, Literal
@@ -43,6 +43,7 @@ from yuxi.services.auth_service import (
     get_cli_auth_session_for_user,
 )
 from yuxi.storage.minio import upload_image_to_minio
+from yuxi.storage.minio.client import normalize_public_minio_url
 from yuxi.utils.datetime_utils import utc_now_naive
 from yuxi.services.permission_service import has_permission, resolve_user_permissions
 from yuxi.services.organization_scope_service import user_can_manage_department
@@ -79,7 +80,7 @@ class Token(BaseModel):
 
 class UserCreate(BaseModel):
     username: str
-    password: str
+    password: str = Field(min_length=8)
     role: str = "user"
     department_id: int | None = None
     primary_department_id: int | None = None
@@ -89,9 +90,10 @@ class UserCreate(BaseModel):
 
 
 class UserUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     username: str | None = None
-    password: str | None = None
-    role: str | None = None
+    password: str | None = Field(default=None, min_length=8)
     phone_number: str | None = None
     avatar: str | None = None
     department_id: int | None = None
@@ -144,7 +146,7 @@ class ManagedDepartmentsUpdate(BaseModel):
 
 class InitializeAdmin(BaseModel):
     uid: str  # 直接输入用户ID
-    password: str
+    password: str = Field(min_length=8)
     phone_number: str | None = None
 
 
@@ -395,7 +397,7 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
         "username": user.username,
         "uid": user.uid,
         "phone_number": user.phone_number,
-        "avatar": user.avatar,
+        "avatar": normalize_public_minio_url(user.avatar),
         "role": user.role,
         "role_name": user.role_name,
         "permissions": sorted(user.permission_keys),
@@ -978,22 +980,12 @@ async def update_user(
             detail="只有超级管理员才能修改超级管理员账户",
         )
 
-    # 超级管理员账户不能被降级（只能由其他超级管理员修改）
-    if user.role == "superadmin" and user_data.role and user_data.role != "superadmin" and current_user.id != user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="不能降级超级管理员账户",
-        )
-
-    if current_user.role != "superadmin" and user_data.role is not None:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="只有超级管理员才能修改用户角色")
-    if (
-        "token_quota_mode" in user_data.model_fields_set or "weekly_token_quota" in user_data.model_fields_set
-    ) and not has_permission(current_user, "users.quota.manage"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="缺少权限: users.quota.manage",
-        )
+    if current_user.role == "admin":
+        if user.role != "user":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="管理员只能修改普通用户账户",
+            )
 
     # 更新信息
     update_details = []
@@ -1013,15 +1005,6 @@ async def update_user(
     if user_data.password is not None:
         user.password_hash = AuthUtils.hash_password(user_data.password)
         update_details.append("密码已更新")
-
-    if user_data.role is not None:
-        if not await RoleRepository(db).get(user_data.role):
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="角色不存在")
-        if user_data.role == "superadmin" and user.role != "superadmin":
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不能新增超级管理员账户")
-        old_role = user.role
-        user.role = user_data.role
-        update_details.append(f"角色: {old_role} -> {user_data.role}")
 
     if user_data.phone_number is not None:
         user.phone_number = user_data.phone_number
@@ -1386,7 +1369,7 @@ async def impersonate_user(
         "username": target_user.username,
         "uid": target_user.uid,
         "phone_number": target_user.phone_number,
-        "avatar": target_user.avatar,
+        "avatar": normalize_public_minio_url(target_user.avatar),
         "role": target_user.role,
         "role_name": target_user.role_name,
         "permissions": sorted(target_user.permission_keys),

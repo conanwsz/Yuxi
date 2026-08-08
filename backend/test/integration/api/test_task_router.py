@@ -50,6 +50,7 @@ async def test_cancel_unknown_task_returns_client_error(test_client, admin_heade
 async def test_enqueue_document_creates_task(
     test_client,
     admin_headers,
+    embedding_model_spec,
 ):
     """Trigger knowledge ingestion to ensure a task record is materialised."""
     if _LITE_MODE:
@@ -66,7 +67,7 @@ async def test_enqueue_document_creates_task(
         json={
             "database_name": f"pytest_task_router_{uuid.uuid4().hex[:8]}",
             "description": "Task router integration test",
-            "embedding_model_spec": "siliconflow-cn:Pro/BAAI/bge-m3",
+            "embedding_model_spec": embedding_model_spec,
             "kb_type": "milvus",
             "additional_params": {},
         },
@@ -76,11 +77,23 @@ async def test_enqueue_document_creates_task(
     kb_id = create_response.json()["kb_id"]
 
     try:
+        upload_response = await test_client.post(
+            "/api/knowledge/files/upload",
+            params={"kb_id": kb_id},
+            files={"file": ("task-router.txt", b"task router integration", "text/plain")},
+            headers=admin_headers,
+        )
+        assert upload_response.status_code == 200, upload_response.text
+        uploaded = upload_response.json()
+
         enqueue_response = await test_client.post(
             f"/api/knowledge/databases/{kb_id}/documents",
             json={
-                "items": [],
-                "params": {"content_type": "file"},
+                "items": [uploaded["file_path"]],
+                "params": {
+                    "content_type": "file",
+                    "content_hashes": {uploaded["file_path"]: uploaded["content_hash"]},
+                },
             },
             headers=admin_headers,
         )

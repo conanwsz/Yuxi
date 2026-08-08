@@ -21,6 +21,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, ClassVar, Protocol
 
+import httpx
 from langchain_core.tools import BaseTool, tool
 
 from yuxi.utils import logger
@@ -31,7 +32,8 @@ _DUCKDUCKGO_REGION = "wt-wt"
 _DUCKDUCKGO_BACKEND = "auto"
 _KEY_COOLDOWN_DEFAULT = 60
 _BACKEND_TIMEOUT_DEFAULT = 15
-_SEARCH_SLUG = "tavily_search"
+_SEARCH_SLUG = "web_search"
+_DOUBAO_SEARCH_URL = "https://open.feedcoopapi.com/search_api/web_search"
 
 # Tavily 抛的 ValueError 格式: "Error {status_code}: {error_message}"
 _TAVILY_ERROR_RE = re.compile(r"^Error\s+(\d{3})\s*:")
@@ -195,6 +197,43 @@ class _DuckDuckGoBackend:
         return _format_results_for_llm(query, raw)
 
 
+class _DoubaoBackend:
+    """豆包联网搜索 backend。"""
+
+    name: ClassVar[str] = "doubao"
+
+    def __init__(self, api_key: str) -> None:
+        self._api_key = api_key
+
+    def search(self, query: str, max_results: int) -> str:
+        payload = {
+            "Query": query[:100],
+            "SearchType": "web",
+            "Count": max(1, min(max_results, 50)),
+            "Filter": {"NeedUrl": True},
+            "ContentFormats": "text",
+        }
+        headers = {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}
+        with httpx.Client(timeout=_BACKEND_TIMEOUT_DEFAULT) as client:
+            response = client.post(_DOUBAO_SEARCH_URL, headers=headers, json=payload)
+            response.raise_for_status()
+            data = response.json()
+
+        error_info = data.get("ResponseMetadata", {}).get("Error")
+        if error_info:
+            raise RuntimeError(error_info.get("Message") or "doubao search failed")
+        result_data = data.get("Result") or {}
+        results = [
+            {
+                "title": item.get("Title") or "",
+                "url": item.get("Url") or "",
+                "snippet": item.get("Summary") or item.get("Snippet") or item.get("Content") or "",
+            }
+            for item in result_data.get("WebResults") or []
+        ]
+        return json.dumps({"query": query, "results": results}, ensure_ascii=False)
+
+
 # --- Tavily backend ---------------------------------------------------------
 
 
@@ -350,22 +389,37 @@ def _resolve_backend_list() -> list[str]:
 
     auto 模式下: 有 TAVILY key 走 [tavily, duckduckgo], 没有走 [duckduckgo]。
     """
-    raw = (os.getenv("YUXI_SEARCH_BACKEND") or "auto").strip()
+    raw = (os.getenv("YUXI_SEARCH_BACKEND") or os.getenv("WEB_SEARCH_PROVIDER") or "auto").strip()
     has_tavily = bool(_resolve_tavily_keys())
+    has_doubao = bool(_resolve_doubao_key())
 
     if raw == "auto":
-        return ["tavily", "duckduckgo"] if has_tavily else ["duckduckgo"]
+        backends = []
+        if has_doubao:
+            backends.append("doubao")
+        if has_tavily:
+            backends.append("tavily")
+        return [*backends, "duckduckgo"]
 
     if "," in raw:
         # 去重保序: dict.fromkeys 保留首次出现的位置
         return list(dict.fromkeys(b.strip().lower() for b in raw.split(",") if b.strip()))
 
-    # 兼容单值: tavily / duckduckgo / "tavily,duckduckgo" / 未知 → auto
+    # 兼容单值: doubao / tavily / duckduckgo / 未知 → auto
     single = raw.lower()
-    if single in {"tavily", "duckduckgo"}:
+    if single in {"doubao", "tavily", "duckduckgo"}:
         return [single]
     logger.warning("Unknown YUXI_SEARCH_BACKEND=%r, fallback to 'auto'", raw)
-    return ["tavily", "duckduckgo"] if has_tavily else ["duckduckgo"]
+    backends = []
+    if has_doubao:
+        backends.append("doubao")
+    if has_tavily:
+        backends.append("tavily")
+    return [*backends, "duckduckgo"]
+
+
+def _resolve_doubao_key() -> str:
+    return os.getenv("DOUBAO_SEARCH_API_KEY", "").strip()
 
 
 def _resolve_tavily_keys() -> list[str]:
@@ -428,6 +482,12 @@ def create_search_tool() -> BaseTool | None:
     for name in backend_names:
         if name == "duckduckgo":
             backends.append(_DuckDuckGoBackend())
+        elif name == "doubao":
+            doubao_key = _resolve_doubao_key()
+            if not doubao_key:
+                logger.info("doubao requested in chain but no DOUBAO_SEARCH_API_KEY set, skipping")
+                continue
+            backends.append(_DoubaoBackend(doubao_key))
         elif name == "tavily":
             if not tavily_keys:
                 logger.info("tavily requested in chain but no TAVILY_API_KEY(S) set, skipping")
@@ -455,7 +515,7 @@ def search_tool_metadata(_backend: str = "") -> dict[str, Any]:
     tavily_keys = _resolve_tavily_keys()
     pool_stats = {"tavily_keys": len(tavily_keys), "cooldown_seconds": _resolve_key_cooldown()}
 
-    display = "网页搜索 (" + " → ".join(backend_names) + ")"
+    display = "豆包 网页搜索" if backend_names == ["doubao"] else "网页搜索 (" + " → ".join(backend_names) + ")"
     guide_lines = [
         f"按顺序尝试: {', '.join(backend_names)};前一个失败自动 fallback 到下一个。",
     ]
@@ -471,8 +531,11 @@ def search_tool_metadata(_backend: str = "") -> dict[str, Any]:
             guide_lines.append("Tavily 未配置 key,该 backend 会被跳过。")
     if "duckduckgo" in backend_names:
         guide_lines.append("DuckDuckGo 零成本、无需 API key,异常时自动 fallback 到下一条。")
+    if "doubao" in backend_names:
+        guide_lines.append("豆包搜索使用 DOUBAO_SEARCH_API_KEY。")
     guide_lines.append(
-        "配置: YUXI_SEARCH_BACKEND=duckduckgo,tavily / TAVILY_API_KEYS=key1,key2 / YUXI_SEARCH_KEY_COOLDOWN=60。"
+        "配置: YUXI_SEARCH_BACKEND=doubao,tavily,duckduckgo / "
+        "TAVILY_API_KEYS=key1,key2 / YUXI_SEARCH_KEY_COOLDOWN=60。"
     )
 
     return {
@@ -490,5 +553,6 @@ __all__ = [
     "_BackendResult",  # 仅供测试
     "_classify_exception",  # 仅供测试
     "_resolve_backend_list",  # 仅供测试
+    "_resolve_doubao_key",  # 仅供测试
     "_resolve_tavily_keys",  # 仅供测试
 ]

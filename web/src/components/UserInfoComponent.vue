@@ -43,7 +43,7 @@
               <Moon v-else :size="16" />
             </template>
             <span class="menu-text">{{
-              themeStore.isDark ? '切换到浅色模式' : '切换到深色模式 (Beta)'
+              themeStore.isDark ? '切换到浅色模式' : '切换到深色模式'
             }}</span>
           </a-menu-item>
           <a-menu-divider />
@@ -142,7 +142,7 @@ const toggleTheme = () => {
 // 前往设置页
 const goToSetting = () => {
   if (openSettingsModal) {
-    openSettingsModal('base')
+    openSettingsModal('account')
   }
 }
 

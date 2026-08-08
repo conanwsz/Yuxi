@@ -6,6 +6,7 @@ from dataclasses import MISSING, dataclass, field, fields
 from typing import Any, get_origin
 
 from yuxi.agents.backends.sandbox.paths import sandbox_workspace_agent_context_file
+from yuxi.agents.tool_approval import DEFAULT_TOOL_APPROVAL_MODE
 from yuxi.utils.logging_config import logger
 from yuxi.utils.paths import WORKSPACE_AGENT_CONTEXT_FILES
 
@@ -176,6 +177,20 @@ class BaseContext:
             "options": [],
             "description": "智能体的驱动模型，留空时使用系统默认模型。",
             "kind": "llm",
+        },
+    )
+
+    tool_approval_mode: str = field(
+        default=DEFAULT_TOOL_APPROVAL_MODE,
+        metadata={
+            "name": "工具审批模式",
+            "description": "默认审批会在写文件、编辑文件或执行命令前询问；完全信任会自动执行这些工具。",
+            "options": [
+                {"key": "default", "name": "默认审批", "description": "敏感工具执行前请求确认"},
+                {"key": "always_trust", "name": "完全信任", "description": "敏感工具无需确认，自动执行"},
+            ],
+            "type": "string",
+            "auth": "admin",
         },
     )
 
@@ -443,11 +458,9 @@ async def resolve_agent_resource_options(
     if "knowledges" in fields_to_load:
         from yuxi.knowledge.runtime import knowledge_base
 
-        databases = (await knowledge_base.get_databases_by_user(user)).get("databases", [])
+        databases = await knowledge_base.get_databases_by_user(user)
         options["knowledges"] = [
-            _resource_option(item.get("kb_id"), item.get("name"), item.get("description"))
-            for item in databases
-            if isinstance(item, dict) and item.get("kb_id")
+            _resource_option(item.kb_id, item.name, item.description) for item in databases if item.kb_id
         ]
     if "mcps" in fields_to_load:
         from yuxi.agents.mcp.service import get_all_mcp_servers
@@ -542,6 +555,7 @@ async def prepare_agent_runtime_context(
             setattr(context, "_readable_skills", [])
             setattr(context, "_runtime_skill_metadata", {})
             setattr(context, "_runtime_skill_dependency_map", {})
+            setattr(context, "_runtime_skill_sources", {})
             return context
 
         raw_resources = {
@@ -566,5 +580,6 @@ async def prepare_agent_runtime_context(
         setattr(context, "_readable_skills", skill_scope["readable_skills"])
         setattr(context, "_runtime_skill_metadata", skill_scope["runtime_skill_metadata"])
         setattr(context, "_runtime_skill_dependency_map", skill_scope["runtime_skill_dependency_map"])
+        setattr(context, "_runtime_skill_sources", skill_scope.get("runtime_skill_sources", {}))
 
     return context

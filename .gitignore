@@ -82,6 +82,4 @@ docs/vibe/*
 /models
 
 .taskr/
-.harness/
-.omx/
-output/
+web/src/utils/__tests__/

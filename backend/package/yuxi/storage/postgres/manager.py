@@ -130,6 +130,15 @@ class PostgresManager(metaclass=SingletonMeta):
             "ALTER TABLE IF EXISTS knowledge_bases ADD COLUMN IF NOT EXISTS query_params JSONB",
             "ALTER TABLE IF EXISTS knowledge_bases ADD COLUMN IF NOT EXISTS additional_params JSONB",
             "ALTER TABLE IF EXISTS knowledge_bases ADD COLUMN IF NOT EXISTS share_config JSONB",
+            (
+                "UPDATE knowledge_bases SET share_config = jsonb_build_object("
+                "'version', 2, "
+                "'read_scope', COALESCE(NULLIF(share_config, '{}'::jsonb), "
+                '\'{"access_level": "global", "department_ids": [], "user_uids": []}\'::jsonb), '
+                "'manage_scope', COALESCE(NULLIF(share_config, '{}'::jsonb), "
+                '\'{"access_level": "global", "department_ids": [], "user_uids": []}\'::jsonb)) '
+                "WHERE share_config IS NULL OR share_config->>'version' IS DISTINCT FROM '2'"
+            ),
             "ALTER TABLE IF EXISTS knowledge_bases ADD COLUMN IF NOT EXISTS mindmap JSONB",
             "ALTER TABLE IF EXISTS knowledge_bases ADD COLUMN IF NOT EXISTS mindmap_file_ids JSONB",
             "ALTER TABLE IF EXISTS knowledge_bases ADD COLUMN IF NOT EXISTS mindmap_metadata JSONB",
@@ -247,7 +256,10 @@ class PostgresManager(metaclass=SingletonMeta):
                 end_char_pos INTEGER,
                 start_token_pos INTEGER,
                 end_token_pos INTEGER,
+                graph_structure_indexed BOOLEAN NOT NULL DEFAULT FALSE,
                 graph_indexed BOOLEAN DEFAULT FALSE,
+                graph_extraction_details JSONB NOT NULL
+                    DEFAULT jsonb_build_object('status', 'pending', 'attempt_count', 0),
                 ent_ids JSONB,
                 tags JSONB,
                 extraction_result JSONB,
@@ -256,6 +268,35 @@ class PostgresManager(metaclass=SingletonMeta):
             )
             """,
             "ALTER TABLE IF EXISTS knowledge_chunks ADD COLUMN IF NOT EXISTS extraction_result JSONB",
+            (
+                "ALTER TABLE IF EXISTS knowledge_chunks ADD COLUMN IF NOT EXISTS "
+                "graph_structure_indexed BOOLEAN NOT NULL DEFAULT FALSE"
+            ),
+            (
+                "ALTER TABLE IF EXISTS knowledge_chunks ADD COLUMN IF NOT EXISTS "
+                "graph_extraction_details JSONB NOT NULL "
+                "DEFAULT jsonb_build_object('status', 'pending', 'attempt_count', 0)"
+            ),
+            (
+                "ALTER TABLE IF EXISTS knowledge_chunks ALTER COLUMN graph_extraction_details "
+                "SET DEFAULT jsonb_build_object('status', 'pending', 'attempt_count', 0)"
+            ),
+            ("ALTER TABLE IF EXISTS knowledge_chunks ALTER COLUMN graph_structure_indexed SET DEFAULT FALSE"),
+            (
+                "UPDATE knowledge_chunks SET graph_structure_indexed = TRUE "
+                "WHERE graph_indexed IS TRUE AND graph_structure_indexed IS NOT TRUE"
+            ),
+            (
+                "UPDATE knowledge_chunks SET graph_extraction_details = jsonb_build_object('status', 'succeeded') "
+                "WHERE (graph_extraction_details IS NULL "
+                "OR graph_extraction_details->>'status' = 'pending') "
+                "AND (extraction_result IS NOT NULL OR graph_structure_indexed IS TRUE OR graph_indexed IS TRUE)"
+            ),
+            (
+                "UPDATE knowledge_chunks SET graph_extraction_details = "
+                "jsonb_build_object('status', 'pending', 'attempt_count', 0) "
+                "WHERE graph_extraction_details IS NULL"
+            ),
             """
             CREATE TABLE IF NOT EXISTS knowledge_graph_entities (
                 id SERIAL PRIMARY KEY,
@@ -265,6 +306,12 @@ class PostgresManager(metaclass=SingletonMeta):
                 label VARCHAR(128) NOT NULL,
                 name VARCHAR(512) NOT NULL,
                 attributes JSONB,
+                vector_status VARCHAR(16) NOT NULL DEFAULT 'pending',
+                vector_attempt_count INTEGER NOT NULL DEFAULT 0,
+                vector_last_error TEXT,
+                vector_next_retry_at TIMESTAMPTZ,
+                vector_locked_until TIMESTAMPTZ,
+                vector_lock_token VARCHAR(32),
                 created_at TIMESTAMPTZ DEFAULT NOW(),
                 updated_at TIMESTAMPTZ DEFAULT NOW(),
                 CONSTRAINT uq_knowledge_graph_entities_identity UNIQUE (kb_id, normalized_name, label)
@@ -290,6 +337,12 @@ class PostgresManager(metaclass=SingletonMeta):
                 target_entity_id VARCHAR(64) NOT NULL REFERENCES knowledge_graph_entities(entity_id) ON DELETE CASCADE,
                 relation_type VARCHAR(256) NOT NULL,
                 content TEXT NOT NULL,
+                vector_status VARCHAR(16) NOT NULL DEFAULT 'pending',
+                vector_attempt_count INTEGER NOT NULL DEFAULT 0,
+                vector_last_error TEXT,
+                vector_next_retry_at TIMESTAMPTZ,
+                vector_locked_until TIMESTAMPTZ,
+                vector_lock_token VARCHAR(32),
                 created_at TIMESTAMPTZ DEFAULT NOW(),
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             )
@@ -308,6 +361,47 @@ class PostgresManager(metaclass=SingletonMeta):
             )
             """,
             "ALTER TABLE IF EXISTS knowledge_bases ALTER COLUMN kb_id TYPE VARCHAR(80)",
+            "ALTER TABLE IF EXISTS knowledge_graph_entities ADD COLUMN IF NOT EXISTS vector_status VARCHAR(16)",
+            (
+                "ALTER TABLE IF EXISTS knowledge_graph_entities ADD COLUMN IF NOT EXISTS "
+                "vector_attempt_count INTEGER NOT NULL DEFAULT 0"
+            ),
+            "ALTER TABLE IF EXISTS knowledge_graph_entities ADD COLUMN IF NOT EXISTS vector_last_error TEXT",
+            (
+                "ALTER TABLE IF EXISTS knowledge_graph_entities ADD COLUMN IF NOT EXISTS "
+                "vector_next_retry_at TIMESTAMPTZ"
+            ),
+            ("ALTER TABLE IF EXISTS knowledge_graph_entities ADD COLUMN IF NOT EXISTS vector_locked_until TIMESTAMPTZ"),
+            ("ALTER TABLE IF EXISTS knowledge_graph_entities ADD COLUMN IF NOT EXISTS vector_lock_token VARCHAR(32)"),
+            (
+                "UPDATE knowledge_graph_entities AS entity SET vector_status = CASE WHEN EXISTS ("
+                "SELECT 1 FROM knowledge_graph_entity_mentions AS mention "
+                "JOIN knowledge_chunks AS chunk ON chunk.chunk_id = mention.chunk_id "
+                "WHERE mention.entity_id = entity.entity_id AND chunk.graph_indexed IS NOT TRUE"
+                ") THEN 'pending' ELSE 'indexed' END WHERE entity.vector_status IS NULL"
+            ),
+            "ALTER TABLE IF EXISTS knowledge_graph_entities ALTER COLUMN vector_status SET DEFAULT 'pending'",
+            "ALTER TABLE IF EXISTS knowledge_graph_entities ALTER COLUMN vector_status SET NOT NULL",
+            ("ALTER TABLE IF EXISTS knowledge_graph_entities ALTER COLUMN vector_attempt_count SET DEFAULT 0"),
+            "ALTER TABLE IF EXISTS knowledge_graph_triples ADD COLUMN IF NOT EXISTS vector_status VARCHAR(16)",
+            (
+                "ALTER TABLE IF EXISTS knowledge_graph_triples ADD COLUMN IF NOT EXISTS "
+                "vector_attempt_count INTEGER NOT NULL DEFAULT 0"
+            ),
+            "ALTER TABLE IF EXISTS knowledge_graph_triples ADD COLUMN IF NOT EXISTS vector_last_error TEXT",
+            ("ALTER TABLE IF EXISTS knowledge_graph_triples ADD COLUMN IF NOT EXISTS vector_next_retry_at TIMESTAMPTZ"),
+            ("ALTER TABLE IF EXISTS knowledge_graph_triples ADD COLUMN IF NOT EXISTS vector_locked_until TIMESTAMPTZ"),
+            "ALTER TABLE IF EXISTS knowledge_graph_triples ADD COLUMN IF NOT EXISTS vector_lock_token VARCHAR(32)",
+            (
+                "UPDATE knowledge_graph_triples AS triple SET vector_status = CASE WHEN EXISTS ("
+                "SELECT 1 FROM knowledge_graph_triple_mentions AS mention "
+                "JOIN knowledge_chunks AS chunk ON chunk.chunk_id = mention.chunk_id "
+                "WHERE mention.triple_id = triple.triple_id AND chunk.graph_indexed IS NOT TRUE"
+                ") THEN 'pending' ELSE 'indexed' END WHERE triple.vector_status IS NULL"
+            ),
+            "ALTER TABLE IF EXISTS knowledge_graph_triples ALTER COLUMN vector_status SET DEFAULT 'pending'",
+            "ALTER TABLE IF EXISTS knowledge_graph_triples ALTER COLUMN vector_status SET NOT NULL",
+            ("ALTER TABLE IF EXISTS knowledge_graph_triples ALTER COLUMN vector_attempt_count SET DEFAULT 0"),
             "ALTER TABLE IF EXISTS knowledge_files ALTER COLUMN kb_id TYPE VARCHAR(80)",
             "ALTER TABLE IF EXISTS evaluation_datasets ALTER COLUMN kb_id TYPE VARCHAR(80)",
             "ALTER TABLE IF EXISTS evaluation_dataset_items ALTER COLUMN kb_id TYPE VARCHAR(80)",
@@ -334,10 +428,22 @@ class PostgresManager(metaclass=SingletonMeta):
             "CREATE INDEX IF NOT EXISTS ix_knowledge_chunks_kb_id ON knowledge_chunks(kb_id)",
             "CREATE INDEX IF NOT EXISTS ix_knowledge_chunks_graph_indexed ON knowledge_chunks(graph_indexed)",
             (
+                "CREATE INDEX IF NOT EXISTS ix_knowledge_chunks_graph_structure_indexed "
+                "ON knowledge_chunks(graph_structure_indexed)"
+            ),
+            (
+                "CREATE INDEX IF NOT EXISTS ix_knowledge_chunks_graph_extraction_status "
+                "ON knowledge_chunks(kb_id, ((graph_extraction_details->>'status')))"
+            ),
+            (
                 "CREATE UNIQUE INDEX IF NOT EXISTS uq_knowledge_graph_entities_entity_id "
                 "ON knowledge_graph_entities(entity_id)"
             ),
             "CREATE INDEX IF NOT EXISTS ix_knowledge_graph_entities_kb_id ON knowledge_graph_entities(kb_id)",
+            (
+                "CREATE INDEX IF NOT EXISTS ix_knowledge_graph_entities_vector_pending "
+                "ON knowledge_graph_entities(kb_id, vector_status, vector_next_retry_at)"
+            ),
             (
                 "CREATE INDEX IF NOT EXISTS ix_knowledge_graph_entity_mentions_kb_id "
                 "ON knowledge_graph_entity_mentions(kb_id)"
@@ -355,6 +461,10 @@ class PostgresManager(metaclass=SingletonMeta):
                 "ON knowledge_graph_triples(triple_id)"
             ),
             "CREATE INDEX IF NOT EXISTS ix_knowledge_graph_triples_kb_id ON knowledge_graph_triples(kb_id)",
+            (
+                "CREATE INDEX IF NOT EXISTS ix_knowledge_graph_triples_vector_pending "
+                "ON knowledge_graph_triples(kb_id, vector_status, vector_next_retry_at)"
+            ),
             (
                 "CREATE INDEX IF NOT EXISTS ix_knowledge_graph_triple_mentions_kb_id "
                 "ON knowledge_graph_triple_mentions(kb_id)"
@@ -446,6 +556,8 @@ class PostgresManager(metaclass=SingletonMeta):
                 END IF;
             END $$
             """,
+            "DROP INDEX IF EXISTS ix_departments_name",
+            "CREATE INDEX IF NOT EXISTS ix_departments_name ON departments(name)",
             """
             DO $$
             BEGIN
@@ -684,6 +796,16 @@ class PostgresManager(metaclass=SingletonMeta):
                 "ALTER TABLE IF EXISTS skills ADD COLUMN IF NOT EXISTS share_config JSONB NOT NULL "
                 'DEFAULT \'{"access_level": "user", "department_ids": [], "user_uids": []}\'::jsonb'
             ),
+            "ALTER TABLE IF EXISTS skills ALTER COLUMN share_config TYPE JSONB USING share_config::jsonb",
+            (
+                "UPDATE skills SET share_config = jsonb_build_object("
+                "'version', 2, 'read_scope', CASE WHEN share_config = '{}'::jsonb THEN jsonb_build_object("
+                "'access_level', 'user', 'department_ids', '[]'::jsonb, "
+                "'user_uids', jsonb_build_array(created_by)) ELSE share_config END, "
+                "'manage_scope', NULL) "
+                "WHERE share_config IS NOT NULL AND share_config->>'version' IS DISTINCT FROM '2'"
+            ),
+            "ALTER TABLE IF EXISTS skills ALTER COLUMN share_config DROP DEFAULT",
             "ALTER TABLE IF EXISTS skills ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT TRUE",
             "ALTER TABLE IF EXISTS skills ADD COLUMN IF NOT EXISTS content_hash VARCHAR(128)",
             "ALTER TABLE IF EXISTS conversations ADD COLUMN IF NOT EXISTS is_pinned BOOLEAN NOT NULL DEFAULT FALSE",
@@ -747,20 +869,28 @@ class PostgresManager(metaclass=SingletonMeta):
             """,
             "ALTER TABLE IF EXISTS agents ADD COLUMN IF NOT EXISTS backend_id VARCHAR(64)",
             "ALTER TABLE IF EXISTS agents ADD COLUMN IF NOT EXISTS share_config JSONB NOT NULL DEFAULT '{}'::jsonb",
-            "ALTER TABLE IF EXISTS agents ADD COLUMN IF NOT EXISTS manage_config JSONB NOT NULL DEFAULT '{}'::jsonb",
-            """
-            DO $$
-            BEGIN
-                IF NOT EXISTS (
-                    SELECT 1 FROM app_schema_migrations
-                    WHERE migration_key = 'agent_manage_config_v1'
-                ) THEN
-                    UPDATE agents SET manage_config = share_config;
-                    INSERT INTO app_schema_migrations (migration_key)
-                    VALUES ('agent_manage_config_v1');
-                END IF;
-            END $$
-            """,
+            "ALTER TABLE IF EXISTS agents ALTER COLUMN share_config TYPE JSONB USING share_config::jsonb",
+            (
+                "UPDATE agents SET share_config = jsonb_build_object("
+                "'version', 2, 'read_scope', CASE WHEN share_config = '{}'::jsonb THEN "
+                '\'{"access_level": "global", "department_ids": [], "user_uids": []}\'::jsonb '
+                "ELSE share_config END, 'manage_scope', CASE "
+                "WHEN manage_config = '{}'::jsonb THEN NULL "
+                "WHEN manage_config->>'version' = '2' THEN "
+                "COALESCE(manage_config->'manage_scope', manage_config->'read_scope') "
+                "ELSE manage_config END) "
+                "WHERE share_config IS NOT NULL AND share_config->>'version' IS DISTINCT FROM '2'"
+            ),
+            (
+                "UPDATE agents SET share_config = jsonb_set(share_config, '{manage_scope}', "
+                "CASE WHEN manage_config->>'version' = '2' THEN "
+                "COALESCE(manage_config->'manage_scope', manage_config->'read_scope') "
+                "ELSE manage_config END, true) "
+                "WHERE share_config->>'version' = '2' "
+                "AND share_config->'manage_scope' = 'null'::jsonb "
+                "AND manage_config IS NOT NULL AND manage_config <> '{}'::jsonb"
+            ),
+            "ALTER TABLE IF EXISTS agents ALTER COLUMN share_config DROP DEFAULT",
             "ALTER TABLE IF EXISTS agents ADD COLUMN IF NOT EXISTS is_subagent BOOLEAN NOT NULL DEFAULT FALSE",
             "ALTER TABLE IF EXISTS user_config ADD COLUMN IF NOT EXISTS enable_memory BOOLEAN NOT NULL DEFAULT FALSE",
             """
@@ -798,6 +928,21 @@ class PostgresManager(metaclass=SingletonMeta):
             ON agents(is_default)
             WHERE is_default IS TRUE
             """,
+            """
+            CREATE TABLE IF NOT EXISTS config_options (
+                id SERIAL PRIMARY KEY,
+                key VARCHAR(100) NOT NULL UNIQUE,
+                name VARCHAR(100) NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                params JSONB NOT NULL DEFAULT '{}'::jsonb,
+                value JSONB NOT NULL DEFAULT '{}'::jsonb,
+                created_by VARCHAR(100),
+                updated_by VARCHAR(100),
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+            """,
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_config_options_key ON config_options(key)",
             """
             CREATE TABLE IF NOT EXISTS model_providers (
                 id SERIAL PRIMARY KEY,
@@ -933,6 +1078,22 @@ class PostgresManager(metaclass=SingletonMeta):
             "ALTER TABLE IF EXISTS agent_runs ADD COLUMN IF NOT EXISTS conversation_thread_id VARCHAR(64)",
             "ALTER TABLE IF EXISTS agent_runs ADD COLUMN IF NOT EXISTS created_by_run_id VARCHAR(64)",
             "ALTER TABLE IF EXISTS agent_runs ADD COLUMN IF NOT EXISTS subagent_thread_relation_id INTEGER",
+            "ALTER TABLE IF EXISTS agent_runs ADD COLUMN IF NOT EXISTS source VARCHAR(32) NOT NULL DEFAULT 'chat'",
+            "ALTER TABLE IF EXISTS agent_runs ADD COLUMN IF NOT EXISTS channel VARCHAR(32) NOT NULL DEFAULT 'web'",
+            "ALTER TABLE IF EXISTS agent_runs ADD COLUMN IF NOT EXISTS external_id VARCHAR(128)",
+            (
+                "ALTER TABLE IF EXISTS agent_runs ADD COLUMN IF NOT EXISTS "
+                "origin_metadata JSONB NOT NULL DEFAULT '{}'::jsonb"
+            ),
+            (
+                "ALTER TABLE IF EXISTS agent_run_requests ADD COLUMN IF NOT EXISTS "
+                "channel VARCHAR(32) NOT NULL DEFAULT 'web'"
+            ),
+            "ALTER TABLE IF EXISTS agent_run_requests ADD COLUMN IF NOT EXISTS external_id VARCHAR(128)",
+            (
+                "ALTER TABLE IF EXISTS agent_run_requests ADD COLUMN IF NOT EXISTS "
+                "origin_metadata JSONB NOT NULL DEFAULT '{}'::jsonb"
+            ),
             "ALTER TABLE IF EXISTS subagent_threads ADD COLUMN IF NOT EXISTS subagent_slug VARCHAR(64)",
             "ALTER TABLE IF EXISTS subagent_threads ADD COLUMN IF NOT EXISTS created_by_run_id VARCHAR(64)",
             """
@@ -1150,54 +1311,31 @@ class PostgresManager(metaclass=SingletonMeta):
             "CREATE INDEX IF NOT EXISTS ix_conversations_is_pinned ON conversations(is_pinned)",
             "CREATE UNIQUE INDEX IF NOT EXISTS ix_model_providers_provider_id ON model_providers(provider_id)",
             "CREATE INDEX IF NOT EXISTS ix_model_providers_is_enabled ON model_providers(is_enabled)",
-            "CREATE INDEX IF NOT EXISTS ix_users_token_quota_mode ON users(token_quota_mode)",
-            "CREATE INDEX IF NOT EXISTS ix_token_quota_ledger_user_week ON token_quota_ledger(user_id, week_start)",
-            "CREATE INDEX IF NOT EXISTS ix_token_quota_ledger_uid_week ON token_quota_ledger(uid_snapshot, week_start)",
-            "CREATE INDEX IF NOT EXISTS ix_token_quota_ledger_request_id ON token_quota_ledger(request_id)",
-            "CREATE INDEX IF NOT EXISTS ix_token_quota_ledger_thread_id ON token_quota_ledger(thread_id)",
-            "CREATE INDEX IF NOT EXISTS ix_token_quota_weekly_usage_uid_week "
-            "ON token_quota_weekly_usage(uid_snapshot, week_start)",
-            # ---- 定时任务(Schedule)定义与执行历史 ----
             """
-            CREATE TABLE IF NOT EXISTS schedules (
-                id VARCHAR(32) PRIMARY KEY,
-                name VARCHAR(255) NOT NULL,
-                description TEXT,
-                agent_slug VARCHAR(128) NOT NULL,
-                query TEXT NOT NULL,
-                runtime_overrides JSONB,
-                cron_expression VARCHAR(128) NOT NULL,
-                enabled INTEGER NOT NULL DEFAULT 1,
-                owner_uid VARCHAR(64) NOT NULL,
-                last_fired_at TIMESTAMP,
-                next_fire_at TIMESTAMP,
-                created_at TIMESTAMP DEFAULT NOW(),
-                updated_at TIMESTAMP DEFAULT NOW()
+            CREATE TABLE IF NOT EXISTS agent_run_requests (
+                id SERIAL PRIMARY KEY,
+                request_id VARCHAR(64) NOT NULL,
+                uid VARCHAR(64) NOT NULL,
+                agent_slug VARCHAR(64) NOT NULL,
+                conversation_thread_id VARCHAR(64) NOT NULL,
+                source VARCHAR(32) NOT NULL DEFAULT 'chat',
+                queue_policy VARCHAR(16) NOT NULL DEFAULT 'enqueue',
+                status VARCHAR(32) NOT NULL DEFAULT 'queued',
+                input_message_id INTEGER NOT NULL REFERENCES messages(id),
+                dispatched_run_id VARCHAR(64) REFERENCES agent_runs(id),
+                input_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+                error_message TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                dispatched_at TIMESTAMPTZ,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
             """,
-            "CREATE INDEX IF NOT EXISTS ix_schedules_agent_slug ON schedules(agent_slug)",
-            "CREATE INDEX IF NOT EXISTS ix_schedules_owner_uid ON schedules(owner_uid)",
-            "CREATE INDEX IF NOT EXISTS ix_schedules_enabled ON schedules(enabled)",
-            "CREATE INDEX IF NOT EXISTS ix_schedules_next_fire_at ON schedules(next_fire_at)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_agent_run_requests_request_id ON agent_run_requests(request_id)",
             """
-            CREATE TABLE IF NOT EXISTS schedule_executions (
-                id VARCHAR(32) PRIMARY KEY,
-                schedule_id VARCHAR(32) NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,
-                agent_run_id VARCHAR(64),
-                scheduled_at TIMESTAMP NOT NULL,
-                fired_at TIMESTAMP,
-                started_at TIMESTAMP,
-                completed_at TIMESTAMP,
-                status VARCHAR(32) NOT NULL DEFAULT 'pending',
-                result_summary TEXT,
-                error TEXT,
-                created_at TIMESTAMP DEFAULT NOW()
-            )
+            CREATE INDEX IF NOT EXISTS ix_agent_run_requests_queue
+            ON agent_run_requests(uid, agent_slug, conversation_thread_id, status, created_at, id)
             """,
-            "CREATE INDEX IF NOT EXISTS ix_schedule_executions_schedule_id ON schedule_executions(schedule_id)",
-            "CREATE INDEX IF NOT EXISTS ix_schedule_executions_agent_run_id ON schedule_executions(agent_run_id)",
-            "CREATE INDEX IF NOT EXISTS ix_schedule_executions_status ON schedule_executions(status)",
-            "CREATE INDEX IF NOT EXISTS ix_schedule_executions_created_at ON schedule_executions(created_at)",
+            "CREATE INDEX IF NOT EXISTS ix_agent_run_requests_dispatched_run_id ON agent_run_requests(dispatched_run_id)",  # noqa: E501
         ]
         async with self.async_engine.begin() as conn:
             # 历史未绑定用户的 API Key 会在下方迁移语句里被静默删除，先计数告警

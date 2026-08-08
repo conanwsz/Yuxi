@@ -162,7 +162,12 @@
             ref="shareConfigFormRef"
             v-model="shareConfig"
             :auto-select-user-dept="true"
-          />
+            :require-read-scope="true"
+          >
+            <template #manage-description>
+              知识库<strong>仅管理员</strong>可以管理知识库；普通用户无法管理。
+            </template>
+          </ShareConfigForm>
         </div>
       </div>
       <template #footer>
@@ -230,19 +235,14 @@
                 <span>复制 ID</span>
               </span>
             </a-menu-item>
-            <a-menu-item v-if="userStore.hasPermission('knowledge.update')" key="edit">
+            <a-menu-item v-if="database.can_manage" key="edit">
               <span class="lucide-menu-item">
                 <Pencil :size="15" />
                 <span>编辑知识库</span>
               </span>
             </a-menu-item>
-            <a-menu-divider
-              v-if="
-                userStore.hasPermission('knowledge.update') ||
-                userStore.hasPermission('knowledge.delete')
-              "
-            />
-            <a-menu-item v-if="userStore.hasPermission('knowledge.delete')" key="delete" danger>
+            <a-menu-divider />
+            <a-menu-item v-if="database.can_manage" key="delete" danger>
               <span class="lucide-menu-item">
                 <Trash2 :size="15" />
                 <span>删除知识库</span>
@@ -328,9 +328,9 @@ const state = reactive({
 })
 
 const createDefaultShareConfig = () => ({
-  access_level: 'global',
-  department_ids: [],
-  user_uids: []
+  version: 2,
+  read_scope: { access_level: 'global', department_ids: [], user_uids: [] },
+  manage_scope: null
 })
 
 const shareConfig = ref(createDefaultShareConfig())
@@ -460,16 +460,7 @@ const buildRequestData = () => {
       newDatabase.chunk_preset_id || DEFAULT_CHUNK_PRESET_ID
   }
 
-  if (userStore.hasPermission('knowledge.share')) {
-    requestData.share_config = {
-      access_level: shareConfig.value.access_level,
-      department_ids:
-        shareConfig.value.access_level === 'department'
-          ? shareConfig.value.department_ids || []
-          : [],
-      user_uids: shareConfig.value.access_level === 'user' ? shareConfig.value.user_uids || [] : []
-    }
-  }
+  requestData.share_config = shareConfig.value
 
   // 根据类型添加特定配置
   if (['milvus'].includes(newDatabase.kb_type)) {

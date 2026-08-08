@@ -377,10 +377,10 @@ def test_no_backends_configured_returns_none(monkeypatch: pytest.MonkeyPatch) ->
 # =============================================================================
 
 
-def test_search_tool_registers_under_tavily_search_slug(
+def test_search_tool_registers_under_web_search_slug(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """chain 模式注册后 slot 仍然叫 tavily_search (向后兼容)。"""
+    """统一搜索链使用上游 web_search 名称，backend 仍支持 preview 的多级回退。"""
     from yuxi.agents.toolkits.buildin import tools
     from yuxi.agents.toolkits.registry import _extra_registry
 
@@ -390,8 +390,8 @@ def test_search_tool_registers_under_tavily_search_slug(
     with _patch_ddgs(results=[]):
         tools._register_search_tool()
 
-    assert "tavily_search" in _extra_registry
-    meta = _extra_registry["tavily_search"]
+    assert "web_search" in _extra_registry
+    meta = _extra_registry["web_search"]
     assert "→" in meta.display_name  # "duckduckgo → tavily" 风格
     assert "TAVILY_API_KEYS" in meta.config_guide
     assert "熔断" in meta.config_guide

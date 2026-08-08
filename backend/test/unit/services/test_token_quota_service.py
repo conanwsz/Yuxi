@@ -143,7 +143,8 @@ async def test_resolve_quota_mode_unlimited_returns_none(quota_session):
         assert limit is None
 
 
-async def test_status_for_inherit_user_returns_effective_default(quota_session):
+async def test_status_for_inherit_user_returns_effective_default(quota_session, monkeypatch):
+    monkeypatch.setattr(quota_service, "utc_now", lambda: datetime(2026, 7, 20, tzinfo=UTC))
     async with quota_session() as db:
         user = await _build_user(
             db,

@@ -4,6 +4,7 @@ Integration tests for knowledge router endpoints.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from pathlib import Path
 
@@ -99,13 +100,13 @@ async def _delete_department_with_admin(test_client, admin_headers, department):
     assert response.status_code in (200, 404, 409), response.text
 
 
-async def _create_test_database(test_client, admin_headers, share_config=None):
+async def _create_test_database(test_client, admin_headers, embedding_model_spec, share_config=None):
     response = await test_client.post(
         "/api/knowledge/databases",
         json={
             "database_name": f"pytest_acl_{uuid.uuid4().hex[:8]}",
             "description": "Knowledge permission test",
-            "embedding_model_spec": "siliconflow-cn:Pro/BAAI/bge-m3",
+            "embedding_model_spec": embedding_model_spec,
             "kb_type": "milvus",
             "additional_params": {},
             "share_config": share_config,
@@ -128,11 +129,19 @@ async def test_admin_can_manage_knowledge_databases(test_client, admin_headers, 
     list_response = await test_client.get("/api/knowledge/databases", headers=admin_headers)
     assert list_response.status_code == 200, list_response.text
     databases = list_response.json().get("databases", [])
-    assert any(entry["kb_id"] == kb_id for entry in databases)
+    database = next(entry for entry in databases if entry["kb_id"] == kb_id)
+    assert database["metadata"] == database["additional_params"]
+    assert database["status"] == "已连接"
+    assert database["row_count"] == (database["stats"]["row_count"] or database["stats"]["file_count"])
+    assert database["effective_permission"] == "manage"
+    assert database["can_manage"] is True
 
     get_response = await test_client.get(f"/api/knowledge/databases/{kb_id}", headers=admin_headers)
     assert get_response.status_code == 200, get_response.text
-    assert get_response.json()["kb_id"] == kb_id
+    detail = get_response.json()
+    assert detail["kb_id"] == kb_id
+    assert detail["metadata"] == detail["additional_params"]
+    assert detail["stats"]["row_count"] == detail["row_count"]
 
     update_response = await test_client.put(
         f"/api/knowledge/databases/{kb_id}",
@@ -157,19 +166,21 @@ async def test_document_exists_returns_false_for_missing_relative_path(test_clie
     assert response.json() == {"kb_id": kb_id, "filename": filename, "exists": False}
 
 
-async def test_create_database_with_chunk_preset(test_client, admin_headers):
+async def test_create_database_with_chunk_preset(test_client, admin_headers, embedding_model_spec):
     db_name = f"pytest_chunk_preset_{uuid.uuid4().hex[:6]}"
     payload = {
         "database_name": db_name,
         "description": "Chunk preset create test",
-        "embedding_model_spec": "siliconflow-cn:Pro/BAAI/bge-m3",
+        "embedding_model_spec": embedding_model_spec,
         "kb_type": "milvus",
         "additional_params": {"chunk_preset_id": "book"},
     }
 
     create_response = await test_client.post("/api/knowledge/databases", json=payload, headers=admin_headers)
     assert create_response.status_code == 200, create_response.text
-    kb_id = create_response.json()["kb_id"]
+    create_payload = create_response.json()
+    assert create_payload["files"] == {}
+    kb_id = create_payload["kb_id"]
 
     info_response = await test_client.get(f"/api/knowledge/databases/{kb_id}", headers=admin_headers)
     assert info_response.status_code == 200, info_response.text
@@ -222,7 +233,12 @@ async def test_update_database_additional_params_merge_keeps_chunk_preset(
     assert info_response.json()["additional_params"]["chunk_preset_id"] == "qa"
 
 
-async def test_knowledge_routes_enforce_permissions(test_client, standard_user, knowledge_database):
+async def test_knowledge_routes_enforce_permissions(
+    test_client,
+    standard_user,
+    knowledge_database,
+    embedding_model_spec,
+):
     kb_id = knowledge_database["kb_id"]
 
     forbidden_create = await test_client.post(
@@ -230,7 +246,7 @@ async def test_knowledge_routes_enforce_permissions(test_client, standard_user, 
         json={
             "database_name": "unauthorized_db",
             "description": "Should not succeed",
-            "embedding_model_spec": "siliconflow-cn:Pro/BAAI/bge-m3",
+            "embedding_model_spec": embedding_model_spec,
         },
         headers=standard_user["headers"],
     )
@@ -253,7 +269,7 @@ async def test_knowledge_routes_enforce_permissions(test_client, standard_user, 
     _assert_forbidden_response(forbidden_exists)
 
 
-async def test_admin_can_create_vector_db_with_reranker(test_client, admin_headers):
+async def test_admin_can_create_vector_db_with_reranker(test_client, admin_headers, embedding_model_spec):
     """测试创建向量库并配置 reranker 参数（通过 query_params.options）
 
     注意：数据库清理由 conftest.py 中的 session fixture 自动处理。
@@ -262,7 +278,7 @@ async def test_admin_can_create_vector_db_with_reranker(test_client, admin_heade
     payload = {
         "database_name": db_name,
         "description": "Vector DB with reranker",
-        "embedding_model_spec": "siliconflow-cn:Pro/BAAI/bge-m3",
+        "embedding_model_spec": embedding_model_spec,
         "kb_type": "milvus",
         "additional_params": {},
     }
@@ -322,6 +338,39 @@ async def test_admin_can_create_vector_db_with_reranker(test_client, admin_heade
     use_reranker_option2 = next((opt for opt in options2 if opt.get("key") == "use_reranker"), None)
     assert use_reranker_option2 is not None
     assert use_reranker_option2.get("default") is True  # 保存的值
+
+
+async def test_concurrent_query_param_updates_preserve_all_options(test_client, admin_headers):
+    """并发的部分更新应在数据库事务内合并，而不是后写覆盖先写。"""
+    payload = {
+        "database_name": f"pytest_query_params_{uuid.uuid4().hex[:6]}",
+        "description": "Concurrent query params update",
+        "kb_type": "dify",
+        "additional_params": {
+            "dify_api_url": "https://api.dify.ai/v1",
+            "dify_token": "test-token",
+            "dify_dataset_id": "dataset-123",
+        },
+    }
+    create_response = await test_client.post("/api/knowledge/databases", json=payload, headers=admin_headers)
+    assert create_response.status_code == 200, create_response.text
+    kb_id = create_response.json()["kb_id"]
+    endpoint = f"/api/knowledge/databases/{kb_id}/query-params"
+
+    first_response, second_response = await asyncio.gather(
+        test_client.put(endpoint, json={"final_top_k": 7}, headers=admin_headers),
+        test_client.put(endpoint, json={"similarity_threshold": 0.42}, headers=admin_headers),
+    )
+
+    assert first_response.status_code == 200, first_response.text
+    assert second_response.status_code == 200, second_response.text
+
+    params_response = await test_client.get(endpoint, headers=admin_headers)
+    assert params_response.status_code == 200, params_response.text
+    options = params_response.json()["params"]["options"]
+    saved_options = {option["key"]: option["default"] for option in options}
+    assert saved_options["final_top_k"] == 7
+    assert saved_options["similarity_threshold"] == 0.42
 
 
 async def test_create_dify_database_success(test_client, admin_headers):
@@ -533,16 +582,20 @@ async def test_get_accessible_databases(test_client, admin_headers, knowledge_da
     assert knowledge_database["kb_id"] in kb_ids
 
 
-async def test_create_database_defaults_to_global_share_config(test_client, admin_headers):
-    database = await _create_test_database(test_client, admin_headers)
+async def test_create_database_defaults_to_global_share_config(test_client, admin_headers, embedding_model_spec):
+    database = await _create_test_database(test_client, admin_headers, embedding_model_spec)
     kb_id = database["kb_id"]
     try:
-        assert database["share_config"] == {"access_level": "global", "department_ids": [], "user_uids": []}
+        assert database["share_config"] == {
+            "version": 2,
+            "read_scope": {"access_level": "global", "department_ids": [], "user_uids": []},
+            "manage_scope": None,
+        }
     finally:
         await test_client.delete(f"/api/knowledge/databases/{kb_id}", headers=admin_headers)
 
 
-async def test_department_share_config_filters_accessible_databases(test_client, admin_headers):
+async def test_department_share_config_filters_accessible_databases(test_client, admin_headers, embedding_model_spec):
     department_a = await _create_test_department(test_client, admin_headers, "pytest_dept_a")
     department_b = await _create_test_department(test_client, admin_headers, "pytest_dept_b")
     user_a = user_b = None
@@ -551,15 +604,17 @@ async def test_department_share_config_filters_accessible_databases(test_client,
     try:
         user_a = await _create_test_user(test_client, admin_headers, department_a["id"])
         user_b = await _create_test_user(test_client, admin_headers, department_b["id"])
+        scope = {"access_level": "department", "department_ids": [department_a["id"]], "user_uids": []}
         database = await _create_test_database(
             test_client,
             admin_headers,
-            {"access_level": "department", "department_ids": [department_a["id"]], "user_uids": []},
+            embedding_model_spec,
+            {"version": 2, "read_scope": scope, "manage_scope": scope},
         )
 
         saved_config = database["share_config"]
-        assert saved_config["access_level"] == "department"
-        assert department_a["id"] in saved_config["department_ids"]
+        assert saved_config["manage_scope"]["access_level"] == "department"
+        assert department_a["id"] in saved_config["manage_scope"]["department_ids"]
 
         assert database["kb_id"] in await _accessible_kb_ids(test_client, user_a["headers"])
         assert database["kb_id"] not in await _accessible_kb_ids(test_client, user_b["headers"])
@@ -574,7 +629,7 @@ async def test_department_share_config_filters_accessible_databases(test_client,
         await _delete_department_with_admin(test_client, admin_headers, department_b)
 
 
-async def test_user_share_config_filters_accessible_databases(test_client, admin_headers):
+async def test_user_share_config_filters_accessible_databases(test_client, admin_headers, embedding_model_spec):
     department_a = await _create_test_department(test_client, admin_headers, "pytest_dept_a")
     department_b = await _create_test_department(test_client, admin_headers, "pytest_dept_b")
     user_a = user_b = None
@@ -583,15 +638,17 @@ async def test_user_share_config_filters_accessible_databases(test_client, admin
     try:
         user_a = await _create_test_user(test_client, admin_headers, department_a["id"])
         user_b = await _create_test_user(test_client, admin_headers, department_b["id"])
+        scope = {"access_level": "user", "department_ids": [], "user_uids": [user_a["user"]["uid"]]}
         database = await _create_test_database(
             test_client,
             admin_headers,
-            {"access_level": "user", "department_ids": [], "user_uids": [user_a["user"]["uid"]]},
+            embedding_model_spec,
+            {"version": 2, "read_scope": scope, "manage_scope": scope},
         )
 
         saved_config = database["share_config"]
-        assert saved_config["access_level"] == "user"
-        assert user_a["user"]["uid"] in saved_config["user_uids"]
+        assert saved_config["manage_scope"]["access_level"] == "user"
+        assert user_a["user"]["uid"] in saved_config["manage_scope"]["user_uids"]
 
         assert database["kb_id"] in await _accessible_kb_ids(test_client, user_a["headers"])
         assert database["kb_id"] not in await _accessible_kb_ids(test_client, user_b["headers"])
@@ -606,7 +663,11 @@ async def test_user_share_config_filters_accessible_databases(test_client, admin
         await _delete_department_with_admin(test_client, admin_headers, department_b)
 
 
-async def test_department_admin_cannot_manage_other_department_knowledge_by_id(test_client, admin_headers):
+async def test_department_admin_cannot_manage_other_department_knowledge_by_id(
+    test_client,
+    admin_headers,
+    embedding_model_spec,
+):
     department_a = await _create_test_department(test_client, admin_headers, "pytest_scope_a")
     department_b = await _create_test_department(test_client, admin_headers, "pytest_scope_b")
     database = None
@@ -625,10 +686,19 @@ async def test_department_admin_cannot_manage_other_department_knowledge_by_id(t
         database = await _create_test_database(
             test_client,
             admin_headers,
+            embedding_model_spec,
             {
-                "access_level": "department",
-                "department_ids": [department_b["id"]],
-                "user_uids": [],
+                "version": 2,
+                "read_scope": {
+                    "access_level": "department",
+                    "department_ids": [department_b["id"]],
+                    "user_uids": [],
+                },
+                "manage_scope": {
+                    "access_level": "department",
+                    "department_ids": [department_b["id"]],
+                    "user_uids": [],
+                },
             },
         )
         kb_id = database["kb_id"]
@@ -647,7 +717,7 @@ async def test_department_admin_cannot_manage_other_department_knowledge_by_id(t
             ),
             await test_client.get(f"/api/evaluation/databases/{kb_id}/datasets", headers=department_a_headers),
         ]
-        assert all(response.status_code == 404 for response in attempts), [
+        assert all(response.status_code == 403 for response in attempts), [
             (response.status_code, response.text) for response in attempts
         ]
     finally:
@@ -746,7 +816,7 @@ async def test_markdown_endpoint_parses_uploaded_text_file(test_client, admin_he
     assert payload["markdown_content"].strip()
 
 
-async def test_duplicate_database_name(test_client, admin_headers, knowledge_database):
+async def test_duplicate_database_name(test_client, admin_headers, knowledge_database, embedding_model_spec):
     """测试重复创建同名知识库"""
     db_name = knowledge_database["name"]
     response = await test_client.post(
@@ -754,7 +824,7 @@ async def test_duplicate_database_name(test_client, admin_headers, knowledge_dat
         json={
             "database_name": db_name,
             "description": "Duplicate name test",
-            "embedding_model_spec": "siliconflow-cn:Pro/BAAI/bge-m3",
+            "embedding_model_spec": embedding_model_spec,
             "kb_type": "milvus",
             "additional_params": {},
         },
@@ -764,14 +834,14 @@ async def test_duplicate_database_name(test_client, admin_headers, knowledge_dat
     assert "已存在" in response.json()["detail"]
 
 
-async def test_create_lightrag_knowledge_base_is_unsupported(test_client, admin_headers):
+async def test_create_lightrag_knowledge_base_is_unsupported(test_client, admin_headers, embedding_model_spec):
     db_name = f"pytest_lightrag_{uuid.uuid4().hex[:6]}"
     response = await test_client.post(
         "/api/knowledge/databases",
         json={
             "database_name": db_name,
             "description": "Unsupported LightRAG knowledge base",
-            "embedding_model_spec": "siliconflow-cn:Pro/BAAI/bge-m3",
+            "embedding_model_spec": embedding_model_spec,
             "kb_type": "lightrag",
             "additional_params": {},
         },
@@ -781,7 +851,7 @@ async def test_create_lightrag_knowledge_base_is_unsupported(test_client, admin_
     assert "Unsupported knowledge base type: lightrag" in response.json()["detail"]
 
 
-async def test_create_milvus_knowledge_base(test_client, admin_headers):
+async def test_create_milvus_knowledge_base(test_client, admin_headers, embedding_model_spec):
     """测试创建 Milvus 知识库
 
     注意：数据库清理由 conftest.py 中的 session fixture 自动处理。
@@ -790,7 +860,7 @@ async def test_create_milvus_knowledge_base(test_client, admin_headers):
     payload = {
         "database_name": db_name,
         "description": "Pytest Milvus knowledge base",
-        "embedding_model_spec": "siliconflow-cn:Pro/BAAI/bge-m3",
+        "embedding_model_spec": embedding_model_spec,
         "kb_type": "milvus",
         "additional_params": {},
     }
@@ -843,3 +913,45 @@ async def test_mindmap_permissions(test_client, standard_user, knowledge_databas
         headers=standard_user["headers"],
     )
     _assert_forbidden_response(forbidden_generate)
+
+
+async def test_document_search_returns_empty_for_blank_query(test_client, admin_headers, knowledge_database):
+    """空关键词直接返回空结果，且不命中 /documents/{doc_id} 路由。"""
+    kb_id = knowledge_database["kb_id"]
+    response = await test_client.get(
+        f"/api/knowledge/databases/{kb_id}/documents/search",
+        headers=admin_headers,
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["files"] == []
+    assert payload["total"] == 0
+    assert payload["has_more"] is False
+
+
+async def test_document_search_returns_structure_for_query(test_client, admin_headers, knowledge_database):
+    """带关键词搜索返回标准结构，并验证路由声明顺序不被 /documents/{doc_id} 抢匹配。"""
+    kb_id = knowledge_database["kb_id"]
+    response = await test_client.get(
+        f"/api/knowledge/databases/{kb_id}/documents/search",
+        params={"query": "nonexistent-needle-xyz", "offset": 0, "limit": 50},
+        headers=admin_headers,
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert isinstance(payload.get("files"), list)
+    assert payload["total"] == 0
+    assert payload["offset"] == 0
+    assert payload["limit"] == 50
+    assert payload["has_more"] is False
+
+
+async def test_document_search_requires_admin(test_client, standard_user, knowledge_database):
+    """普通用户不能访问管理端搜索接口。"""
+    kb_id = knowledge_database["kb_id"]
+    response = await test_client.get(
+        f"/api/knowledge/databases/{kb_id}/documents/search",
+        params={"query": "x"},
+        headers=standard_user["headers"],
+    )
+    _assert_forbidden_response(response)
