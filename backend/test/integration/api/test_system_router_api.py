@@ -30,7 +30,9 @@ async def test_info_endpoint_is_public(test_client):
     assert response.status_code == 200
     payload = response.json()
     assert payload["success"] is True
-    assert "data" in payload
+    assert payload["data"]["organization"]["name"] == "超级楚楚"
+    assert payload["data"]["organization"]["logo"] == "/favicon.png"
+    assert "超级楚楚" in payload["data"]["footer"]["copyright"]
 
 
 async def test_config_get_requires_login_and_update_requires_admin(test_client, standard_user):
