@@ -12,9 +12,10 @@ import {
   Wrench
 } from 'lucide-vue-next'
 
+import { agentApi } from '@/apis/agent_api'
 import { userApi } from '@/apis/user_api'
 import AgentRuntimeConfigForm from '@/components/AgentRuntimeConfigForm.vue'
-import ShareConfigForm from '@/components/ShareConfigForm.vue'
+import AgentAssignmentForm from '@/components/model-management/AgentAssignmentForm.vue'
 import FallbackAvatar from '@/components/common/FallbackAvatar.vue'
 import { isBuiltinAgent, useAgentStore } from '@/stores/agent'
 import { useUserStore } from '@/stores/user'
@@ -39,14 +40,13 @@ const editingAgentId = ref(null)
 const agentModalActiveTab = ref('basic')
 const agentIconUploading = ref(false)
 const saving = ref(false)
-const agentShareConfigFormRef = ref(null)
 const runtimeConfigFormRef = ref(null)
 const agentNameInputRef = ref(null)
-const agentShareConfig = ref({
-  version: 2,
-  read_scope: { access_level: 'user', department_ids: [], user_uids: [] },
-  manage_scope: null
-})
+const agentAssignment = ref({ global_access: false, department_ids: [], user_uids: [] })
+const assignmentOptions = ref({ allowed_access_levels: [], departments: [], users: [] })
+const lockedDepartmentCount = ref(0)
+const lockedUserCount = ref(0)
+const assignmentEditable = ref(false)
 const agentForm = reactive({
   slug: '',
   name: '',
@@ -58,7 +58,7 @@ const agentForm = reactive({
 // 基本配置的原始基线，用于在标题栏显示「有修改」状态。slug / backend_id
 // 仅在创建模式可编辑，因此新建时不参与比对。
 const originalAgentForm = ref({ name: '', description: '', icon: '' })
-const originalShareConfig = ref(null)
+const originalAssignment = ref('')
 
 const snapshotAgentForm = () => ({
   name: (agentForm.name || '').trim(),
@@ -66,52 +66,12 @@ const snapshotAgentForm = () => ({
   icon: (agentForm.icon || '').trim()
 })
 
-const cloneShareConfig = (share) => {
-  if (!share) return null
-  const cloneScope = (scope) =>
-    scope
-      ? {
-          access_level: scope.access_level,
-          department_ids: [...(scope.department_ids || [])],
-          user_uids: [...(scope.user_uids || [])]
-        }
-      : null
-  return {
-    version: share.version,
-    read_scope: cloneScope(share.read_scope),
-    manage_scope: cloneScope(share.manage_scope)
-  }
-}
-
-const snapshotShareConfig = () => {
-  if (!editingAgentId.value) return null
-  if (isBuiltinAgent({ id: editingAgentId.value })) {
-    return cloneShareConfig({
-      version: 2,
-      read_scope: { access_level: 'global', department_ids: [], user_uids: [] },
-      manage_scope: null
-    })
-  }
-  return cloneShareConfig(agentShareConfig.value)
-}
-
-const stringifyShareConfig = (share) => {
-  if (!share) return ''
+const snapshotAssignment = () => {
   const sortIds = (arr) => [...(arr || [])].map((v) => String(v)).sort()
   return JSON.stringify({
-    version: share.version,
-    read_scope: {
-      access_level: share.read_scope?.access_level || null,
-      department_ids: sortIds(share.read_scope?.department_ids),
-      user_uids: sortIds(share.read_scope?.user_uids)
-    },
-    manage_scope: share.manage_scope
-      ? {
-          access_level: share.manage_scope.access_level,
-          department_ids: sortIds(share.manage_scope.department_ids),
-          user_uids: sortIds(share.manage_scope.user_uids)
-        }
-      : null
+    global_access: Boolean(agentAssignment.value.global_access),
+    department_ids: sortIds(agentAssignment.value.department_ids),
+    user_uids: sortIds(agentAssignment.value.user_uids)
   })
 }
 
@@ -126,16 +86,12 @@ const hasProfileChanges = computed(() => {
   ) {
     return true
   }
-  if (!canEditAgentShareConfig.value) return false
-  const currentShare = snapshotShareConfig()
-  const baselineShare = originalShareConfig.value
-  if (!currentShare || !baselineShare) return false
-  return stringifyShareConfig(currentShare) !== stringifyShareConfig(baselineShare)
+  return canAssignCurrentAgent.value && snapshotAssignment() !== originalAssignment.value
 })
 
 const captureProfileBaseline = () => {
   originalAgentForm.value = snapshotAgentForm()
-  originalShareConfig.value = snapshotShareConfig()
+  originalAssignment.value = snapshotAssignment()
 }
 
 const hasAnyUnsavedChanges = computed(() => agentStore.hasConfigChanges || hasProfileChanges.value)
@@ -167,33 +123,28 @@ const isRuntimeAgentModalTab = (key) => runtimeAgentModalTabs.includes(key)
 const getDefaultBackendId = () => DEFAULT_AGENT_BACKEND_ID
 const isSubAgentBackend = (backendId) => backendId === SUB_AGENT_BACKEND_ID
 
-const getInitialShareConfig = () => ({
-  version: 2,
-  read_scope: {
-    access_level: 'user',
-    department_ids: [],
-    user_uids: userStore.uid ? [userStore.uid] : []
-  },
-  manage_scope: null
-})
-
-const normalizeShareConfigForPayload = () => {
-  if (isBuiltinAgent({ id: editingAgentId.value })) {
-    return {
-      version: 2,
-      read_scope: { access_level: 'global', department_ids: [], user_uids: [] },
-      manage_scope: null
-    }
-  }
-  return agentShareConfig.value || getInitialShareConfig()
-}
-
 const isEditingBuiltinAgent = computed(() => isBuiltinAgent({ id: editingAgentId.value }))
-const canEditAgentShareConfig = computed(() => !isEditingBuiltinAgent.value)
-const getAgentShareAllowedLevels = () => {
-  if (isEditingBuiltinAgent.value) return ['global']
-  if (userStore.isAdmin) return ['global', 'department', 'user']
-  return ['user']
+const canAssignCurrentAgent = computed(
+  () =>
+    userStore.hasPermission('agents.share') &&
+    !isEditingBuiltinAgent.value &&
+    (!editingAgentId.value || assignmentEditable.value)
+)
+
+const buildShareConfig = () => {
+  const assignment = agentAssignment.value
+  const departmentIds = [...(assignment.department_ids || [])]
+  const userUids = [...(assignment.user_uids || [])]
+  const readScope = assignment.global_access
+    ? { access_level: 'global', department_ids: [], user_uids: [] }
+    : departmentIds.length
+      ? { access_level: 'department', department_ids: departmentIds, user_uids: userUids }
+      : {
+          access_level: 'user',
+          department_ids: [],
+          user_uids: userUids.length ? userUids : [userStore.uid]
+        }
+  return { version: 2, read_scope: readScope, manage_scope: null }
 }
 
 const agentModalTitle = computed(() => (editingAgentId.value ? '编辑智能体' : '新增智能体'))
@@ -230,7 +181,33 @@ const resetAgentForm = () => {
     icon: '',
     ...defaults
   })
-  agentShareConfig.value = getInitialShareConfig()
+  agentAssignment.value = {
+    global_access: false,
+    department_ids: [],
+    user_uids: userStore.uid ? [userStore.uid] : []
+  }
+  assignmentOptions.value = { allowed_access_levels: [], departments: [], users: [] }
+  lockedDepartmentCount.value = 0
+  lockedUserCount.value = 0
+  assignmentEditable.value = !editingAgentId.value && userStore.hasPermission('agents.share')
+}
+
+const loadCreateAssignmentOptions = async () => {
+  if (!userStore.hasPermission('agents.share')) return
+  assignmentOptions.value = await agentApi.getAssignmentOptions()
+}
+
+const loadExistingAssignment = async (detail) => {
+  if (!detail?.can_assign) return
+  const result = await agentApi.getAgentAssignment(detail.id)
+  agentAssignment.value = {
+    global_access: Boolean(result.global_access),
+    department_ids: [...(result.department_ids || [])],
+    user_uids: [...(result.user_uids || [])]
+  }
+  assignmentOptions.value = result.options || assignmentOptions.value
+  lockedDepartmentCount.value = Number(result.locked_department_count || 0)
+  lockedUserCount.value = Number(result.locked_user_count || 0)
 }
 
 const focusAgentNameInput = async () => {
@@ -250,11 +227,12 @@ const handleAgentModalAfterOpenChange = (open) => {
   if (open && !editingAgentId.value) focusAgentNameInput()
 }
 
-const openCreate = () => {
+const openCreate = async () => {
   editingAgentId.value = null
   agentModalActiveTab.value = 'basic'
   resetAgentForm()
   agentStore.resetAgentConfig()
+  await loadCreateAssignmentOptions()
   showAgentModal.value = true
   focusAgentNameInput()
 }
@@ -264,12 +242,13 @@ const openEdit = async (agent) => {
   if (!agentId) return
 
   const detail = await agentStore.fetchAgentDetail(agentId, true)
-  if (!detail?.can_manage) {
+  if (!detail?.can_view_config) {
     message.warning('当前智能体不可编辑')
     return
   }
 
   editingAgentId.value = detail.id
+  assignmentEditable.value = Boolean(detail.can_assign)
   agentModalActiveTab.value = 'basic'
   Object.assign(agentForm, {
     slug: detail.id || detail.slug || '',
@@ -278,13 +257,8 @@ const openEdit = async (agent) => {
     description: detail.description || '',
     icon: detail.icon || ''
   })
-  agentShareConfig.value = isBuiltinAgent(detail)
-    ? {
-        version: 2,
-        read_scope: { access_level: 'global', department_ids: [], user_uids: [] },
-        manage_scope: null
-      }
-    : detail.share_config || getInitialShareConfig()
+  agentAssignment.value = { global_access: false, department_ids: [], user_uids: [] }
+  await loadExistingAssignment(detail)
   await agentStore.selectAgent(detail.id, { allowSubagent: true })
   captureProfileBaseline()
   showAgentModal.value = true
@@ -335,13 +309,13 @@ const buildAgentPayload = () => {
     name: agentForm.name.trim(),
     description: agentForm.description.trim() || null,
     icon: agentForm.icon.trim() || null,
-    share_config: normalizeShareConfigForPayload(),
     is_subagent: isSubAgentBackend(agentForm.backend_id)
   }
 
   if (!editingAgentId.value) {
     payload.slug = agentForm.slug.trim() || undefined
     payload.backend_id = agentForm.backend_id
+    payload.share_config = buildShareConfig()
   }
 
   return payload
@@ -354,14 +328,6 @@ const saveAgent = async () => {
     return
   }
 
-  const validation = canEditAgentShareConfig.value
-    ? agentShareConfigFormRef.value?.validate?.()
-    : null
-  if (validation && !validation.valid) {
-    agentModalActiveTab.value = 'basic'
-    message.error(validation.message)
-    return
-  }
   saving.value = true
   try {
     const payload = buildAgentPayload()
@@ -377,6 +343,9 @@ const saveAgent = async () => {
         payload.config_json = { context: agentStore.agentConfig }
       }
       const updated = await agentStore.updateAgentProfile(editingAgentId.value, payload)
+      if (canAssignCurrentAgent.value && snapshotAssignment() !== originalAssignment.value) {
+        await agentApi.updateAgentAssignment(editingAgentId.value, agentAssignment.value)
+      }
       agentStore.originalAgentConfig = { ...agentStore.agentConfig }
       captureProfileBaseline()
       emit('saved', { mode: 'edit', agent: updated })
@@ -540,15 +509,15 @@ defineExpose({
             </label>
           </div>
 
-          <div v-if="canEditAgentShareConfig" class="share-config-block">
+          <div v-if="canAssignCurrentAgent" class="share-config-block">
             <div class="section-heading">
-              <span>使用权限</span>
+              <span>分配范围</span>
             </div>
-            <ShareConfigForm
-              ref="agentShareConfigFormRef"
-              v-model="agentShareConfig"
-              :auto-select-user-dept="false"
-              :allowed-access-levels="getAgentShareAllowedLevels()"
+            <AgentAssignmentForm
+              v-model="agentAssignment"
+              :options="assignmentOptions"
+              :locked-department-count="lockedDepartmentCount"
+              :locked-user-count="lockedUserCount"
             />
           </div>
 

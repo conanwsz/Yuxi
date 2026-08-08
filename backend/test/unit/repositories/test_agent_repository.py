@@ -14,6 +14,7 @@ from yuxi.repositories.agent_repository import (
     GENERAL_PURPOSE_AGENT_SLUG,
     SUB_AGENT_BACKEND_ID,
     user_can_access_agent,
+    user_can_delete_agent,
     user_can_manage_agent,
 )
 from yuxi.storage.postgres.models_business import Agent, User
@@ -168,7 +169,7 @@ async def test_create_agent_allows_same_explicit_share_scope_for_normal_user(mon
     assert agent.share_config == DEFAULT_SHARE_CONFIG
 
 
-def test_user_shared_agent_is_manageable_for_normal_user():
+def test_legacy_manage_scope_does_not_grant_normal_user_management():
     user = User(username="user", uid="user", password_hash="x", role="user", department_id=1)
     agent = Agent(
         slug="shared-bot",
@@ -183,11 +184,95 @@ def test_user_shared_agent_is_manageable_for_normal_user():
     )
 
     assert user_can_access_agent(user, agent) is True
-    assert user_can_manage_agent(user, agent) is True
+    assert user_can_access_agent(user, agent) is True
+    assert user_can_manage_agent(user, agent) is False
+    assert user_can_delete_agent(user, agent) is False
+
+
+def test_department_binding_grants_management_to_bound_or_upstream_admin():
+    agent = Agent(
+        slug="department-bot",
+        name="Department Bot",
+        backend_id="ChatbotAgent",
+        created_by="owner",
+        share_config={
+            "version": 2,
+            "read_scope": {
+                "access_level": "department",
+                "department_ids": [20],
+                "user_uids": [],
+            },
+            "manage_scope": None,
+        },
+    )
+    upstream_admin = User(username="upstream", uid="upstream", password_hash="x", role="admin")
+    upstream_admin.managed_department_ids = {10, 20, 21}
+    child_admin = User(username="child", uid="child", password_hash="x", role="admin")
+    child_admin.managed_department_ids = {21}
+
+    assert user_can_manage_agent(upstream_admin, agent) is True
+    assert user_can_delete_agent(upstream_admin, agent) is True
+    assert user_can_manage_agent(child_admin, agent) is False
+
+
+def test_user_assignment_falls_back_to_creator_current_primary_department():
+    agent = Agent(
+        slug="personal-bot",
+        name="Personal Bot",
+        backend_id="ChatbotAgent",
+        created_by="owner",
+        share_config={
+            "version": 2,
+            "read_scope": {
+                "access_level": "user",
+                "department_ids": [],
+                "user_uids": ["reader"],
+            },
+            "manage_scope": None,
+        },
+    )
+    current_department_admin = User(username="admin", uid="admin", password_hash="x", role="admin")
+    current_department_admin.managed_department_ids = {30}
+
+    assert user_can_manage_agent(current_department_admin, agent, creator_department_id=30) is True
+    assert user_can_manage_agent(current_department_admin, agent, creator_department_id=40) is False
+
+
+def test_global_agent_is_only_manageable_by_creator_or_superadmin():
+    agent = Agent(
+        slug="global-bot",
+        name="Global Bot",
+        backend_id="ChatbotAgent",
+        created_by="owner",
+        share_config=DEFAULT_SHARE_CONFIG,
+    )
+    department_admin = User(username="admin", uid="admin", password_hash="x", role="admin")
+    department_admin.managed_department_ids = {1, 2}
+    owner = User(username="owner", uid="owner", password_hash="x", role="user")
+    superadmin = User(username="root", uid="root", password_hash="x", role="superadmin")
+
+    assert user_can_manage_agent(department_admin, agent) is False
+    assert user_can_manage_agent(owner, agent) is True
+    assert user_can_manage_agent(superadmin, agent) is True
+
+
+def test_builtin_agent_cannot_be_managed_by_department_admin():
+    builtin = Agent(
+        slug=GENERAL_PURPOSE_AGENT_SLUG,
+        name=GENERAL_PURPOSE_AGENT_NAME,
+        backend_id=SUB_AGENT_BACKEND_ID,
+        created_by="system",
+        share_config=DEFAULT_SHARE_CONFIG,
+    )
+    department_admin = User(username="admin", uid="admin", password_hash="x", role="admin")
+    department_admin.managed_department_ids = {1}
+
+    assert user_can_manage_agent(department_admin, builtin) is False
+    assert user_can_delete_agent(department_admin, builtin) is False
 
 
 @pytest.mark.asyncio
-async def test_delegated_manager_update_preserves_shared_agent_acl():
+async def test_agent_update_discards_legacy_manage_scope():
     db = FakeDb()
     repo = AgentRepository(db)
     share_config = {
@@ -215,7 +300,7 @@ async def test_delegated_manager_update_preserves_shared_agent_acl():
     )
 
     assert agent.share_config["read_scope"]["user_uids"] == ["manager"]
-    assert agent.share_config["manage_scope"]["user_uids"] == ["manager"]
+    assert agent.share_config["manage_scope"] is None
 
 
 @pytest.mark.asyncio
@@ -330,8 +415,4 @@ async def test_normal_user_can_update_agent_with_equivalent_v2_share_config():
         "department_ids": [],
         "user_uids": ["manager"],
     }
-    assert agent.share_config["manage_scope"] == {
-        "access_level": "user",
-        "department_ids": [],
-        "user_uids": ["manager"],
-    }
+    assert agent.share_config["manage_scope"] is None

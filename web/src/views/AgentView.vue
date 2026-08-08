@@ -80,6 +80,7 @@
 
                   <div class="config-dropdown-actions">
                     <button
+                      v-if="currentAgentOption?.canUpdate"
                       type="button"
                       class="config-dropdown-item action-item"
                       @click="openAgentManagement"
@@ -88,6 +89,7 @@
                       <span class="config-dropdown-item-label">编辑智能体</span>
                     </button>
                     <button
+                      v-if="userStore.hasPermission('agents.create')"
                       type="button"
                       class="config-dropdown-item action-item"
                       @click="openCreateAgent"
@@ -121,6 +123,7 @@ import { useOutsidePointerdown } from '@/composables/useOutsidePointerdown'
 import AgentChatComponent from '@/components/AgentChatComponent.vue'
 import AgentEditModal from '@/components/model-management/AgentEditModal.vue'
 import { isBuiltinAgent, useAgentStore } from '@/stores/agent'
+import { useUserStore } from '@/stores/user'
 import { handleChatError } from '@/utils/errorHandler'
 import { generatePixelAvatar } from '@/utils/pixelAvatar'
 import FallbackAvatar from '@/components/common/FallbackAvatar.vue'
@@ -133,6 +136,7 @@ const agentEditModalRef = ref(null)
 
 // Stores
 const agentStore = useAgentStore()
+const userStore = useUserStore()
 const route = useRoute()
 const router = useRouter()
 
@@ -236,7 +240,8 @@ const agentQuickSwitchOptions = computed(() =>
       value: agent.id,
       icon: agent.icon || '',
       defaultIcon: agent.id ? generatePixelAvatar(agent.id) : '',
-      isBuiltin: isBuiltinAgent(agent)
+      isBuiltin: isBuiltinAgent(agent),
+      canUpdate: Boolean(agent.can_update)
     }))
 )
 
@@ -286,7 +291,8 @@ const handleAgentSaved = async ({ mode, agent } = {}) => {
   }
 
   await agentStore.fetchAgents()
-  if (selectedAgentId.value) {
+  const selectedAgent = (agents.value || []).find((agent) => agent.id === selectedAgentId.value)
+  if (selectedAgent?.can_view_config) {
     await agentStore.fetchAgentDetail(selectedAgentId.value, true)
   }
 }

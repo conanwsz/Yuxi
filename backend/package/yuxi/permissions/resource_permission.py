@@ -81,14 +81,10 @@ def _normalize_scope(scope: dict | None) -> dict | None:
         normalized = {
             "access_level": access_level,
             "department_ids": department_ids,
-            "user_uids": sorted(
-                {str(value).strip() for value in scope.get("user_uids") or [] if str(value).strip()}
-            ),
+            "user_uids": sorted({str(value).strip() for value in scope.get("user_uids") or [] if str(value).strip()}),
         }
         if int(scope.get("org_scope_version") or 1) >= 2:
-            excluded_department_ids = sorted(
-                {int(value) for value in scope.get("excluded_department_ids") or []}
-            )
+            excluded_department_ids = sorted({int(value) for value in scope.get("excluded_department_ids") or []})
             if set(department_ids) & set(excluded_department_ids):
                 raise ValueError("同一组织节点不能同时授权和排除")
             normalized.update(
@@ -252,11 +248,17 @@ def require_knowledge_base_permission(
 
 
 def resolve_agent_permission(user: Any, resource: ShareableResource) -> ResourcePermission:
-    """解析 Agent 权限。"""
+    """解析 Agent 使用权限；管理权由所有权和组织归属单独判定。"""
+
+    share_config = normalize_permission_config(_value(resource, "share_config"))
+    agent_resource = {
+        "created_by": _value(resource, "created_by"),
+        "share_config": {**share_config, "manage_scope": None},
+    }
 
     return resolve_resource_permission(
         user,
-        resource,
+        agent_resource,
         AGENT_PERMISSION_POLICY,
     )
 

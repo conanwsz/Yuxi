@@ -161,9 +161,20 @@ async def test_agent_detail_filters_configurable_items_by_role(
     if not agent_id:
         pytest.skip("Agent payload missing slug field.")
 
+    listed_agent = agents[0]
+    assert "config_json" not in listed_agent
+
     user_agent_response = await test_client.get(f"/api/agent/{agent_id}", headers=standard_user["headers"])
-    assert user_agent_response.status_code == 200, user_agent_response.text
-    user_items = user_agent_response.json()["agent"].get("configurable_items", {})
+    assert user_agent_response.status_code == 403, user_agent_response.text
+
+    runtime_response = await test_client.get(
+        f"/api/agent/{agent_id}/runtime-metadata",
+        headers=standard_user["headers"],
+    )
+    assert runtime_response.status_code == 200, runtime_response.text
+    runtime_data = runtime_response.json()
+    assert "system_prompt" not in runtime_data.get("runtime_context", {})
+    user_items = runtime_data.get("configurable_items", {})
     assert "summary_threshold" not in user_items
     assert "summary_keep_messages" not in user_items
     assert "summary_prompt" not in user_items

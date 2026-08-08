@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,8 +14,6 @@ from yuxi.repositories.agent_repository import (
     AgentRepository,
     is_builtin_agent,
     user_can_access_agent,
-    user_can_delete_agent,
-    user_can_manage_agent,
 )
 from yuxi.services.agent_request_queue_service import (
     cancel_queued_request as cancel_queued_request_svc,
@@ -24,6 +23,13 @@ from yuxi.services.agent_request_queue_service import (
     get_thread_queue_snapshot,
     steer_queued_request,
     stream_request_events,
+)
+from yuxi.services.agent_assignment_service import (
+    assignment_from_share_config,
+    get_agent_assignment_options,
+    get_editable_agent_assignment,
+    merge_agent_assignment,
+    validate_new_agent_assignment,
 )
 from yuxi.services.agent_run_service import (
     cancel_agent_run_view,
@@ -40,7 +46,7 @@ from yuxi.services.run_submission_service import RunOrigin, RunSubmissionCommand
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_business import User
 from yuxi.services.permission_service import authorization_role
-from yuxi.services.organization_scope_service import validate_v2_share_config
+from yuxi.services.operation_log_service import log_operation
 
 from server.utils.auth_middleware import get_admin_user, get_db, get_required_user, require_permission
 
@@ -70,6 +76,14 @@ class AgentUpdate(BaseModel):
     share_config: dict | None = None
     manage_config: dict | None = None
     is_subagent: bool | None = None
+
+
+class AgentAssignmentUpdate(BaseModel):
+    """当前操作者可编辑的 Agent 分配切片。"""
+
+    global_access: bool = False
+    department_ids: list[int] = Field(default_factory=list)
+    user_uids: list[str] = Field(default_factory=list)
 
 
 class AgentRunCreate(BaseModel):
@@ -123,15 +137,22 @@ async def _serialize_agent(
     user: User,
     *,
     include_configurable_items: bool = False,
+    include_sensitive_config: bool = True,
     backend_info_cache: dict[tuple[str, bool, str], dict] | None = None,
 ) -> dict:
     data = await repo.serialize(
         item,
         user=user,
         include_configurable_items=include_configurable_items,
+        include_sensitive_config=include_sensitive_config,
         backend_info_cache=backend_info_cache,
     )
-    data["config_json"] = _filter_agent_config_json(item.backend_id, data.get("config_json"), authorization_role(user))
+    if "config_json" in data:
+        data["config_json"] = _filter_agent_config_json(
+            item.backend_id,
+            data.get("config_json"),
+            authorization_role(user),
+        )
     return data
 
 
@@ -168,7 +189,16 @@ async def list_agents(
         else await repo.list_visible(user=current_user, include_subagent_definitions=include_subagents)
     )
     backend_info_cache: dict[tuple[str, bool, str], dict] = {}
-    agents = [await _serialize_agent(repo, item, current_user, backend_info_cache=backend_info_cache) for item in items]
+    agents = [
+        await _serialize_agent(
+            repo,
+            item,
+            current_user,
+            include_sensitive_config=False,
+            backend_info_cache=backend_info_cache,
+        )
+        for item in items
+    ]
     return {"agents": agents}
 
 
@@ -180,12 +210,32 @@ async def get_default_agent(
     item = await repo.ensure_default_agent()
     if not item or not user_can_access_agent(current_user, item):
         raise HTTPException(status_code=404, detail="默认智能体不可访问")
-    return {"agent": await _serialize_agent(repo, item, current_user, include_configurable_items=True)}
+    can_manage = await repo.can_manage(user=current_user, agent=item)
+    return {
+        "agent": await _serialize_agent(
+            repo,
+            item,
+            current_user,
+            include_configurable_items=can_manage,
+            include_sensitive_config=can_manage,
+        )
+    }
+
+
+@agent_router.get("/assignment-options")
+async def list_agent_assignment_options(
+    current_user: User = Depends(require_permission("agents.share")),
+    db: AsyncSession = Depends(get_db),
+):
+    """列出当前用户可以选择的 Agent 分配对象。"""
+
+    return await get_agent_assignment_options(db, current_user)
 
 
 @agent_router.post("")
 async def create_agent(
     payload: AgentCreate,
+    request: Request,
     current_user: User = Depends(require_permission("agents.create")),
     db: AsyncSession = Depends(get_db),
 ):
@@ -202,10 +252,13 @@ async def create_agent(
             backend_id=payload.backend_id,
             config_json=payload.config_json,
         )
-        if payload.share_config:
-            await validate_v2_share_config(db, payload.share_config)
-        if payload.manage_config:
-            await validate_v2_share_config(db, payload.manage_config)
+        if payload.manage_config is not None:
+            raise ValueError("Agent 不再支持共享管理范围")
+        share_config = await validate_new_agent_assignment(
+            db,
+            user=current_user,
+            share_config=payload.share_config,
+        )
         item = await repo.create(
             name=payload.name,
             slug=payload.slug,
@@ -214,8 +267,7 @@ async def create_agent(
             icon=payload.icon,
             pics=payload.pics,
             config_json=validated_config_json,
-            share_config=payload.share_config,
-            manage_config=payload.manage_config,
+            share_config=share_config,
             is_default=payload.set_default,
             is_subagent=payload.is_subagent,
             created_by=str(current_user.uid),
@@ -223,6 +275,13 @@ async def create_agent(
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    await log_operation(
+        db,
+        current_user.id,
+        "创建智能体",
+        json.dumps({"agent_id": item.slug, "share_config": item.share_config}, ensure_ascii=False),
+        request,
+    )
     return {"agent": await _serialize_agent(repo, item, current_user, include_configurable_items=True)}
 
 
@@ -234,16 +293,53 @@ async def get_agent(
 ):
     repo = AgentRepository(db)
     agent_slug = agent_id  # 兼容既有路径参数名；这里实际是 Agent.slug。
-    item = await repo.get_visible_by_slug(slug=agent_slug, user=current_user, kind="any")
+    item = await repo.get_by_slug(agent_slug)
     if not item:
         raise HTTPException(status_code=404, detail="智能体不存在")
+    can_manage = await repo.can_manage(user=current_user, agent=item)
+    if not user_can_access_agent(current_user, item) and not can_manage:
+        raise HTTPException(status_code=404, detail="智能体不存在")
+    if not can_manage:
+        raise HTTPException(status_code=403, detail="无权查看该智能体配置")
     return {"agent": await _serialize_agent(repo, item, current_user, include_configurable_items=True)}
+
+
+@agent_router.get("/{agent_id}/runtime-metadata")
+async def get_agent_runtime_metadata(
+    agent_id: str,
+    current_user: User = Depends(require_permission("agents.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """返回对话界面必需的安全运行元数据，不暴露完整 Agent 配置。"""
+
+    repo = AgentRepository(db)
+    item = await repo.get_visible_by_slug(slug=agent_id, user=current_user, kind="any")
+    if not item:
+        raise HTTPException(status_code=404, detail="智能体不存在")
+
+    serialized = await _serialize_agent(
+        repo,
+        item,
+        current_user,
+        include_configurable_items=True,
+        include_sensitive_config=False,
+    )
+    safe_keys = {"model", "tool_approval_mode", "knowledges", "mcps", "skills", "subagents"}
+    filtered_config = _filter_agent_config_json(item.backend_id, item.config_json, authorization_role(current_user))
+    context = filtered_config.get("context") if isinstance(filtered_config, dict) else {}
+    configurable_items = serialized.get("configurable_items") or {}
+    return {
+        "agent_id": item.slug,
+        "runtime_context": {key: value for key, value in (context or {}).items() if key in safe_keys},
+        "configurable_items": {key: value for key, value in configurable_items.items() if key in safe_keys},
+    }
 
 
 @agent_router.put("/{agent_id}")
 async def update_agent(
     agent_id: str,
     payload: AgentUpdate,
+    request: Request,
     current_user: User = Depends(require_permission("agents.update")),
     db: AsyncSession = Depends(get_db),
 ):
@@ -252,11 +348,13 @@ async def update_agent(
     item = await repo.get_by_slug(agent_slug)
     if not item:
         raise HTTPException(status_code=404, detail="智能体不存在")
-    if not user_can_manage_agent(current_user, item):
-        raise HTTPException(status_code=403, detail="不能编辑非自己创建的智能体")
+    if not await repo.can_manage(user=current_user, agent=item):
+        raise HTTPException(status_code=403, detail="不能编辑非自己创建或非管理范围内的智能体")
 
     try:
         fields_set = payload.model_fields_set
+        if "share_config" in fields_set or "manage_config" in fields_set:
+            raise ValueError("请使用智能体分配接口修改分配范围")
         if "description" in fields_set and payload.description is None:
             item.description = None
         if "icon" in fields_set and payload.icon is None:
@@ -271,11 +369,6 @@ async def update_agent(
             if payload.config_json is not None
             else None
         )
-        if payload.share_config:
-            await validate_v2_share_config(db, payload.share_config)
-        if payload.manage_config:
-            await validate_v2_share_config(db, payload.manage_config)
-
         updated = await repo.update(
             item,
             name=payload.name,
@@ -283,20 +376,101 @@ async def update_agent(
             icon=payload.icon,
             pics=payload.pics,
             config_json=validated_config_json,
-            share_config=payload.share_config,
-            manage_config=payload.manage_config,
             is_subagent=payload.is_subagent,
             updated_by=str(current_user.uid),
             updater=current_user,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    await log_operation(
+        db,
+        current_user.id,
+        "更新智能体",
+        json.dumps({"agent_id": updated.slug, "fields": sorted(payload.model_fields_set)}, ensure_ascii=False),
+        request,
+    )
     return {"agent": await _serialize_agent(repo, updated, current_user, include_configurable_items=True)}
+
+
+@agent_router.get("/{agent_id}/assignment")
+async def get_agent_assignment(
+    agent_id: str,
+    current_user: User = Depends(require_permission("agents.share")),
+    db: AsyncSession = Depends(get_db),
+):
+    """返回当前用户可编辑的 Agent 分配切片。"""
+
+    repo = AgentRepository(db)
+    item = await repo.get_by_slug(agent_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="智能体不存在")
+    if is_builtin_agent(item):
+        raise HTTPException(status_code=409, detail="内置智能体的分配范围已锁定")
+    if not await repo.can_manage(user=current_user, agent=item):
+        raise HTTPException(status_code=403, detail="无权管理该智能体分配范围")
+    if assignment_from_share_config(item.share_config)["global_access"] and current_user.role != "superadmin":
+        raise HTTPException(status_code=403, detail="全局智能体的分配范围仅超级管理员可调整")
+    return await get_editable_agent_assignment(db, user=current_user, share_config=item.share_config)
+
+
+@agent_router.put("/{agent_id}/assignment")
+async def update_agent_assignment(
+    agent_id: str,
+    payload: AgentAssignmentUpdate,
+    request: Request,
+    current_user: User = Depends(require_permission("agents.share")),
+    db: AsyncSession = Depends(get_db),
+):
+    """更新当前用户管理范围内的 Agent 分配，并保留范围外绑定。"""
+
+    repo = AgentRepository(db)
+    item = await repo.get_by_slug(agent_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="智能体不存在")
+    if is_builtin_agent(item):
+        raise HTTPException(status_code=409, detail="内置智能体的分配范围已锁定")
+    if not await repo.can_manage(user=current_user, agent=item):
+        raise HTTPException(status_code=403, detail="无权管理该智能体分配范围")
+    if assignment_from_share_config(item.share_config)["global_access"] and current_user.role != "superadmin":
+        raise HTTPException(status_code=403, detail="全局智能体的分配范围仅超级管理员可调整")
+
+    before = item.share_config
+    try:
+        merged = await merge_agent_assignment(
+            db,
+            user=current_user,
+            current_share_config=before,
+            global_access=payload.global_access,
+            department_ids=payload.department_ids,
+            user_uids=payload.user_uids,
+            owner_uid=str(item.created_by or ""),
+        )
+        updated = await repo.update(
+            item,
+            share_config=merged,
+            updated_by=str(current_user.uid),
+            updater=current_user,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    await log_operation(
+        db,
+        current_user.id,
+        "更新智能体分配",
+        json.dumps(
+            {"agent_id": updated.slug, "before": before, "after": updated.share_config},
+            ensure_ascii=False,
+        ),
+        request,
+    )
+    return await get_editable_agent_assignment(db, user=current_user, share_config=updated.share_config)
 
 
 @agent_router.delete("/{agent_id}")
 async def delete_agent(
     agent_id: str,
+    request: Request,
     current_user: User = Depends(require_permission("agents.delete")),
     db: AsyncSession = Depends(get_db),
 ):
@@ -305,11 +479,18 @@ async def delete_agent(
     item = await repo.get_by_slug(agent_slug)
     if not item:
         raise HTTPException(status_code=404, detail="智能体不存在")
-    if not user_can_delete_agent(current_user, item):
-        raise HTTPException(status_code=403, detail="不能删除非自己创建的智能体")
+    if not await repo.can_delete(user=current_user, agent=item):
+        raise HTTPException(status_code=403, detail="不能删除非自己创建或非管理范围内的智能体")
     if is_builtin_agent(item):
         raise HTTPException(status_code=409, detail="内置智能体不能删除")
     await repo.delete(agent=item)
+    await log_operation(
+        db,
+        current_user.id,
+        "删除智能体",
+        json.dumps({"agent_id": agent_slug}, ensure_ascii=False),
+        request,
+    )
     return {"success": True}
 
 

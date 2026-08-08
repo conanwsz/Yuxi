@@ -13,7 +13,6 @@ import InfoCard from '@/components/shared/InfoCard.vue'
 import FallbackAvatar from '@/components/common/FallbackAvatar.vue'
 import ExtensionCardGrid from '@/components/extensions/ExtensionCardGrid.vue'
 import { generatePixelAvatar } from '@/utils/pixelAvatar'
-import { getShareConfigLabel } from '@/utils/shareConfig'
 
 const agentStore = useAgentStore()
 const userStore = useUserStore()
@@ -56,11 +55,29 @@ const filteredAgents = computed(() => {
 })
 
 const groupedAgents = computed(() => {
-  const agents = filteredAgents.value.filter((agent) => !agent.is_subagent)
-  const subagents = filteredAgents.value.filter((agent) => agent.is_subagent)
+  const manageable = filteredAgents.value.filter((agent) => agent.can_view_config)
+  const assigned = filteredAgents.value.filter((agent) => !agent.can_view_config)
   return [
-    { key: 'agents', title: '智能体', agents },
-    { key: 'subagents', title: '子智能体', agents: subagents }
+    {
+      key: 'manageable-agents',
+      title: '我可管理的智能体',
+      agents: manageable.filter((agent) => !agent.is_subagent)
+    },
+    {
+      key: 'assigned-agents',
+      title: '分配给我的智能体',
+      agents: assigned.filter((agent) => !agent.is_subagent)
+    },
+    {
+      key: 'manageable-subagents',
+      title: '我可管理的子智能体',
+      agents: manageable.filter((agent) => agent.is_subagent)
+    },
+    {
+      key: 'assigned-subagents',
+      title: '分配给我的子智能体',
+      agents: assigned.filter((agent) => agent.is_subagent)
+    }
   ].filter((group) => group.agents.length > 0)
 })
 
@@ -68,18 +85,21 @@ const agentStats = computed(() => ({
   total: managedAgents.value.length,
   builtin: managedAgents.value.filter(isBuiltinAgent).length,
   manageable: managedAgents.value.filter((agent) => agent.can_manage).length,
-  global: managedAgents.value.filter(
-    (agent) => (agent.share_config?.read_scope || agent.share_config)?.access_level === 'global'
-  ).length
+  global: managedAgents.value.filter((agent) => agent.assignment_summary?.access_level === 'global')
+    .length
 }))
-const canManageAgent = (agent) => !!agent?.can_manage
-const canEditAgent = (agent) => userStore.hasPermission('agents.update') && canManageAgent(agent)
-const canDeleteAgent = (agent) =>
-  userStore.hasPermission('agents.delete') && !!agent?.can_delete && !isBuiltinAgent(agent)
+const canManageAgent = (agent) => !!agent?.can_view_config
+const canEditAgent = (agent) => !!agent?.can_update
+const canDeleteAgent = (agent) => !!agent?.can_delete
 const getAgentDefaultIconSrc = (agent) => (agent.id ? generatePixelAvatar(agent.id) : '')
 
 /** 返回智能体共享范围的简短展示文案。 */
-const getAgentShareLabel = (agent) => getShareConfigLabel(agent?.share_config)
+const getAgentShareLabel = (agent) => {
+  const summary = agent?.assignment_summary || {}
+  if (summary.access_level === 'global') return '全局分配'
+  if (summary.access_level === 'department') return `部门分配（${summary.department_count || 0}）`
+  return '指定给我'
+}
 
 // ============ Agent Operations ============
 const loadAgentBackends = async () => {
@@ -97,7 +117,7 @@ const loadAgentBackends = async () => {
 const loadAgents = async () => {
   agentLoading.value = true
   try {
-    const response = await agentApi.getAgents({ includeSubagents: true, manageableOnly: true })
+    const response = await agentApi.getAgents({ includeSubagents: true })
     managedAgents.value = (response.agents || []).map(normalizeAgent)
   } catch (error) {
     message.error(error.message || '加载智能体失败')
@@ -238,7 +258,7 @@ defineExpose({
               </a-menu>
             </template>
 
-            <template v-if="group.key === 'agents'" #tag-actions>
+            <template v-if="!agent.is_subagent" #tag-actions>
               <a-button
                 type="text"
                 size="small"

@@ -65,6 +65,15 @@ export const agentApi = {
    */
   getAgentDetail: (agentId) => apiGet(`/api/agent/${agentId}`),
 
+  getAgentRuntimeMetadata: (agentId) => apiGet(`/api/agent/${agentId}/runtime-metadata`),
+
+  getAssignmentOptions: () => apiGet('/api/agent/assignment-options'),
+
+  getAgentAssignment: (agentId) => apiGet(`/api/agent/${agentId}/assignment`),
+
+  updateAgentAssignment: (agentId, payload) =>
+    apiPut(`/api/agent/${agentId}/assignment`, payload),
+
   /**
    * 获取智能体历史消息
    * @param {string} agentId - 智能体ID

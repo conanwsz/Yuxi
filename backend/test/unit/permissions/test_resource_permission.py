@@ -75,7 +75,7 @@ def test_strict_config_rejects_user_manage_scope_under_department_read_scope():
         )
 
 
-def test_global_agent_scope_preserves_admin_management():
+def test_global_agent_scope_does_not_delegate_management_to_admin():
     resource = _resource(
         share_config={
             "version": 2,
@@ -84,10 +84,10 @@ def test_global_agent_scope_preserves_admin_management():
         }
     )
 
-    assert resolve_agent_permission(_user(role="admin"), resource) == ResourcePermission.MANAGE
+    assert resolve_agent_permission(_user(role="admin"), resource) == ResourcePermission.READ
 
 
-def test_user_agent_and_skill_scope_preserves_user_management():
+def test_agent_ignores_manage_scope_while_skill_preserves_it():
     resource = _resource(
         share_config={
             "version": 2,
@@ -96,7 +96,7 @@ def test_user_agent_and_skill_scope_preserves_user_management():
         }
     )
 
-    assert resolve_agent_permission(_user(), resource) == ResourcePermission.MANAGE
+    assert resolve_agent_permission(_user(), resource) == ResourcePermission.READ
     assert resolve_skill_permission(_user(), resource) == ResourcePermission.MANAGE
 
 
@@ -138,10 +138,10 @@ def test_legacy_permission_config_is_rejected_when_saving():
         normalize_permission_config({"access_level": "department", "department_ids": [1]}, strict=True)
 
 
-def test_agent_and_skill_use_shared_resolver_with_resource_policy():
+def test_agent_manage_only_scope_is_ignored_while_skill_still_uses_it():
     resource = _resource(share_config={"version": 2, "manage_scope": {"access_level": "user", "user_uids": ["user-2"]}})
 
-    assert resolve_agent_permission(_user(uid="user-2"), resource) == ResourcePermission.MANAGE
+    assert resolve_agent_permission(_user(uid="user-2"), resource) == ResourcePermission.NONE
     assert resolve_skill_permission(_user(uid="user-2"), resource) == ResourcePermission.MANAGE
 
 
