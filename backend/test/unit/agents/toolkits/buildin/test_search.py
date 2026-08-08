@@ -392,7 +392,7 @@ def test_search_tool_registers_under_web_search_slug(
 
     assert "web_search" in _extra_registry
     meta = _extra_registry["web_search"]
-    assert "→" in meta.display_name  # "duckduckgo → tavily" 风格
+    assert meta.display_name == "网页搜索"
     assert "TAVILY_API_KEYS" in meta.config_guide
     assert "熔断" in meta.config_guide
 
@@ -406,7 +406,6 @@ def test_metadata_includes_chain_and_pool_info(
 
     meta = search.search_tool_metadata()
     assert meta["chain"] == ["duckduckgo", "tavily"]
-    assert "duckduckgo" in meta["display_name"]
-    assert "tavily" in meta["display_name"]
+    assert meta["display_name"] == "网页搜索"
     assert "3 个 key" in meta["config_guide"]
     assert "120s" in meta["config_guide"]

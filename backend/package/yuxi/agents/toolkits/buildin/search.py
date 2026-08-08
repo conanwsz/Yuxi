@@ -515,7 +515,7 @@ def search_tool_metadata(_backend: str = "") -> dict[str, Any]:
     tavily_keys = _resolve_tavily_keys()
     pool_stats = {"tavily_keys": len(tavily_keys), "cooldown_seconds": _resolve_key_cooldown()}
 
-    display = "豆包 网页搜索" if backend_names == ["doubao"] else "网页搜索 (" + " → ".join(backend_names) + ")"
+    display = "网页搜索"
     guide_lines = [
         f"按顺序尝试: {', '.join(backend_names)};前一个失败自动 fallback 到下一个。",
     ]
