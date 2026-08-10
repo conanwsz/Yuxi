@@ -227,6 +227,7 @@ import {
 } from 'lucide-vue-next'
 import ShareConfigForm from '@/components/ShareConfigForm.vue'
 import { skillApi } from '@/apis/skill_api'
+import { buildRemoteSkillRetryRequests } from '@/utils/remoteSkillRetry'
 import { useUserStore } from '@/stores/user'
 
 const props = defineProps({
@@ -522,13 +523,7 @@ const handleClose = async () => {
 }
 
 const retryFailedItems = () => {
-  const requestsBySource = new Map()
-  failedInstallItems.value.forEach((item) => {
-    if (item.source_type !== 'remote' || !item.source) return
-    if (!requestsBySource.has(item.source)) requestsBySource.set(item.source, [])
-    requestsBySource.get(item.source).push(item.slug)
-  })
-  const requests = [...requestsBySource].map(([source, skills]) => ({ source, skills }))
+  const requests = buildRemoteSkillRetryRequests(failedInstallItems.value)
   if (!requests.length) {
     flowError.value = '该失败项需要从原入口重新上传'
     return
