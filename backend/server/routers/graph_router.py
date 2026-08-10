@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from server.utils.auth_middleware import get_admin_user
+from server.utils.knowledge_auth import get_knowledge_user
 from server.utils.knowledge_permissions import require_knowledge_base_read
 from server.utils.knowledge_response import serialize_knowledge_base
 from yuxi.knowledge.graphs.milvus_graph_service import MilvusGraphService
@@ -24,7 +24,7 @@ async def _get_graph_service(kb_id: str) -> MilvusGraphService:
 
 
 @graph.get("/list")
-async def get_graphs(current_user: User = Depends(get_admin_user)):
+async def get_graphs(current_user: User = Depends(get_knowledge_user)):
     """获取支持图谱能力的 Milvus 知识库列表"""
     try:
         databases = await knowledge_base.get_databases_by_uid(current_user.uid)

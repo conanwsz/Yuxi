@@ -295,38 +295,100 @@ async def test_update_database_additional_params_merge_keeps_chunk_preset(
 
 async def test_knowledge_routes_enforce_permissions(
     test_client,
-    standard_user,
+    admin_headers,
     knowledge_database,
     embedding_model_spec,
 ):
+    """缺少 knowledge.* 功能权限的自定义角色不能访问知识库管理接口。"""
+    await _require_superadmin(test_client, admin_headers)
+    suffix = uuid.uuid4().hex[:8]
+    role_user = await _create_role_user(
+        test_client,
+        admin_headers,
+        role_key=f"knowledge_denied_{suffix}",
+        role_name=f"知识库无权角色 {suffix}",
+        permissions=["skills.read"],
+        username_prefix="kd",
+    )
     kb_id = knowledge_database["kb_id"]
 
-    forbidden_create = await test_client.post(
-        "/api/knowledge/databases",
-        json={
-            "database_name": "unauthorized_db",
-            "description": "Should not succeed",
-            "embedding_model_spec": embedding_model_spec,
-        },
-        headers=standard_user["headers"],
+    try:
+        denied_headers = role_user["headers"]
+
+        forbidden_create = await test_client.post(
+            "/api/knowledge/databases",
+            json={
+                "database_name": "unauthorized_db",
+                "description": "Should not succeed",
+                "embedding_model_spec": embedding_model_spec,
+            },
+            headers=denied_headers,
+        )
+        _assert_forbidden_response(forbidden_create)
+
+        forbidden_list = await test_client.get("/api/knowledge/databases", headers=denied_headers)
+        _assert_forbidden_response(forbidden_list)
+
+        forbidden_types = await test_client.get("/api/knowledge/types", headers=denied_headers)
+        _assert_forbidden_response(forbidden_types)
+        assert forbidden_types.json()["detail"] == "缺少权限: knowledge.read"
+
+        forbidden_chunk_presets = await test_client.get("/api/knowledge/chunk-presets", headers=denied_headers)
+        _assert_forbidden_response(forbidden_chunk_presets)
+        assert forbidden_chunk_presets.json()["detail"] == "缺少权限: knowledge.read"
+
+        forbidden_get = await test_client.get(f"/api/knowledge/databases/{kb_id}", headers=denied_headers)
+        _assert_forbidden_response(forbidden_get)
+
+        forbidden_exists = await test_client.get(
+            f"/api/knowledge/databases/{kb_id}/documents/exists",
+            params={"filename": "demo.txt"},
+            headers=denied_headers,
+        )
+        _assert_forbidden_response(forbidden_exists)
+    finally:
+        await _delete_role_user(test_client, admin_headers, role_user)
+
+
+async def test_knowledge_read_role_can_load_extension_metadata(test_client, admin_headers):
+    """拥有 knowledge.read 的自定义角色可加载知识库扩展页初始化数据。"""
+    await _require_superadmin(test_client, admin_headers)
+    suffix = uuid.uuid4().hex[:8]
+    role_user = await _create_role_user(
+        test_client,
+        admin_headers,
+        role_key=f"knowledge_reader_{suffix}",
+        role_name=f"知识库读取者 {suffix}",
+        permissions=["knowledge.read"],
+        username_prefix="kr",
     )
-    _assert_forbidden_response(forbidden_create)
 
-    forbidden_list = await test_client.get("/api/knowledge/databases", headers=standard_user["headers"])
-    _assert_forbidden_response(forbidden_list)
+    try:
+        reader_headers = role_user["headers"]
 
-    forbidden_chunk_presets = await test_client.get("/api/knowledge/chunk-presets", headers=standard_user["headers"])
-    _assert_forbidden_response(forbidden_chunk_presets)
+        types_response = await test_client.get("/api/knowledge/types", headers=reader_headers)
+        assert types_response.status_code == 200, types_response.text
+        assert types_response.json()["message"] == "success"
+        assert types_response.json()["kb_types"]
 
-    forbidden_get = await test_client.get(f"/api/knowledge/databases/{kb_id}", headers=standard_user["headers"])
-    _assert_forbidden_response(forbidden_get)
+        presets_response = await test_client.get("/api/knowledge/chunk-presets", headers=reader_headers)
+        assert presets_response.status_code == 200, presets_response.text
+        assert presets_response.json()["message"] == "success"
+        assert presets_response.json()["chunk_presets"]
 
-    forbidden_exists = await test_client.get(
-        f"/api/knowledge/databases/{kb_id}/documents/exists",
-        params={"filename": "demo.txt"},
-        headers=standard_user["headers"],
-    )
-    _assert_forbidden_response(forbidden_exists)
+        databases_response = await test_client.get("/api/knowledge/databases", headers=reader_headers)
+        assert databases_response.status_code == 200, databases_response.text
+        assert "databases" in databases_response.json()
+
+        denied_create = await test_client.post(
+            "/api/knowledge/databases",
+            headers=reader_headers,
+            json={"database_name": f"denied_{suffix}", "description": "must remain forbidden"},
+        )
+        _assert_forbidden_response(denied_create)
+        assert denied_create.json()["detail"] == "缺少权限: knowledge.create"
+    finally:
+        await _delete_role_user(test_client, admin_headers, role_user)
 
 
 async def test_admin_can_create_vector_db_with_reranker(test_client, admin_headers, embedding_model_spec):
@@ -777,7 +839,7 @@ async def test_department_admin_cannot_manage_other_department_knowledge_by_id(
             ),
             await test_client.get(f"/api/evaluation/databases/{kb_id}/datasets", headers=department_a_headers),
         ]
-        assert all(response.status_code == 403 for response in attempts), [
+        assert all(response.status_code == 404 for response in attempts), [
             (response.status_code, response.text) for response in attempts
         ]
     finally:
@@ -988,25 +1050,37 @@ async def test_sample_questions_endpoints(test_client, admin_headers, knowledge_
     assert "中没有文件" in generate_response.json()["detail"]
 
 
-async def test_mindmap_permissions(test_client, standard_user, knowledge_database):
-    """测试思维导图接口的权限控制"""
+async def test_mindmap_permissions(test_client, admin_headers, knowledge_database):
+    """缺少 knowledge.graph.manage 的角色不能访问思维导图接口。"""
+    await _require_superadmin(test_client, admin_headers)
+    suffix = uuid.uuid4().hex[:8]
+    role_user = await _create_role_user(
+        test_client,
+        admin_headers,
+        role_key=f"mindmap_denied_{suffix}",
+        role_name=f"思维导图无权角色 {suffix}",
+        permissions=["knowledge.read"],
+        username_prefix="md",
+    )
     kb_id = knowledge_database["kb_id"]
 
-    # 普通用户应该无法访问
-    forbidden_list = await test_client.get("/api/knowledge/mindmap/databases", headers=standard_user["headers"])
-    _assert_forbidden_response(forbidden_list)
+    try:
+        forbidden_list = await test_client.get("/api/knowledge/mindmap/databases", headers=role_user["headers"])
+        _assert_forbidden_response(forbidden_list)
 
-    forbidden_files = await test_client.get(
-        f"/api/knowledge/databases/{kb_id}/mindmap/files", headers=standard_user["headers"]
-    )
-    _assert_forbidden_response(forbidden_files)
+        forbidden_files = await test_client.get(
+            f"/api/knowledge/databases/{kb_id}/mindmap/files", headers=role_user["headers"]
+        )
+        _assert_forbidden_response(forbidden_files)
 
-    forbidden_generate = await test_client.post(
-        f"/api/knowledge/databases/{kb_id}/mindmap/generate",
-        json={"file_ids": []},
-        headers=standard_user["headers"],
-    )
-    _assert_forbidden_response(forbidden_generate)
+        forbidden_generate = await test_client.post(
+            f"/api/knowledge/databases/{kb_id}/mindmap/generate",
+            json={"file_ids": []},
+            headers=role_user["headers"],
+        )
+        _assert_forbidden_response(forbidden_generate)
+    finally:
+        await _delete_role_user(test_client, admin_headers, role_user)
 
 
 async def test_document_search_returns_empty_for_blank_query(test_client, admin_headers, knowledge_database):
@@ -1040,12 +1114,25 @@ async def test_document_search_returns_structure_for_query(test_client, admin_he
     assert payload["has_more"] is False
 
 
-async def test_document_search_requires_admin(test_client, standard_user, knowledge_database):
-    """普通用户不能访问管理端搜索接口。"""
-    kb_id = knowledge_database["kb_id"]
-    response = await test_client.get(
-        f"/api/knowledge/databases/{kb_id}/documents/search",
-        params={"query": "x"},
-        headers=standard_user["headers"],
+async def test_document_search_requires_document_management_permission(test_client, admin_headers, knowledge_database):
+    """缺少 knowledge.documents.manage 的角色不能搜索知识库文件。"""
+    await _require_superadmin(test_client, admin_headers)
+    suffix = uuid.uuid4().hex[:8]
+    role_user = await _create_role_user(
+        test_client,
+        admin_headers,
+        role_key=f"search_denied_{suffix}",
+        role_name=f"文件搜索无权角色 {suffix}",
+        permissions=["knowledge.read"],
+        username_prefix="sd",
     )
-    _assert_forbidden_response(response)
+    kb_id = knowledge_database["kb_id"]
+    try:
+        response = await test_client.get(
+            f"/api/knowledge/databases/{kb_id}/documents/search",
+            params={"query": "x"},
+            headers=role_user["headers"],
+        )
+        _assert_forbidden_response(response)
+    finally:
+        await _delete_role_user(test_client, admin_headers, role_user)

@@ -45,6 +45,9 @@ async def test_require_permission_allows_superadmin_bypass():
     ("method", "path", "permission"),
     [
         ("POST", "/api/knowledge/databases", "knowledge.create"),
+        ("GET", "/api/knowledge/types", "knowledge.read"),
+        ("GET", "/api/knowledge/chunk-presets", "knowledge.read"),
+        ("GET", "/api/knowledge/databases", "knowledge.read"),
         ("DELETE", "/api/knowledge/databases/kb-a", "knowledge.delete"),
         ("PUT", "/api/knowledge/databases/kb-a", "knowledge.update"),
         ("POST", "/api/knowledge/databases/kb-a/documents", "knowledge.documents.manage"),
@@ -101,9 +104,7 @@ async def test_dataset_only_route_resolves_its_knowledge_base_scope(monkeypatch)
 
     with pytest.raises(HTTPException) as exc_info:
         await get_knowledge_user(
-            request=_request(
-                "DELETE", "/api/evaluation/datasets/dataset-b", {"dataset_id": "dataset-b"}
-            ),
+            request=_request("DELETE", "/api/evaluation/datasets/dataset-b", {"dataset_id": "dataset-b"}),
             current_user=user,
         )
 
