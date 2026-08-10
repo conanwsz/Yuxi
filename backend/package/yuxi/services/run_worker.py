@@ -576,57 +576,57 @@ async def process_agent_run(ctx, run_id: str):
                 async for chunk_bytes in _consume_stream_with_cancel(stream, run_ctx):
                     for chunk in _iter_json_chunks(chunk_bytes):
                         target_thread_id = _chunk_thread_id(chunk, thread_id)
-                        if chunk.get("status") == "loading":
+                        status = chunk.get("status") or "event"
+                        if status == "loading":
                             await writer.append(chunk, thread_id=target_thread_id)
                             continue
 
-                    await writer.flush(target_thread_id)
-                    status = chunk.get("status") or "event"
-                    event_type, event_payload = _map_chunk_to_run_event(chunk)
-                    is_parent_approval = target_thread_id == thread_id and status in {
-                        "ask_user_question_required",
-                        "human_approval_required",
-                    }
-                    if is_parent_approval:
-                        pending_interrupt = (chunk, target_thread_id)
-                    elif event_type != "end":
-                        await append_run_event(run_id, event_type, event_payload, thread_id=target_thread_id)
+                        await writer.flush(target_thread_id)
+                        event_type, event_payload = _map_chunk_to_run_event(chunk)
+                        is_parent_approval = target_thread_id == thread_id and status in {
+                            "ask_user_question_required",
+                            "human_approval_required",
+                        }
+                        if is_parent_approval:
+                            pending_interrupt = (chunk, target_thread_id)
+                        elif event_type != "end":
+                            await append_run_event(run_id, event_type, event_payload, thread_id=target_thread_id)
 
-                    if await run_ctx.is_cancelled():
-                        raise asyncio.CancelledError(f"run {run_id} cancelled")
+                        if await run_ctx.is_cancelled():
+                            raise asyncio.CancelledError(f"run {run_id} cancelled")
 
-                    if target_thread_id != thread_id:
-                        continue
+                        if target_thread_id != thread_id:
+                            continue
 
-                    if status == "finished":
-                        transition = await _finish_run(
-                            run_id,
-                            "completed",
-                            thread_id=thread_id,
-                            chunk=chunk,
-                        )
-                        terminal_set = transition.status is not None
-                    elif status == "error":
-                        transition = await _finish_run(
-                            run_id,
-                            "failed",
-                            thread_id=thread_id,
-                            chunk=chunk,
-                            error_type=chunk.get("error_type") or "stream_error",
-                            error_message=chunk.get("error_message") or chunk.get("message"),
-                        )
-                        terminal_set = transition.status is not None
-                    elif status == "interrupted":
-                        status_value = "cancelled" if await _is_cancel_requested(run_id) else "interrupted"
-                        transition = await _finish_run(
-                            run_id,
-                            status_value,
-                            thread_id=thread_id,
-                            chunk=chunk,
-                            error_type=status_value,
-                            error_message=chunk.get("message"),
-                        )
-                        terminal_set = transition.status is not None
+                        if status == "finished":
+                            transition = await _finish_run(
+                                run_id,
+                                "completed",
+                                thread_id=thread_id,
+                                chunk=chunk,
+                            )
+                            terminal_set = transition.status is not None
+                        elif status == "error":
+                            transition = await _finish_run(
+                                run_id,
+                                "failed",
+                                thread_id=thread_id,
+                                chunk=chunk,
+                                error_type=chunk.get("error_type") or "stream_error",
+                                error_message=chunk.get("error_message") or chunk.get("message"),
+                            )
+                            terminal_set = transition.status is not None
+                        elif status == "interrupted":
+                            status_value = "cancelled" if await _is_cancel_requested(run_id) else "interrupted"
+                            transition = await _finish_run(
+                                run_id,
+                                status_value,
+                                thread_id=thread_id,
+                                chunk=chunk,
+                                error_type=status_value,
+                                error_message=chunk.get("message"),
+                            )
+                            terminal_set = transition.status is not None
 
         await writer.flush()
         if pending_interrupt and not terminal_set:

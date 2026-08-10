@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -185,6 +186,53 @@ async def test_process_agent_run_publishes_interrupt_after_final_state(monkeypat
 
     assert [event["event_type"] for event in events] == ["metadata", "custom", "interrupt", "end"]
     assert terminal_statuses == ["interrupted"]
+
+
+@pytest.mark.asyncio
+async def test_process_agent_run_writes_loading_chunk_only_to_batched_events(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    run_obj = _build_run()
+    _patch_common(monkeypatch, run_obj)
+
+    events: list[dict] = []
+    loading_chunk = {
+        "status": "loading",
+        "request_id": "req-1",
+        "thread_id": "thread-1",
+        "response": "指标",
+        "stream_event": {
+            "type": "message_delta",
+            "message_id": "message-1",
+            "content": "指标",
+        },
+    }
+
+    async def fake_append_event(run_id: str, event_type: str, payload: dict, **kwargs):
+        del run_id, kwargs
+        events.append({"event_type": event_type, "payload": payload})
+
+    async def fake_mark_terminal(run_id: str, status: str, error_type=None, error_message=None):
+        del run_id, status, error_type, error_message
+        return run_worker.TerminalTransition(status="completed", changed=True)
+
+    def fake_stream_agent_chat(**kwargs):
+        del kwargs
+        return _BytesAsyncIter(
+            [
+                (json.dumps(loading_chunk) + "\n").encode(),
+                b'{"status":"finished","request_id":"req-1","thread_id":"thread-1"}\n',
+            ]
+        )
+
+    monkeypatch.setattr(run_worker, "append_run_event", fake_append_event)
+    monkeypatch.setattr(run_worker, "mark_run_terminal", fake_mark_terminal)
+    monkeypatch.setattr(run_worker, "stream_agent_chat", fake_stream_agent_chat)
+
+    await run_worker.process_agent_run({"job_try": 1}, "run-1")
+
+    message_events = [event for event in events if event["event_type"] == "messages"]
+    assert message_events == [{"event_type": "messages", "payload": {"items": [loading_chunk]}}]
 
 
 @pytest.mark.asyncio
