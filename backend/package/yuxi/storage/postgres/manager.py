@@ -690,6 +690,21 @@ class PostgresManager(metaclass=SingletonMeta):
             BEGIN
                 IF NOT EXISTS (
                     SELECT 1 FROM app_schema_migrations
+                    WHERE migration_key = 'knowledge_types_manage_permission_v1'
+                ) THEN
+                    UPDATE roles
+                    SET permissions = permissions::jsonb || '["knowledge.types.manage"]'::jsonb
+                    WHERE key IN ('superadmin', 'admin');
+                    INSERT INTO app_schema_migrations (migration_key)
+                    VALUES ('knowledge_types_manage_permission_v1');
+                END IF;
+            END $$
+            """,
+            """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM app_schema_migrations
                     WHERE migration_key = 'user_disable_permission_v2'
                 ) THEN
                     UPDATE roles

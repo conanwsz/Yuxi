@@ -58,6 +58,8 @@ async def test_ensure_business_schema_creates_and_backfills_roles_before_adding_
     assert '\'["users.disable", "users.delete"]\'::jsonb' in statements
     assert "user_enable_permission_v3" in statements
     assert "'[\"users.enable\"]'::jsonb" in statements
+    assert "knowledge_types_manage_permission_v1" in statements
+    assert "'[\"knowledge.types.manage\"]'::jsonb" in statements
     assert "UPDATE roles SET resource_access" in statements
     assert "ALTER TABLE IF EXISTS roles ALTER COLUMN resource_access SET DEFAULT" in statements
     assert "ALTER TABLE IF EXISTS roles ALTER COLUMN resource_access SET NOT NULL" in statements

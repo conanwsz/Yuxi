@@ -52,7 +52,9 @@ from yuxi.storage.postgres.models_business import User
 from yuxi.utils import logger
 from yuxi.utils.upload_utils import MAX_UPLOAD_SIZE_BYTES, read_upload_with_limit, write_upload_to_path
 
-from server.utils.auth_middleware import get_admin_user, get_db, get_required_user
+from server.utils.auth_middleware import get_db, get_required_user
+from server.utils.auth_middleware import get_admin_user
+from server.utils.knowledge_auth import get_knowledge_user
 from server.utils.knowledge_response import serialize_knowledge_base, serialize_knowledge_base_list
 from server.utils.knowledge_permissions import (
     ensure_knowledge_base_permission as _ensure_database_permission,
@@ -69,6 +71,8 @@ DOCUMENT_ACTION_RESULT_ITEM_LIMIT = 200
 MAX_DIRECT_DOCUMENT_ACTION_FILE_IDS = 1000
 PENDING_PARSE_STATUSES = ["uploaded"]
 PENDING_INDEX_STATUSES = ["parsed", "error_indexing"]
+DEFAULT_KB_TYPE = "milvus"
+KNOWLEDGE_TYPES_MANAGE_PERMISSION = "knowledge.types.manage"
 
 
 class UpdateDatabaseRequest(BaseModel):
@@ -265,6 +269,8 @@ async def create_database(
     db: AsyncSession = Depends(get_db),
 ):
     """创建知识库"""
+    if kb_type != DEFAULT_KB_TYPE and not has_permission(current_user, KNOWLEDGE_TYPES_MANAGE_PERMISSION):
+        raise HTTPException(status_code=403, detail=f"缺少权限: {KNOWLEDGE_TYPES_MANAGE_PERMISSION}")
     if share_config is not None and not has_permission(current_user, "knowledge.share"):
         raise HTTPException(status_code=403, detail="缺少权限: knowledge.share")
     if share_config is None and not has_permission(current_user, "knowledge.share"):
@@ -2141,6 +2147,8 @@ async def get_knowledge_base_types(current_user: User = Depends(get_admin_user))
     """获取支持的知识库类型"""
     try:
         kb_types = knowledge_base.get_supported_kb_types()
+        if not has_permission(current_user, KNOWLEDGE_TYPES_MANAGE_PERMISSION):
+            kb_types = {DEFAULT_KB_TYPE: kb_types[DEFAULT_KB_TYPE]} if DEFAULT_KB_TYPE in kb_types else {}
         return {"kb_types": kb_types, "message": "success"}
     except Exception as e:
         logger.error(f"获取知识库类型失败 {e}, {traceback.format_exc()}")

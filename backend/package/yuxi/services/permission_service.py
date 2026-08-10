@@ -91,6 +91,7 @@ PERMISSION_GROUPS = [
         "permissions": [
             ("knowledge.read", "查看知识库"),
             ("knowledge.create", "创建知识库"),
+            ("knowledge.types.manage", "选择知识库类型"),
             ("knowledge.update", "更新知识库"),
             ("knowledge.delete", "删除知识库"),
             ("knowledge.share", "共享知识库"),

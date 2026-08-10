@@ -22,6 +22,66 @@ def _assert_forbidden_response(response):
     assert isinstance(payload["detail"], str)
 
 
+async def _require_superadmin(test_client, headers):
+    """确认当前集成测试账号可创建临时自定义角色。"""
+    response = await test_client.get("/api/auth/me", headers=headers)
+    assert response.status_code == 200, response.text
+    if response.json()["role"] != "superadmin":
+        pytest.skip("Custom-role knowledge permission test requires a superadmin integration account.")
+
+
+async def _create_role_user(test_client, admin_headers, *, role_key, role_name, permissions, username_prefix):
+    """创建绑定部门的临时自定义角色用户并返回认证头。"""
+    create_role = await test_client.post(
+        "/api/roles",
+        headers=admin_headers,
+        json={
+            "key": role_key,
+            "name": role_name,
+            "description": "pytest knowledge permission role",
+            "permissions": permissions,
+        },
+    )
+    assert create_role.status_code == 201, create_role.text
+
+    departments = await test_client.get("/api/departments", headers=admin_headers)
+    assert departments.status_code == 200, departments.text
+    assert departments.json(), "Expected an existing department for the temporary user."
+
+    suffix = role_key.rsplit("_", maxsplit=1)[-1]
+    password = f"Pw!{suffix}"
+    create_user = await test_client.post(
+        "/api/auth/users",
+        headers=admin_headers,
+        json={
+            "username": f"{username_prefix}_{suffix}",
+            "password": password,
+            "role": role_key,
+            "department_id": departments.json()[0]["id"],
+        },
+    )
+    assert create_user.status_code == 200, create_user.text
+    user = create_user.json()
+
+    login = await test_client.post(
+        "/api/auth/token",
+        data={"username": user["uid"], "password": password},
+    )
+    assert login.status_code == 200, login.text
+    return {
+        "role_key": role_key,
+        "user_id": user["id"],
+        "headers": {"Authorization": f"Bearer {login.json()['access_token']}"},
+    }
+
+
+async def _delete_role_user(test_client, admin_headers, role_user):
+    """删除临时自定义角色及其用户。"""
+    await _delete_user_by_id(test_client, admin_headers, role_user["user_id"])
+    delete_role = await test_client.delete(f"/api/roles/{role_user['role_key']}", headers=admin_headers)
+    assert delete_role.status_code in {200, 404}, delete_role.text
+
+
 async def _create_test_department(test_client, admin_headers, prefix="pytest_dept"):
     suffix = uuid.uuid4().hex[:8]
     admin_uid = f"deptadmin_{suffix}"
@@ -774,6 +834,40 @@ async def test_get_knowledge_base_types(test_client, admin_headers):
         "notion_data_source_id",
         "notion_version",
     ]
+
+
+async def test_knowledge_type_permission_limits_creation_to_default_vector_database(test_client, admin_headers):
+    """没有类型权限的创建者只可获取默认向量知识库类型。"""
+    await _require_superadmin(test_client, admin_headers)
+    suffix = uuid.uuid4().hex[:8]
+    role_user = await _create_role_user(
+        test_client,
+        admin_headers,
+        role_key=f"knowledge_default_type_{suffix}",
+        role_name=f"默认知识库类型角色 {suffix}",
+        permissions=["knowledge.read", "knowledge.create"],
+        username_prefix="kdt",
+    )
+
+    try:
+        headers = role_user["headers"]
+        types_response = await test_client.get("/api/knowledge/types", headers=headers)
+        assert types_response.status_code == 200, types_response.text
+        assert set(types_response.json()["kb_types"]) == {"milvus"}
+
+        forbidden_create = await test_client.post(
+            "/api/knowledge/databases",
+            headers=headers,
+            json={
+                "database_name": f"forbidden_dify_{suffix}",
+                "description": "must not create an external knowledge base",
+                "kb_type": "dify",
+            },
+        )
+        _assert_forbidden_response(forbidden_create)
+        assert forbidden_create.json()["detail"] == "缺少权限: knowledge.types.manage"
+    finally:
+        await _delete_role_user(test_client, admin_headers, role_user)
 
 
 async def test_get_knowledge_base_statistics(test_client, admin_headers):
