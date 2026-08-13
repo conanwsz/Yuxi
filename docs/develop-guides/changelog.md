@@ -10,6 +10,7 @@
 - **Agent 系统提示收紧敏感信息边界**：禁止执行 `printenv` / `env` / `/proc/self/environ` 等枚举命令并禁止任何形式的批量回显（原文、表格、分类、脱敏摘要）；身份问题仅允许回复当前用户的 OIDC `emp_no`；JWT/Token/Key/Cookie/DB 连接串/内部端口/路径/日志一律不外泄，用户要求时统一回复"该信息属于系统内部配置，不提供"。
 - **MCP 工具缓存加 TTL**：cache key 仍以 `server_slug:config_hash` 为准，hash 只覆盖 DB 侧 `disabled_tools`，无法感知上游 MCP 服务自身增减工具。补一个默认 5 分钟的 TTL（`MCP_TOOLS_CACHE_TTL_SECONDS` 可覆盖，`<=0` 禁用缓存），TTL 到期强制重拉；新增 `clear_mcp_server_tools_cache` 同步清理 `_mcp_tools_cache_loaded_at`，避免过期条目假命中。修复楚能办公 MCP 新增 `create_schedule` 等工具后 agent 一直看不到的问题。
 
+- 修复公开图片上传的存储型 XSS 风险：头像与用户图片不再信任客户端 MIME 或文件名后缀，服务端校验真实图片内容且仅接受 PNG、JPEG、WebP、GIF，对象名使用识别出的固定安全后缀，拒绝伪装成图片的 SVG。
 - 修复拥有 MCP 查看权限的普通用户打开 MCP 详情时路由携带 `undefined` 的问题：脱敏列表保留稳定 `slug`，详情与工具读取按 `mcp.read` 放行并继续校验 MCP 数据权限；普通用户响应不再包含连接、命令、环境变量和请求头等敏感配置。
 - 权限管理中新建角色支持勾选“复制权限”，按当前选中角色同时复制功能权限与数据权限；未勾选时继续创建无权限角色。
 - 修复普通用户打开设置页时隐藏的 OCR、用户与部门管理组件仍提前请求受限接口并提示无权限的问题；桌面导航、移动导航、页签切换与内容挂载现统一按后端角色及权限判断。
@@ -27,6 +28,10 @@
 - 细分知识库类型创建权限：新增 `knowledge.types.manage`，未授予该权限的创建者在新建窗口仅可选择默认向量“知识库”，服务端同步拒绝创建 Dify、Notion 等扩展类型；默认类型展示名称由“Yuxi”调整为“知识库”。
 - 同步上游主线到 preview：吸收 Agent 请求队列、知识库读模型/缓存、个人 Skill、文件二进制预览、安全沙箱与 CLI 更新；保留 OIDC、组织权限、额度、调度、多搜索源、模型授权及失败消息恢复，并恢复“超级楚楚”名称、Logo 与版权，兼容旧共享配置和部门索引升级。
 - 收窄知识库状态边界：Manager 统一返回 `KnowledgeBaseSummary/Detail`，Router 仅转换 HTTP 响应；Repository 在行锁内合并统计，executor 使用 frozen `KnowledgeBaseConfig`。模型权限校验同步读取类型字段，修复检索测试与 RAG 评估将详情对象误作字典而返回 500。
+- 优化知识库文档列表性能：根目录虚拟目录分组改用部分索引（`idx_kf_kb_parent_segment` 按路径首段聚合），平铺文件筛选与排序用 `idx_kf_kb_parent_flat` 支撑，避免大知识库全表扫描与 46MB 磁盘排序溢出；文件统计聚合结果增加 10 秒 Redis 短缓存，列表、统计、子目录计数与创建人查询并行执行，前端自动刷新轮询间隔同步调整为 10 秒。36 万文件知识库列表接口耗时由约 1.3s 降至约 300ms。
+- 修复 MCP 管理接口可通过 stdio 启动任意本地进程的问题：用户配置仅允许 SSE/Streamable HTTP，运行时拒绝加载历史用户 stdio 记录，系统内置 stdio 的连接参数改为仅由代码维护；前端移除用户 stdio 配置入口，文档补充内置 stdio 的代码添加与验证方式。
+- 工作区新增只读历史对话文件入口 `agents/chats/{thread_id}`，网页以 `YYYY-MM-DD-title` 显示并按日期标题倒序浏览各 thread 的非空 uploads 与 outputs；空目录、无文件对话及 `large_tool_results`、`conversation_history` 等内部中间产物不展示。该目录由 API 虚拟映射，不创建符号链接或复制文件，也不进入当前会话 viewer 与 sandbox 挂载，避免 Agent 读取其他会话历史。面包屑中该目录固定显示为"历史对话"与目录列表一致，多选过滤改用只读路径集合避免逐项查找。
+- 收窄知识库状态边界：读取模型统一收口至 `read_models.py`；创建、列表、详情与更新由 Manager 统一返回 `KnowledgeBaseSummary/Detail`，Router 只转换 HTTP 响应；Manager 协调查询配置、主记录与聚合统计，Repository 在行锁内合并统计投影；executor 接收 frozen `KnowledgeBaseConfig`，负责类型资源、文档操作与类型专属一致性检测，不再写知识库主记录。
 - 修复 Agent worker 知识库运行配置不一致：`get_kb_config` 从 Redis 读取最小 Config 快照，未命中时在 KB 级分布式锁内回源 PostgreSQL，Redis 连接故障时只读请求直接回源且不回填；更新与删除先可靠失效缓存再提交数据库，避免旧请求回填过期配置。查询参数在数据库行锁内合并，并发保存不再互相覆盖。
 - 修复 Agent 流式消息重复：worker 的 `loading` 增量仅经批量 `items` 事件写入，不再同时写入单条 `chunk` 事件，避免生成中每段文本显示两次、完成后才恢复正常。
 - 精简知识库文档内容接口响应：`GET /api/knowledge/databases/{kb_id}/documents/{doc_id}/content` 不再返回分块内部的实体 ID 与抽取结果，避免向文档预览请求传输仅供知识图谱构建使用的数据。
