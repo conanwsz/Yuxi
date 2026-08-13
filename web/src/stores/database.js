@@ -85,7 +85,8 @@ export const useDatabaseStore = defineStore('database', () => {
   async function loadDatabases() {
     state.listLoading = true
     try {
-      const data = userStore.isAdmin
+      const isPlatformAdmin = ['admin', 'superadmin'].includes(userStore.userRole)
+      const data = isPlatformAdmin
         ? await databaseApi.getDatabases()
         : await databaseApi.getAccessibleDatabases()
       const list = data?.databases || []
@@ -341,7 +342,11 @@ export const useDatabaseStore = defineStore('database', () => {
 
     const nextStatus = options.status ?? fileBrowser.status
     const nextRecursive = options.recursive ?? nextStatus !== 'all'
-    const nextParentId = nextRecursive ? null : (options.parentId ?? fileBrowser.parentId)
+    const nextParentId = nextRecursive
+      ? null
+      : options.parentId === null
+        ? null
+        : (options.parentId ?? fileBrowser.parentId)
     const nextPathPrefix = nextRecursive ? '' : (options.pathPrefix ?? fileBrowser.pathPrefix)
     const nextPage = Number(options.page ?? fileBrowser.page) || 1
     const nextPageSize = Number(options.pageSize ?? fileBrowser.pageSize) || 100

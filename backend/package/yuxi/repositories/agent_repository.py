@@ -2,24 +2,27 @@ from __future__ import annotations
 
 import re
 import uuid
+from collections.abc import Collection
 from typing import Any, Literal
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from yuxi.services.organization_scope_service import share_config_allows_user
+from yuxi.permissions import ResourcePermission, normalize_permission_config, resolve_agent_permission
 from yuxi.services.permission_service import has_permission
-from yuxi.storage.postgres.models_business import Agent, User
+from yuxi.storage.postgres.models_business import Agent, User, UserDepartmentMembership
 from yuxi.utils.datetime_utils import utc_now_naive
-from yuxi.utils.share_config import SHARE_ACCESS_LEVELS, normalize_share_config
 
 DEFAULT_AGENT_SLUG = "default-chatbot"
 DEFAULT_AGENT_NAME = "智能助手"
 DEFAULT_AGENT_BACKEND_ID = "ChatbotAgent"
 SUB_AGENT_BACKEND_ID = "SubAgentBackend"
 DEFAULT_AGENT_DESCRIPTION = "基础的对话机器人，可以回答问题，可在配置中启用需要的工具。"
-DEFAULT_SHARE_CONFIG = {"access_level": "global", "department_ids": [], "user_uids": []}
-DEFAULT_MANAGE_CONFIG = {"access_level": "user", "department_ids": [], "user_uids": []}
+DEFAULT_SHARE_CONFIG = {
+    "version": 2,
+    "read_scope": {"access_level": "global", "department_ids": [], "user_uids": []},
+    "manage_scope": None,
+}
 
 GENERAL_PURPOSE_AGENT_SLUG = "general-purpose"
 GENERAL_PURPOSE_AGENT_NAME = "通用任务"
@@ -102,11 +105,18 @@ FACT_VERIFIER_SYSTEM_PROMPT = """你是「事实核查员」子智能体，专�
 - 明确标注无法查证或来源相互冲突的论断。
 - 不要编造来源或链接。"""
 
-ACCESS_LEVELS = SHARE_ACCESS_LEVELS
+BUILTIN_AGENT_SLUGS = {
+    DEFAULT_AGENT_SLUG,
+    GENERAL_PURPOSE_AGENT_SLUG,
+    WEB_SEARCH_AGENT_SLUG,
+    DEEP_RESEARCH_AGENT_SLUG,
+    RESEARCH_EXPLORER_AGENT_SLUG,
+    FACT_VERIFIER_AGENT_SLUG,
+}
 
 
 def is_builtin_agent(agent: Agent) -> bool:
-    return agent.slug == DEFAULT_AGENT_SLUG
+    return agent.slug in BUILTIN_AGENT_SLUGS
 
 
 def resolve_agent_is_subagent(backend_id: str, is_subagent: bool | None = None) -> bool:
@@ -116,49 +126,88 @@ def resolve_agent_is_subagent(backend_id: str, is_subagent: bool | None = None) 
     return expected
 
 
+def get_allowed_agent_access_levels(user: User) -> list[str]:
+    if user.role == "superadmin" and has_permission(user, "agents.share"):
+        return ["global", "department", "user"]
+    if getattr(user, "managed_department_ids", set()) and has_permission(user, "agents.share"):
+        return ["department", "user"]
+    return ["user"]
+
+
 def normalize_agent_share_config(
     share_config: dict | None,
     *,
-    user_uid: str | None = None,
-    department_id: int | str | None = None,
-    force_private: bool = False,
+    allowed_access_levels: Collection[str] | None = None,
 ) -> dict:
-    if force_private:
-        if not user_uid:
-            raise ValueError("私有智能体必须绑定创建用户")
-        return {"access_level": "user", "department_ids": [], "user_uids": [str(user_uid)]}
-
-    return normalize_share_config(
-        share_config,
-        default_config=DEFAULT_SHARE_CONFIG,
-        default_access_level="global",
-        invalid_access_level_message="无效的智能体权限等级",
-        user_uid=user_uid,
-        department_id=department_id,
+    normalized = normalize_permission_config(
+        share_config or DEFAULT_SHARE_CONFIG,
+        allowed_access_levels=allowed_access_levels,
+        unauthorized_access_level_message="当前用户无权使用该智能体共享范围",
+        strict=True,
     )
+    normalized["manage_scope"] = None
+    return normalized
+
+
+def _merge_legacy_manage_scope(share_config: dict | None, manage_config: dict | None) -> dict | None:
+    """将 preview 旧的独立 manage_config 兼容地折叠到上游 v2 权限模型。"""
+
+    if manage_config is None:
+        return share_config
+    config = dict(share_config or DEFAULT_SHARE_CONFIG)
+    if config.get("version") != 2:
+        config = {"version": 2, "read_scope": config, "manage_scope": None}
+    legacy_manage_scope = (
+        manage_config.get("manage_scope") or manage_config.get("read_scope")
+        if manage_config.get("version") == 2
+        else manage_config
+    )
+    config["manage_scope"] = legacy_manage_scope
+    return config
 
 
 def user_can_access_agent(user: User, agent: Agent) -> bool:
+    return resolve_agent_permission(user, agent) != ResourcePermission.NONE
+
+
+def user_can_manage_agent(
+    user: User,
+    agent: Agent,
+    *,
+    creator_department_id: int | None = None,
+) -> bool:
+    """按所有权、部门绑定和创建者当前主部门判断 Agent 管理权。"""
+
+    if is_builtin_agent(agent):
+        return user.role == "superadmin"
     if user.role == "superadmin":
         return True
-    if agent.created_by == str(user.uid):
+    if str(agent.created_by or "") == str(user.uid or ""):
         return True
 
-    return share_config_allows_user(user, agent.share_config or DEFAULT_SHARE_CONFIG.copy())
+    config = normalize_permission_config(agent.share_config)
+    read_scope = config.get("read_scope") or {}
+    managed_department_ids = {
+        int(value) for value in getattr(user, "managed_department_ids", set()) or set() if str(value).isdigit()
+    }
+    access_level = read_scope.get("access_level")
+    if access_level == "department":
+        bound_department_ids = {int(value) for value in read_scope.get("department_ids") or []}
+        return bool(bound_department_ids & managed_department_ids)
+    if access_level == "user" and creator_department_id is not None:
+        return int(creator_department_id) in managed_department_ids
+    return False
 
 
-def user_can_manage_agent(user: User, agent: Agent) -> bool:
-    if user.role == "superadmin":
-        return True
-    if agent.created_by == str(user.uid):
-        return True
-    return has_permission(user, "agents.update") and share_config_allows_user(
-        user, agent.manage_config or DEFAULT_MANAGE_CONFIG.copy()
-    )
+def user_can_delete_agent(
+    user: User,
+    agent: Agent,
+    *,
+    creator_department_id: int | None = None,
+) -> bool:
+    """删除与 Agent 组织管理权保持一致，内置 Agent 由路由额外保护。"""
 
-
-def user_can_delete_agent(user: User, agent: Agent) -> bool:
-    return user.role == "superadmin" or agent.created_by == str(user.uid)
+    return user_can_manage_agent(user, agent, creator_department_id=creator_department_id)
 
 
 def _slugify(value: str | None) -> str:
@@ -169,6 +218,43 @@ def _slugify(value: str | None) -> str:
 class AgentRepository:
     def __init__(self, db_session: AsyncSession):
         self.db = db_session
+        self._creator_department_cache: dict[str, int | None] = {}
+
+    async def get_creator_primary_department_id(self, agent: Agent) -> int | None:
+        """读取创建者当前主部门，并在当前 Repository 生命周期内缓存。"""
+
+        creator_uid = str(agent.created_by or "")
+        if not creator_uid:
+            return None
+        if creator_uid in self._creator_department_cache:
+            return self._creator_department_cache[creator_uid]
+
+        result = await self.db.execute(
+            select(User.department_id, UserDepartmentMembership.department_id)
+            .outerjoin(
+                UserDepartmentMembership,
+                (UserDepartmentMembership.user_id == User.id)
+                & (UserDepartmentMembership.membership_type == "primary")
+                & (UserDepartmentMembership.status == "active"),
+            )
+            .where(User.uid == creator_uid, User.is_deleted == 0)
+        )
+        row = result.one_or_none()
+        department_id = int(row[1] or row[0]) if row and (row[1] or row[0]) is not None else None
+        self._creator_department_cache[creator_uid] = department_id
+        return department_id
+
+    async def can_manage(self, *, user: User, agent: Agent) -> bool:
+        """解析当前用户对 Agent 的组织管理权。"""
+
+        creator_department_id = await self.get_creator_primary_department_id(agent)
+        return user_can_manage_agent(user, agent, creator_department_id=creator_department_id)
+
+    async def can_delete(self, *, user: User, agent: Agent) -> bool:
+        """解析当前用户是否可以删除 Agent。"""
+
+        creator_department_id = await self.get_creator_primary_department_id(agent)
+        return user_can_delete_agent(user, agent, creator_department_id=creator_department_id)
 
     async def ensure_default_agent(self, *, created_by: str | None = None) -> Agent:
         agent = await self.get_by_slug(DEFAULT_AGENT_SLUG)
@@ -201,7 +287,6 @@ class AgentRepository:
             pics=[],
             config_json={"context": {}},
             share_config=DEFAULT_SHARE_CONFIG.copy(),
-            manage_config=DEFAULT_SHARE_CONFIG.copy(),
             is_default=True,
             is_subagent=False,
             created_by=created_by,
@@ -228,7 +313,6 @@ class AgentRepository:
             pics=[],
             config_json={"context": {"system_prompt": WEB_SEARCH_SYSTEM_PROMPT}},
             share_config=DEFAULT_SHARE_CONFIG.copy(),
-            manage_config=DEFAULT_SHARE_CONFIG.copy(),
             is_default=False,
             is_subagent=True,
             created_by=created_by,
@@ -277,7 +361,6 @@ class AgentRepository:
             pics=[],
             config_json={"context": config_context},
             share_config=DEFAULT_SHARE_CONFIG.copy(),
-            manage_config=DEFAULT_SHARE_CONFIG.copy(),
             is_default=False,
             is_subagent=is_subagent,
             created_by=created_by,
@@ -333,7 +416,11 @@ class AgentRepository:
         agents = list(result.scalars().all())
         if user.role == "superadmin":
             return agents
-        return [agent for agent in agents if user_can_access_agent(user, agent)]
+        visible = []
+        for agent in agents:
+            if user_can_access_agent(user, agent) or await self.can_manage(user=user, agent=agent):
+                visible.append(agent)
+        return visible
 
     async def list_manageable(self, *, user: User, include_subagent_definitions: bool = False) -> list[Agent]:
         """列出用户可以编辑的智能体，不扩大运行时使用权限。"""
@@ -341,7 +428,11 @@ class AgentRepository:
         if not include_subagent_definitions:
             stmt = stmt.where(Agent.is_subagent.is_(False))
         result = await self.db.execute(stmt.order_by(Agent.is_default.desc(), Agent.id.asc()))
-        return [agent for agent in result.scalars().all() if user_can_manage_agent(user, agent)]
+        manageable = []
+        for agent in result.scalars().all():
+            if await self.can_manage(user=user, agent=agent):
+                manageable.append(agent)
+        return manageable
 
     async def list_visible_subagents(self, *, user: User) -> list[Agent]:
         result = await self.db.execute(
@@ -367,7 +458,7 @@ class AgentRepository:
         agent = await self.get_by_slug(slug)
         if not agent:
             return None
-        if not user_can_access_agent(user, agent):
+        if not user_can_access_agent(user, agent) and not await self.can_manage(user=user, agent=agent):
             return None
         if kind == "any":
             return agent
@@ -387,7 +478,8 @@ class AgentRepository:
         if not is_builtin_agent(agent):
             raise ValueError("默认智能体已固定为内置智能助手")
         share_config = agent.share_config or DEFAULT_SHARE_CONFIG.copy()
-        if share_config.get("access_level") != "global":
+        read_scope = share_config.get("read_scope") or {}
+        if read_scope.get("access_level") != "global":
             raise ValueError("内置智能体必须全局共享")
 
         now = utc_now_naive()
@@ -433,19 +525,22 @@ class AgentRepository:
         resolved_is_subagent = resolve_agent_is_subagent(backend_id, is_subagent)
         if resolved_is_subagent and is_default:
             raise ValueError("子智能体不能设为默认智能体")
+        owner_uid = str(created_by or "")
+        default_share_config = {
+            "version": 2,
+            "read_scope": {
+                "access_level": "user",
+                "department_ids": [],
+                "user_uids": [owner_uid],
+            },
+            "manage_scope": None,
+        }
+        allowed_access_levels = get_allowed_agent_access_levels(creator) if creator else None
         normalized_share_config = normalize_agent_share_config(
-            share_config,
-            user_uid=str(creator.uid) if creator else created_by,
-            department_id=None,
-            force_private=bool(creator and (creator.role == "user" or not has_permission(creator, "agents.share"))),
+            _merge_legacy_manage_scope(share_config or default_share_config, manage_config),
+            allowed_access_levels=allowed_access_levels,
         )
-        normalized_manage_config = normalize_agent_share_config(
-            manage_config or DEFAULT_MANAGE_CONFIG,
-            user_uid=str(creator.uid) if creator else created_by,
-            department_id=None,
-            force_private=bool(creator and (creator.role == "user" or not has_permission(creator, "agents.share"))),
-        )
-        if is_default and normalized_share_config.get("access_level") != "global":
+        if is_default and (normalized_share_config.get("read_scope") or {}).get("access_level") != "global":
             raise ValueError("默认智能体必须全局共享")
 
         agent = Agent(
@@ -457,7 +552,6 @@ class AgentRepository:
             pics=pics or [],
             config_json=config_json or {"context": {}},
             share_config=normalized_share_config,
-            manage_config=normalized_manage_config,
             is_default=False,
             is_subagent=resolved_is_subagent,
             created_by=created_by,
@@ -499,30 +593,14 @@ class AgentRepository:
             agent.pics = pics
         if config_json is not None:
             agent.config_json = config_json
-        if share_config is not None:
+        if share_config is not None or manage_config is not None:
             if is_builtin_agent(agent):
                 agent.share_config = DEFAULT_SHARE_CONFIG.copy()
             else:
-                normalized_share_config = normalize_agent_share_config(
-                    share_config,
-                    user_uid=str(updater.uid) if updater else updated_by,
-                    department_id=None,
-                    force_private=bool(
-                        updater and (updater.role == "user" or not has_permission(updater, "agents.share"))
-                    ),
-                )
-                agent.share_config = normalized_share_config
-        if manage_config is not None:
-            if is_builtin_agent(agent):
-                agent.manage_config = DEFAULT_SHARE_CONFIG.copy()
-            else:
-                agent.manage_config = normalize_agent_share_config(
-                    manage_config,
-                    user_uid=str(updater.uid) if updater else updated_by,
-                    department_id=None,
-                    force_private=bool(
-                        updater and (updater.role == "user" or not has_permission(updater, "agents.share"))
-                    ),
+                allowed_access_levels = get_allowed_agent_access_levels(updater) if updater else None
+                agent.share_config = normalize_agent_share_config(
+                    _merge_legacy_manage_scope(share_config or agent.share_config, manage_config),
+                    allowed_access_levels=allowed_access_levels,
                 )
 
         agent.updated_by = updated_by
@@ -541,14 +619,39 @@ class AgentRepository:
         *,
         user: User,
         include_configurable_items: bool = False,
+        include_sensitive_config: bool = True,
         backend_info_cache: dict[tuple[str, bool, str], dict] | None = None,
     ) -> dict[str, Any]:
         data = agent.to_dict()
-        data["can_access"] = user_can_access_agent(user, agent)
-        data["can_manage"] = user_can_manage_agent(user, agent)
-        data["can_delete"] = user_can_delete_agent(user, agent)
-        data["is_builtin"] = is_builtin_agent(agent)
-        data["permission_locked"] = is_builtin_agent(agent)
+        normalized_share_config = normalize_permission_config(agent.share_config)
+        normalized_share_config["manage_scope"] = None
+        data["share_config"] = normalized_share_config
+        permission = resolve_agent_permission(user, agent)
+        is_builtin = is_builtin_agent(agent)
+        can_manage = await self.can_manage(user=user, agent=agent)
+        read_scope = normalized_share_config.get("read_scope") or {}
+        access_level = read_scope.get("access_level") or "user"
+        data["can_manage"] = can_manage
+        data["can_view_config"] = can_manage
+        data["can_update"] = can_manage and has_permission(user, "agents.update")
+        data["can_delete"] = can_manage and has_permission(user, "agents.delete") and not is_builtin
+        data["can_assign"] = (
+            can_manage
+            and has_permission(user, "agents.share")
+            and not is_builtin
+            and (access_level != "global" or user.role == "superadmin")
+        )
+        data["effective_permission"] = ResourcePermission.MANAGE.value if can_manage else permission.value
+        data["is_builtin"] = is_builtin
+        data["permission_locked"] = is_builtin
+        data["assignment_summary"] = {
+            "access_level": access_level,
+            "department_count": len(read_scope.get("department_ids") or []),
+            "user_count": len(read_scope.get("user_uids") or []),
+        }
+        if not include_sensitive_config:
+            data.pop("config_json", None)
+            data.pop("share_config", None)
 
         from yuxi.agents.buildin import agent_manager
 

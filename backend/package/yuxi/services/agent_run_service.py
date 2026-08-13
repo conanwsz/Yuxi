@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -29,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from yuxi.agents.buildin import agent_manager
 from yuxi.agents.mcp.service import get_all_mcp_servers
 from yuxi.agents.models import resolve_chat_model_spec
+from yuxi.agents.tool_approval import DEFAULT_TOOL_APPROVAL_MODE, normalize_tool_approval_mode
 from yuxi.models.providers.cache import model_cache
 from yuxi.repositories.agent_repository import AgentRepository
 from yuxi.repositories.agent_run_repository import TERMINAL_RUN_STATUSES, AgentRunRepository
@@ -63,10 +63,14 @@ from yuxi.storage.postgres.models_business import Message, User
 from yuxi.utils.datetime_utils import utc_now_naive
 from yuxi.utils.hash_utils import hash_id
 from yuxi.utils.logging_config import logger
+from yuxi.utils.sse_utils import (
+    SSE_HEARTBEAT_SECONDS,
+    SSE_MAX_CONNECTION_MINUTES,
+    SSE_POLL_INTERVAL_SECONDS,
+    format_heartbeat,
+    format_sse,
+)
 
-SSE_HEARTBEAT_SECONDS = int(os.getenv("RUN_SSE_HEARTBEAT_SECONDS", "15"))  # SSE 连接空闲多久发送心跳
-SSE_MAX_CONNECTION_MINUTES = int(os.getenv("RUN_SSE_MAX_CONNECTION_MINUTES", "30"))  # SSE 连接最大持续时间
-SSE_POLL_INTERVAL_SECONDS = float(os.getenv("RUN_SSE_POLL_INTERVAL_SECONDS", "1.0"))  # SSE 轮询间隔
 RUN_PROGRESS_RECENT_EVENT_SCAN_LIMIT = 100
 RUN_PROGRESS_MESSAGE_LIMIT = 3
 RUN_PROGRESS_CONTENT_MAX_CHARS = 800
@@ -104,14 +108,13 @@ async def validate_agent_context_resource_access(
     user: User,
     context: dict | None,
 ) -> None:
+    """在运行边界复验 Agent 固化的 Tool/MCP 配置。"""
+
     if not isinstance(context, dict):
         return
-
     await hydrate_user_resource_access(db, user)
-
     if isinstance(context.get("tools"), list):
         assert_tool_slugs_allowed(user, context.get("tools") or [])
-
     if isinstance(context.get("mcps"), list):
         servers = await get_all_mcp_servers(db)
         assert_mcp_slugs_allowed(
@@ -122,7 +125,24 @@ async def validate_agent_context_resource_access(
         )
 
 
-def resolve_agent_run_model_spec(model_spec: str | None, agent_item, agent_backend, *, user: User | None = None) -> str:
+def _load_agent_context(agent_item, agent_backend):
+    """用 Agent 配置的 context 片段实例化并填充运行上下文，供 run 解析器读取配置字段。"""
+    context = agent_backend.context_schema()
+    config_json = getattr(agent_item, "config_json", None) or {}
+    config_context = config_json.get("context") if isinstance(config_json, dict) else {}
+    if isinstance(config_context, dict):
+        context.update_from_dict(config_context)
+    return context
+
+
+def resolve_agent_run_model_spec(
+    model_spec: str | None,
+    agent_item,
+    agent_backend,
+    context=None,
+    *,
+    user: User | None = None,
+) -> str:
     """解析本次 run 实际使用的模型：显式覆盖优先，否则配置模型，最后系统默认模型。"""
     normalized = model_spec.strip() if isinstance(model_spec, str) else None
     if normalized:
@@ -134,12 +154,8 @@ def resolve_agent_run_model_spec(model_spec: str | None, agent_item, agent_backe
                 raise HTTPException(status_code=422, detail=f"未找到可用聊天模型: '{normalized}'")
         return normalized
 
-    context = agent_backend.context_schema()
-    config_json = getattr(agent_item, "config_json", None) or {}
-    config_context = config_json.get("context") if isinstance(config_json, dict) else {}
-    if isinstance(config_context, dict):
-        context.update_from_dict(config_context)
-
+    if context is None:
+        context = _load_agent_context(agent_item, agent_backend)
     fallback = resolve_role_default_model_spec(user, model_type="chat") if user is not None else None
     resolved = resolve_chat_model_spec(getattr(context, "model", None), fallback=fallback)
     if user is not None:
@@ -151,26 +167,61 @@ def resolve_agent_run_model_spec(model_spec: str | None, agent_item, agent_backe
     return resolved
 
 
+def resolve_agent_run_tool_approval_mode(requested_mode: str | None, agent_item, agent_backend, context=None) -> str:
+    """解析本次 run 的工具审批模式：显式覆盖优先，否则使用 Agent 配置与默认值。"""
+    source = requested_mode
+    if source is None:
+        if context is None:
+            context = _load_agent_context(agent_item, agent_backend)
+        source = getattr(context, "tool_approval_mode", DEFAULT_TOOL_APPROVAL_MODE)
+    try:
+        return normalize_tool_approval_mode(source)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def resolve_agent_run_config(
+    model_spec: str | None,
+    tool_approval_mode: str | None,
+    agent_item,
+    agent_backend,
+    *,
+    user: User | None = None,
+) -> tuple[str, str]:
+    """一次性解析 model_spec 与 tool_approval_mode，共享同一份运行上下文。"""
+    context = _load_agent_context(agent_item, agent_backend)
+    resolved_model_spec = resolve_agent_run_model_spec(
+        model_spec,
+        agent_item,
+        agent_backend,
+        context,
+        user=user,
+    )
+    resolved_tool_approval_mode = resolve_agent_run_tool_approval_mode(
+        tool_approval_mode, agent_item, agent_backend, context
+    )
+    return resolved_model_spec, resolved_tool_approval_mode
+
+
 async def _assert_user_quota_for_run(*, db: AsyncSession, user: User) -> None:
-    """创建 run 前预检 token 额度，耗尽时抛 429 并附带前端需要的额度信息。"""
-    # 单元测试使用 SimpleNamespace 代理 User；不是真实 User 实例时跳过预检。
+    """创建 run 前预检 token 额度，耗尽时返回前端可直接展示的 429 信息。"""
+
     if not isinstance(user, User) or getattr(user, "id", None) is None:
         return
     try:
         await assert_quota_available(db, user)
     except TokenQuotaExceededError as exc:
         quota_status = await get_user_token_quota_status(db, user)
-        detail = {
-            "code": "token_quota_exceeded",
-            "message": str(exc),
-            "quota": quota_status.get("effective_weekly_token_quota"),
-            "used": quota_status.get("weighted_tokens", 0),
-            "remaining": 0,
-            "reset_at": quota_status.get("reset_at"),
-        }
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=detail,
+            detail={
+                "code": "token_quota_exceeded",
+                "message": str(exc),
+                "quota": quota_status.get("effective_weekly_token_quota"),
+                "used": quota_status.get("weighted_tokens", 0),
+                "remaining": 0,
+                "reset_at": quota_status.get("reset_at"),
+            },
         ) from exc
 
 
@@ -184,16 +235,15 @@ def _build_run_response(run) -> dict:
     }
 
 
-def _format_sse(data: dict, event: str, event_id: str | None = None) -> str:
-    lines = [f"event: {event}", f"data: {json.dumps(data, ensure_ascii=False)}"]
-    if event_id:
-        lines.append(f"id: {event_id}")
-    lines.append("")
-    return "\n".join(lines) + "\n"
-
-
-def _format_heartbeat() -> str:
-    return ": heartbeat\n\n"
+def _validate_resume_input(resume: object) -> None:
+    if not isinstance(resume, dict) or "decisions" not in resume:
+        return
+    decisions = resume.get("decisions")
+    if not isinstance(decisions, list) or not decisions:
+        raise HTTPException(status_code=422, detail="decisions 必须是非空数组")
+    for decision in decisions:
+        if not isinstance(decision, dict) or decision.get("type") not in {"approve", "reject"}:
+            raise HTTPException(status_code=422, detail="decision.type 只支持 approve 或 reject")
 
 
 def _compact_message_dict(message: dict) -> dict:
@@ -254,6 +304,7 @@ def _compact_stream_chunk(chunk: dict) -> dict:
             "retryable",
             "job_try",
             "questions",
+            "approval",
             "interrupt_info",
             "source",
             "agent_state",
@@ -433,13 +484,20 @@ async def create_agent_run_view(
     current_uid: str,
     db: AsyncSession,
     model_spec: str | None = None,
+    tool_approval_mode: str | None = None,
     resume: object | None = None,
     created_by_run_id: str | None = None,
+    source: str | None = None,
+    channel: str | None = None,
+    external_id: str | None = None,
+    origin_metadata: dict[str, Any] | None = None,
 ) -> dict:
     """创建 chat/resume run 的 HTTP 入口，输入正文由 Message 承载，run 只登记运行元数据。"""
     meta = meta or {}
     if input_message is None and resume is None:
         raise HTTPException(status_code=422, detail="input_message 或 resume 不能为空")
+    if resume is not None:
+        _validate_resume_input(resume)
 
     run_type = "resume" if resume is not None else "chat"
     run_created_by_id = created_by_run_id if run_type == "resume" else None
@@ -461,14 +519,20 @@ async def create_agent_run_view(
         created_by_run_id=run_created_by_id,
     )
     if scope.existing_run:
+        if scope.existing_run.status == "pending":
+            await _commit_and_enqueue(db, scope.existing_run.id)
         return _build_run_response(scope.existing_run)
 
     if run_type == "resume":
         resolved_model_spec = scope.parent_run.input_payload["model_spec"]
-        assert_model_spec_allowed(scope.current_user, resolved_model_spec, model_type="chat")
+        # 旧版本固化的 input_payload 没有 tool_approval_mode，回退默认值以兼容历史 interrupted run。
+        resolved_tool_approval_mode = scope.parent_run.input_payload.get(
+            "tool_approval_mode", DEFAULT_TOOL_APPROVAL_MODE
+        )
     else:
-        resolved_model_spec = resolve_agent_run_model_spec(
+        resolved_model_spec, resolved_tool_approval_mode = resolve_agent_run_config(
             model_spec,
+            tool_approval_mode,
             scope.agent_item,
             scope.agent_backend,
             user=scope.current_user,
@@ -480,6 +544,7 @@ async def create_agent_run_view(
         resume=resume,
         request_id=request_id,
         model_spec=resolved_model_spec,
+        tool_approval_mode=resolved_tool_approval_mode,
         meta=meta,
     )
 
@@ -530,14 +595,22 @@ async def create_agent_run_view(
         request_id=request_id,
         input_message=run_input_message,
     )
-    if run_type == "chat" and isinstance(scope.current_user, User):
-        result = await db.execute(select(Message).where(Message.conversation_id == scope.conversation.id))
-        _resolve_failed_chat_messages_after_success(
-            messages=result.scalars(),
-            input_metadata=run_input_message.extra_metadata,
-            request_id=request_id,
-        )
-    input_payload = {"model_spec": resolved_model_spec}
+    input_payload = {
+        "model_spec": resolved_model_spec,
+        "tool_approval_mode": resolved_tool_approval_mode,
+    }
+    if run_type == "resume" and scope.parent_run is not None:
+        if source is None:
+            source = getattr(scope.parent_run, "source", None) or "chat"
+        if channel is None:
+            channel = getattr(scope.parent_run, "channel", None) or "web"
+        if external_id is None:
+            external_id = getattr(scope.parent_run, "external_id", None)
+        if origin_metadata is None:
+            origin_metadata = getattr(scope.parent_run, "origin_metadata", None) or {}
+    else:
+        source = source or "chat"
+        channel = channel or "web"
 
     run, created = await persist_agent_run_record(
         agent_slug=agent_slug,
@@ -550,12 +623,20 @@ async def create_agent_run_view(
         input_payload=input_payload,
         persisted_input_message=persisted_input_message,
         created_by_run_id=run_created_by_id,
+        source=source,
+        channel=channel,
+        external_id=external_id,
+        origin_metadata=origin_metadata,
     )
     if created:
-        await db.commit()
-        await enqueue_agent_run(run.id)
+        await _commit_and_enqueue(db, run.id)
 
     return _build_run_response(run)
+
+
+async def _commit_and_enqueue(db: AsyncSession, run_id: str) -> None:
+    await db.commit()
+    await enqueue_agent_run(run_id)
 
 
 @dataclass(frozen=True)
@@ -629,6 +710,7 @@ def _prepare_run_input_message(
     request_id: str,
     model_spec: str,
     meta: dict,
+    tool_approval_mode: str | None = None,
 ) -> AgentRunInputMessage:
     metadata: dict[str, Any] = {"request_id": request_id, "model_spec": model_spec}
     if attachment_file_ids := (meta.get("attachment_file_ids") or []):
@@ -655,6 +737,8 @@ def _prepare_run_input_message(
             raise HTTPException(status_code=422, detail="input_message 不能为空")
         if raw_message := input_message.raw_message():
             metadata["raw_message"] = raw_message
+        if tool_approval_mode is not None:
+            metadata["tool_approval_mode"] = tool_approval_mode  # already normalized by resolve_agent_run_config
         return input_message.with_metadata(metadata)
 
     metadata["resume"] = resume
@@ -734,6 +818,10 @@ async def persist_agent_run_record(
     persisted_input_message: Message,
     created_by_run_id: str | None = None,
     subagent_thread_relation_id: int | None = None,
+    source: str = "chat",
+    channel: str = "web",
+    external_id: str | None = None,
+    origin_metadata: dict[str, Any] | None = None,
 ) -> tuple[Any, bool]:
     """登记一条 AgentRun 并绑定已创建的输入消息，返回是否为本次新建。"""
     run_id = str(uuid.uuid4())
@@ -746,6 +834,10 @@ async def persist_agent_run_record(
                 uid=str(current_uid),
                 request_id=request_id,
                 input_payload=input_payload,
+                source=source,
+                channel=channel,
+                external_id=external_id,
+                origin_metadata=origin_metadata,
                 conversation_id=conversation_id,
                 created_by_run_id=created_by_run_id,
                 subagent_thread_relation_id=subagent_thread_relation_id,
@@ -801,7 +893,7 @@ async def prepare_agent_run_creation_scope(
     if not conversation_thread_id:
         raise HTTPException(status_code=422, detail="conversation_thread_id 不能为空")
 
-    conversation = await ConversationRepository(db).get_conversation_by_thread_id(conversation_thread_id)
+    conversation = await ConversationRepository(db).lock_conversation_by_thread_id(conversation_thread_id)
     if not conversation or conversation.uid != str(current_uid) or conversation.status == "deleted":
         raise HTTPException(status_code=404, detail="对话线程不存在")
     # Conversation.agent_id 是历史字段名，实际保存的是 Agent.slug。
@@ -843,10 +935,24 @@ async def prepare_agent_run_creation_scope(
             raise HTTPException(status_code=422, detail="created_by_run_id 不能为空")
         if not existing:
             parent_run = await run_repo.get_run_for_user(created_by_run_id, str(current_uid))
-            if not parent_run or parent_run.conversation_thread_id != conversation_thread_id:
+            if (
+                not parent_run
+                or parent_run.conversation_thread_id != conversation_thread_id
+                or parent_run.agent_slug != agent_slug
+            ):
                 raise HTTPException(status_code=404, detail="被恢复的运行任务不存在")
             if parent_run.status != "interrupted":
                 raise HTTPException(status_code=409, detail="只有 interrupted run 可以恢复")
+            latest_run = await run_repo.get_latest_chat_or_resume_run(
+                uid=str(current_uid),
+                agent_slug=agent_slug,
+                conversation_thread_id=conversation_thread_id,
+            )
+            if latest_run and latest_run.id != parent_run.id:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": "resume_superseded", "message": "中断运行已被后续运行超越"},
+                )
             parent_payload = parent_run.input_payload
             if not isinstance(parent_payload, dict) or not parent_payload.get("model_spec"):
                 raise HTTPException(status_code=409, detail="被恢复的运行任务缺少模型快照")
@@ -1018,13 +1124,13 @@ async def stream_agent_run_events(
                     repo = AgentRunRepository(db)
                     run = await repo.get_run_for_user(run_id, str(current_uid))
                     if not run:
-                        yield _format_sse({"run_id": run_id, "message": "运行任务不存在"}, event="error")
+                        yield format_sse({"run_id": run_id, "message": "运行任务不存在"}, event="error")
                         return
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 logger.warning(f"Run SSE DB error for run {run_id}: {e}")
-                yield _format_sse(
+                yield format_sse(
                     {
                         "run_id": run_id,
                         "message": "运行事件流暂时不可用，请重连",
@@ -1038,7 +1144,7 @@ async def stream_agent_run_events(
                 events = await list_run_stream_events(run_id, after_seq=last_seq, limit=200)
             except Exception as e:
                 logger.warning(f"Run SSE redis error for run {run_id}: {e}")
-                yield _format_sse(
+                yield format_sse(
                     {
                         "run_id": run_id,
                         "message": "运行事件流暂时不可用，请重连",
@@ -1058,7 +1164,7 @@ async def stream_agent_run_events(
                     envelope = _compact_run_event_envelope(envelope)
                     if envelope is None:
                         continue
-                yield _format_sse(envelope, event=event_type, event_id=seq)
+                yield format_sse(envelope, event=event_type, event_id=seq)
                 if event_type == "end":
                     emitted_terminal = True
 
@@ -1080,7 +1186,7 @@ async def stream_agent_run_events(
                 )
                 if not verbose:
                     terminal_envelope = _compact_run_event_envelope(terminal_envelope)
-                yield _format_sse(
+                yield format_sse(
                     terminal_envelope,
                     event="end",
                     event_id=terminal_seq,
@@ -1091,7 +1197,7 @@ async def stream_agent_run_events(
             elapsed_seconds = (now - started_at).total_seconds()
             heartbeat_elapsed = (now - last_heartbeat_ts).total_seconds()
             if heartbeat_elapsed >= SSE_HEARTBEAT_SECONDS:
-                yield _format_heartbeat()
+                yield format_heartbeat()
                 last_heartbeat_ts = now
 
             if elapsed_seconds >= SSE_MAX_CONNECTION_MINUTES * 60:

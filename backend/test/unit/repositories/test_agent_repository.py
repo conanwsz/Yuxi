@@ -121,7 +121,7 @@ async def test_ensure_general_purpose_subagent_is_idempotent(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_create_agent_for_normal_user_forces_private_share(monkeypatch):
+async def test_create_agent_defaults_to_creator_read_scope_without_manage_scope(monkeypatch):
     db = FakeDb()
     repo = AgentRepository(db)
 
@@ -130,98 +130,289 @@ async def test_create_agent_for_normal_user_forces_private_share(monkeypatch):
 
     monkeypatch.setattr(repo, "_unique_slug", fake_unique_slug)
 
-    creator = User(username="user", uid="user", password_hash="x", role="user", department_id=1)
     agent = await repo.create(
         name="Personal Bot",
         backend_id="ChatbotAgent",
         slug="personal-bot",
-        share_config={"access_level": "global", "department_ids": [], "user_uids": []},
         created_by="user",
-        creator=creator,
     )
 
-    assert agent.share_config == {"access_level": "user", "department_ids": [], "user_uids": ["user"]}
+    assert agent.share_config == {
+        "version": 2,
+        "read_scope": {"access_level": "user", "department_ids": [], "user_uids": ["user"]},
+        "manage_scope": None,
+    }
     assert db.added is agent
 
 
 @pytest.mark.asyncio
-async def test_manageable_agents_do_not_require_use_access():
-    manageable = Agent(
-        slug="manageable-only",
-        name="Manageable Only",
-        backend_id="ChatbotAgent",
-        created_by="owner",
-        share_config={"access_level": "user", "department_ids": [], "user_uids": []},
-        manage_config={"access_level": "user", "department_ids": [], "user_uids": ["manager"]},
-    )
+async def test_create_agent_allows_same_explicit_share_scope_for_normal_user(monkeypatch):
     db = FakeDb()
-    db.execute = AsyncMock(return_value=SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: [manageable])))
     repo = AgentRepository(db)
-    user = User(username="manager", uid="manager", password_hash="x", role="admin", department_id=1)
-    user.permission_keys = {"agents.update"}
 
-    assert await repo.list_visible(user=user) == []
-    assert await repo.list_manageable(user=user) == [manageable]
+    async def fake_unique_slug(_slug, _name):
+        return "personal-bot"
+
+    monkeypatch.setattr(repo, "_unique_slug", fake_unique_slug)
+    agent = await repo.create(
+        name="Personal Bot",
+        backend_id="ChatbotAgent",
+        slug="personal-bot",
+        share_config={
+            "version": 2,
+            "read_scope": {"access_level": "global"},
+            "manage_scope": None,
+        },
+        created_by="user",
+    )
+
+    assert agent.share_config == DEFAULT_SHARE_CONFIG
 
 
-def test_shared_agent_is_accessible_but_not_manageable_for_normal_user():
+def test_legacy_manage_scope_does_not_grant_normal_user_management():
     user = User(username="user", uid="user", password_hash="x", role="user", department_id=1)
     agent = Agent(
         slug="shared-bot",
         name="Shared Bot",
         backend_id="ChatbotAgent",
         created_by="other",
-        share_config={"access_level": "user", "department_ids": [], "user_uids": ["user"]},
-    )
-
-    assert user_can_access_agent(user, agent) is True
-    assert user_can_manage_agent(user, agent) is False
-
-
-def test_agent_use_manage_and_delete_scopes_are_independent():
-    user = User(username="manager", uid="manager", password_hash="x", role="user", department_id=3)
-    user.organization_department_ids = {3}
-    user.organization_membership_paths = [{1, 2, 3}]
-    agent = Agent(
-        slug="managed-bot",
-        name="Managed Bot",
-        backend_id="ChatbotAgent",
-        created_by="owner",
-        share_config={"access_level": "user", "department_ids": [], "user_uids": []},
-        manage_config={
-            "access_level": "department",
-            "org_scope_version": 2,
-            "department_ids": [1],
-            "excluded_department_ids": [],
-            "user_uids": [],
+        share_config={
+            "version": 2,
+            "read_scope": {"access_level": "user", "department_ids": [], "user_uids": ["user"]},
+            "manage_scope": {"access_level": "user", "department_ids": [], "user_uids": ["user"]},
         },
     )
 
-    assert user_can_access_agent(user, agent) is False
-    assert user_can_manage_agent(user, agent) is True
+    assert user_can_access_agent(user, agent) is True
+    assert user_can_access_agent(user, agent) is True
+    assert user_can_manage_agent(user, agent) is False
     assert user_can_delete_agent(user, agent) is False
 
 
-@pytest.mark.asyncio
-async def test_serialized_agent_exposes_independent_action_flags(monkeypatch):
-    from yuxi.agents.buildin import agent_manager
+def test_department_binding_grants_management_to_bound_or_upstream_admin():
+    agent = Agent(
+        slug="department-bot",
+        name="Department Bot",
+        backend_id="ChatbotAgent",
+        created_by="owner",
+        share_config={
+            "version": 2,
+            "read_scope": {
+                "access_level": "department",
+                "department_ids": [20],
+                "user_uids": [],
+            },
+            "manage_scope": None,
+        },
+    )
+    upstream_admin = User(username="upstream", uid="upstream", password_hash="x", role="admin")
+    upstream_admin.managed_department_ids = {10, 20, 21}
+    child_admin = User(username="child", uid="child", password_hash="x", role="admin")
+    child_admin.managed_department_ids = {21}
 
-    monkeypatch.setattr(agent_manager, "get_agent", lambda _backend_id: None)
+    assert user_can_manage_agent(upstream_admin, agent) is True
+    assert user_can_delete_agent(upstream_admin, agent) is True
+    assert user_can_manage_agent(child_admin, agent) is False
+
+
+def test_user_assignment_falls_back_to_creator_current_primary_department():
+    agent = Agent(
+        slug="personal-bot",
+        name="Personal Bot",
+        backend_id="ChatbotAgent",
+        created_by="owner",
+        share_config={
+            "version": 2,
+            "read_scope": {
+                "access_level": "user",
+                "department_ids": [],
+                "user_uids": ["reader"],
+            },
+            "manage_scope": None,
+        },
+    )
+    current_department_admin = User(username="admin", uid="admin", password_hash="x", role="admin")
+    current_department_admin.managed_department_ids = {30}
+
+    assert user_can_manage_agent(current_department_admin, agent, creator_department_id=30) is True
+    assert user_can_manage_agent(current_department_admin, agent, creator_department_id=40) is False
+
+
+def test_global_agent_is_only_manageable_by_creator_or_superadmin():
+    agent = Agent(
+        slug="global-bot",
+        name="Global Bot",
+        backend_id="ChatbotAgent",
+        created_by="owner",
+        share_config=DEFAULT_SHARE_CONFIG,
+    )
+    department_admin = User(username="admin", uid="admin", password_hash="x", role="admin")
+    department_admin.managed_department_ids = {1, 2}
+    owner = User(username="owner", uid="owner", password_hash="x", role="user")
+    superadmin = User(username="root", uid="root", password_hash="x", role="superadmin")
+
+    assert user_can_manage_agent(department_admin, agent) is False
+    assert user_can_manage_agent(owner, agent) is True
+    assert user_can_manage_agent(superadmin, agent) is True
+
+
+def test_builtin_agent_cannot_be_managed_by_department_admin():
+    builtin = Agent(
+        slug=GENERAL_PURPOSE_AGENT_SLUG,
+        name=GENERAL_PURPOSE_AGENT_NAME,
+        backend_id=SUB_AGENT_BACKEND_ID,
+        created_by="system",
+        share_config=DEFAULT_SHARE_CONFIG,
+    )
+    department_admin = User(username="admin", uid="admin", password_hash="x", role="admin")
+    department_admin.managed_department_ids = {1}
+
+    assert user_can_manage_agent(department_admin, builtin) is False
+    assert user_can_delete_agent(department_admin, builtin) is False
+
+
+@pytest.mark.asyncio
+async def test_agent_update_discards_legacy_manage_scope():
     db = FakeDb()
     repo = AgentRepository(db)
-    user = User(username="manager", uid="manager", password_hash="x", role="admin", department_id=1)
-    user.permission_keys = {"agents.update", "agents.delete"}
-    agent = Agent(
-        slug="managed-bot",
-        name="Managed Bot",
-        backend_id="missing-backend",
+    share_config = {
+        "version": 2,
+        "read_scope": {"access_level": "user", "user_uids": ["manager"]},
+        "manage_scope": {"access_level": "user", "user_uids": ["manager"]},
+    }
+    agent = SimpleNamespace(
+        slug="shared-bot",
+        backend_id="ChatbotAgent",
+        share_config=share_config,
         created_by="owner",
-        share_config={"access_level": "user", "department_ids": [], "user_uids": []},
-        manage_config={"access_level": "user", "department_ids": [], "user_uids": ["manager"]},
+        updated_by=None,
+        updated_at=None,
+        name="Shared Bot",
+        description="",
+        icon=None,
+        pics=[],
+        config_json={},
+    )
+    await repo.update(
+        agent,
+        share_config=share_config,
+        updated_by="manager",
     )
 
-    data = await repo.serialize(agent, user=user)
+    assert agent.share_config["read_scope"]["user_uids"] == ["manager"]
+    assert agent.share_config["manage_scope"] is None
 
-    assert data["can_access"] is False
-    assert data["can_manage"] is True
-    assert data["can_delete"] is False
+
+@pytest.mark.asyncio
+async def test_delegated_manager_can_update_agent_acl_with_standard_validation():
+    db = FakeDb()
+    repo = AgentRepository(db)
+    agent = SimpleNamespace(
+        slug="shared-bot",
+        backend_id="ChatbotAgent",
+        share_config={
+            "version": 2,
+            "read_scope": {"access_level": "user", "user_uids": ["manager"]},
+            "manage_scope": {"access_level": "user", "user_uids": ["manager"]},
+        },
+        created_by="owner",
+        updated_by=None,
+        updated_at=None,
+        name="Shared Bot",
+        description="",
+        icon=None,
+        pics=[],
+        config_json={},
+    )
+    await repo.update(
+        agent,
+        share_config={
+            "version": 2,
+            "read_scope": {"access_level": "global"},
+            "manage_scope": None,
+        },
+        updated_by="manager",
+    )
+
+    assert agent.share_config == DEFAULT_SHARE_CONFIG
+    db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_normal_user_can_update_read_scope_without_granting_manage_scope():
+    db = FakeDb()
+    repo = AgentRepository(db)
+    agent = SimpleNamespace(
+        slug="personal-bot",
+        backend_id="ChatbotAgent",
+        share_config={
+            "version": 2,
+            "read_scope": {"access_level": "user", "user_uids": ["manager"]},
+            "manage_scope": {"access_level": "user", "user_uids": ["manager"]},
+        },
+        created_by="manager",
+        updated_by=None,
+        updated_at=None,
+        name="Personal Bot",
+        description="",
+        icon=None,
+        pics=[],
+        config_json={},
+    )
+    await repo.update(
+        agent,
+        share_config={
+            "version": 2,
+            "read_scope": {"access_level": "user", "user_uids": ["manager", "reader"]},
+            "manage_scope": None,
+        },
+        updated_by="manager",
+    )
+
+    assert agent.share_config == {
+        "version": 2,
+        "read_scope": {
+            "access_level": "user",
+            "department_ids": [],
+            "user_uids": ["manager", "reader"],
+        },
+        "manage_scope": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_normal_user_can_update_agent_with_equivalent_v2_share_config():
+    db = FakeDb()
+    repo = AgentRepository(db)
+    share_config = {
+        "version": 2,
+        "read_scope": {"access_level": "user", "user_uids": ["manager"]},
+        "manage_scope": {"access_level": "user", "user_uids": ["manager"]},
+    }
+    agent = SimpleNamespace(
+        slug="shared-bot",
+        backend_id="ChatbotAgent",
+        share_config=share_config,
+        created_by="manager",
+        updated_by=None,
+        updated_at=None,
+        name="Legacy Bot",
+        description="",
+        icon=None,
+        pics=[],
+        config_json={},
+    )
+    await repo.update(
+        agent,
+        name="Renamed Bot",
+        share_config=share_config,
+        updated_by="manager",
+    )
+
+    assert agent.name == "Renamed Bot"
+    assert agent.share_config["read_scope"] == {
+        "access_level": "user",
+        "department_ids": [],
+        "user_uids": ["manager"],
+    }
+    assert agent.share_config["manage_scope"] is None

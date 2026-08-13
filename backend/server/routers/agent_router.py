@@ -1,21 +1,35 @@
 from __future__ import annotations
 
+import json
+import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
-
-from server.utils.auth_middleware import get_db, get_required_user, require_permission
 from yuxi.agents.buildin import agent_manager
 from yuxi.agents.context import filter_config_by_role
 from yuxi.repositories.agent_repository import (
     AgentRepository,
     is_builtin_agent,
     user_can_access_agent,
-    user_can_delete_agent,
-    user_can_manage_agent,
+)
+from yuxi.services.agent_request_queue_service import (
+    cancel_queued_request as cancel_queued_request_svc,
+    continue_thread_queue,
+    finalize_dispatch,
+    get_request as get_request_svc,
+    get_thread_queue_snapshot,
+    steer_queued_request,
+    stream_request_events,
+)
+from yuxi.services.agent_assignment_service import (
+    assignment_from_share_config,
+    get_agent_assignment_options,
+    get_editable_agent_assignment,
+    merge_agent_assignment,
+    validate_new_agent_assignment,
 )
 from yuxi.services.agent_run_service import (
     cancel_agent_run_view,
@@ -28,9 +42,13 @@ from yuxi.services.agent_run_service import (
     validate_agent_context_resource_access,
 )
 from yuxi.services.input_message_service import build_chat_input_message
+from yuxi.services.run_submission_service import RunOrigin, RunSubmissionCommand, submit_run_command
+from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_business import User
 from yuxi.services.permission_service import authorization_role
-from yuxi.services.organization_scope_service import validate_v2_share_config
+from yuxi.services.operation_log_service import log_operation
+
+from server.utils.auth_middleware import get_admin_user, get_db, get_required_user, require_permission
 
 agent_router = APIRouter(prefix="/agent", tags=["agent"])
 
@@ -60,6 +78,14 @@ class AgentUpdate(BaseModel):
     is_subagent: bool | None = None
 
 
+class AgentAssignmentUpdate(BaseModel):
+    """当前操作者可编辑的 Agent 分配切片。"""
+
+    global_access: bool = False
+    department_ids: list[int] = Field(default_factory=list)
+    user_uids: list[str] = Field(default_factory=list)
+
+
 class AgentRunCreate(BaseModel):
     query: str | None = Field(None, description="用户输入的问题")
     agent_slug: str = Field(..., description="智能体 slug")
@@ -67,8 +93,13 @@ class AgentRunCreate(BaseModel):
     meta: dict = Field(default_factory=dict, description="可选，请求追踪信息，例如 request_id")
     image_content: str | None = Field(None, description="可选，base64 图片内容")
     model_spec: str | None = Field(None, description="可选，对话级模型覆盖，优先级高于智能体配置")
+    tool_approval_mode: str | None = Field(None, description="可选，本次运行的工具审批模式覆盖")
     resume: Any | None = Field(None, description="可选，恢复时传给 LangGraph 的输入载荷，非布尔值")
     created_by_run_id: str | None = Field(None, description="可选，创建本 run 的父 run ID；resume 时为被恢复的 run ID")
+    queue_policy: str = Field(
+        "enqueue",
+        description="排队策略：enqueue（默认排队）、reject（运行中拒绝）或 steer（优先接替）",
+    )
 
 
 def _backend_info(info: dict) -> dict:
@@ -106,15 +137,22 @@ async def _serialize_agent(
     user: User,
     *,
     include_configurable_items: bool = False,
+    include_sensitive_config: bool = True,
     backend_info_cache: dict[tuple[str, bool, str], dict] | None = None,
 ) -> dict:
     data = await repo.serialize(
         item,
         user=user,
         include_configurable_items=include_configurable_items,
+        include_sensitive_config=include_sensitive_config,
         backend_info_cache=backend_info_cache,
     )
-    data["config_json"] = _filter_agent_config_json(item.backend_id, data.get("config_json"), authorization_role(user))
+    if "config_json" in data:
+        data["config_json"] = _filter_agent_config_json(
+            item.backend_id,
+            data.get("config_json"),
+            authorization_role(user),
+        )
     return data
 
 
@@ -151,7 +189,16 @@ async def list_agents(
         else await repo.list_visible(user=current_user, include_subagent_definitions=include_subagents)
     )
     backend_info_cache: dict[tuple[str, bool, str], dict] = {}
-    agents = [await _serialize_agent(repo, item, current_user, backend_info_cache=backend_info_cache) for item in items]
+    agents = [
+        await _serialize_agent(
+            repo,
+            item,
+            current_user,
+            include_sensitive_config=False,
+            backend_info_cache=backend_info_cache,
+        )
+        for item in items
+    ]
     return {"agents": agents}
 
 
@@ -163,12 +210,32 @@ async def get_default_agent(
     item = await repo.ensure_default_agent()
     if not item or not user_can_access_agent(current_user, item):
         raise HTTPException(status_code=404, detail="默认智能体不可访问")
-    return {"agent": await _serialize_agent(repo, item, current_user, include_configurable_items=True)}
+    can_manage = await repo.can_manage(user=current_user, agent=item)
+    return {
+        "agent": await _serialize_agent(
+            repo,
+            item,
+            current_user,
+            include_configurable_items=can_manage,
+            include_sensitive_config=can_manage,
+        )
+    }
+
+
+@agent_router.get("/assignment-options")
+async def list_agent_assignment_options(
+    current_user: User = Depends(require_permission("agents.share")),
+    db: AsyncSession = Depends(get_db),
+):
+    """列出当前用户可以选择的 Agent 分配对象。"""
+
+    return await get_agent_assignment_options(db, current_user)
 
 
 @agent_router.post("")
 async def create_agent(
     payload: AgentCreate,
+    request: Request,
     current_user: User = Depends(require_permission("agents.create")),
     db: AsyncSession = Depends(get_db),
 ):
@@ -185,10 +252,13 @@ async def create_agent(
             backend_id=payload.backend_id,
             config_json=payload.config_json,
         )
-        if payload.share_config:
-            await validate_v2_share_config(db, payload.share_config)
-        if payload.manage_config:
-            await validate_v2_share_config(db, payload.manage_config)
+        if payload.manage_config is not None:
+            raise ValueError("Agent 不再支持共享管理范围")
+        share_config = await validate_new_agent_assignment(
+            db,
+            user=current_user,
+            share_config=payload.share_config,
+        )
         item = await repo.create(
             name=payload.name,
             slug=payload.slug,
@@ -197,8 +267,7 @@ async def create_agent(
             icon=payload.icon,
             pics=payload.pics,
             config_json=validated_config_json,
-            share_config=payload.share_config,
-            manage_config=payload.manage_config,
+            share_config=share_config,
             is_default=payload.set_default,
             is_subagent=payload.is_subagent,
             created_by=str(current_user.uid),
@@ -206,6 +275,13 @@ async def create_agent(
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    await log_operation(
+        db,
+        current_user.id,
+        "创建智能体",
+        json.dumps({"agent_id": item.slug, "share_config": item.share_config}, ensure_ascii=False),
+        request,
+    )
     return {"agent": await _serialize_agent(repo, item, current_user, include_configurable_items=True)}
 
 
@@ -218,15 +294,52 @@ async def get_agent(
     repo = AgentRepository(db)
     agent_slug = agent_id  # 兼容既有路径参数名；这里实际是 Agent.slug。
     item = await repo.get_by_slug(agent_slug)
-    if not item or not (user_can_access_agent(current_user, item) or user_can_manage_agent(current_user, item)):
+    if not item:
         raise HTTPException(status_code=404, detail="智能体不存在")
+    can_manage = await repo.can_manage(user=current_user, agent=item)
+    if not user_can_access_agent(current_user, item) and not can_manage:
+        raise HTTPException(status_code=404, detail="智能体不存在")
+    if not can_manage:
+        raise HTTPException(status_code=403, detail="无权查看该智能体配置")
     return {"agent": await _serialize_agent(repo, item, current_user, include_configurable_items=True)}
+
+
+@agent_router.get("/{agent_id}/runtime-metadata")
+async def get_agent_runtime_metadata(
+    agent_id: str,
+    current_user: User = Depends(require_permission("agents.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """返回对话界面必需的安全运行元数据，不暴露完整 Agent 配置。"""
+
+    repo = AgentRepository(db)
+    item = await repo.get_visible_by_slug(slug=agent_id, user=current_user, kind="any")
+    if not item:
+        raise HTTPException(status_code=404, detail="智能体不存在")
+
+    serialized = await _serialize_agent(
+        repo,
+        item,
+        current_user,
+        include_configurable_items=True,
+        include_sensitive_config=False,
+    )
+    safe_keys = {"model", "tool_approval_mode", "knowledges", "mcps", "skills", "subagents"}
+    filtered_config = _filter_agent_config_json(item.backend_id, item.config_json, authorization_role(current_user))
+    context = filtered_config.get("context") if isinstance(filtered_config, dict) else {}
+    configurable_items = serialized.get("configurable_items") or {}
+    return {
+        "agent_id": item.slug,
+        "runtime_context": {key: value for key, value in (context or {}).items() if key in safe_keys},
+        "configurable_items": {key: value for key, value in configurable_items.items() if key in safe_keys},
+    }
 
 
 @agent_router.put("/{agent_id}")
 async def update_agent(
     agent_id: str,
     payload: AgentUpdate,
+    request: Request,
     current_user: User = Depends(require_permission("agents.update")),
     db: AsyncSession = Depends(get_db),
 ):
@@ -235,11 +348,13 @@ async def update_agent(
     item = await repo.get_by_slug(agent_slug)
     if not item:
         raise HTTPException(status_code=404, detail="智能体不存在")
-    if not user_can_manage_agent(current_user, item):
-        raise HTTPException(status_code=403, detail="不能编辑非自己创建的智能体")
+    if not await repo.can_manage(user=current_user, agent=item):
+        raise HTTPException(status_code=403, detail="不能编辑非自己创建或非管理范围内的智能体")
 
     try:
         fields_set = payload.model_fields_set
+        if "share_config" in fields_set or "manage_config" in fields_set:
+            raise ValueError("请使用智能体分配接口修改分配范围")
         if "description" in fields_set and payload.description is None:
             item.description = None
         if "icon" in fields_set and payload.icon is None:
@@ -254,11 +369,6 @@ async def update_agent(
             if payload.config_json is not None
             else None
         )
-        if payload.share_config:
-            await validate_v2_share_config(db, payload.share_config)
-        if payload.manage_config:
-            await validate_v2_share_config(db, payload.manage_config)
-
         updated = await repo.update(
             item,
             name=payload.name,
@@ -266,20 +376,101 @@ async def update_agent(
             icon=payload.icon,
             pics=payload.pics,
             config_json=validated_config_json,
-            share_config=payload.share_config,
-            manage_config=payload.manage_config,
             is_subagent=payload.is_subagent,
             updated_by=str(current_user.uid),
             updater=current_user,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    await log_operation(
+        db,
+        current_user.id,
+        "更新智能体",
+        json.dumps({"agent_id": updated.slug, "fields": sorted(payload.model_fields_set)}, ensure_ascii=False),
+        request,
+    )
     return {"agent": await _serialize_agent(repo, updated, current_user, include_configurable_items=True)}
+
+
+@agent_router.get("/{agent_id}/assignment")
+async def get_agent_assignment(
+    agent_id: str,
+    current_user: User = Depends(require_permission("agents.share")),
+    db: AsyncSession = Depends(get_db),
+):
+    """返回当前用户可编辑的 Agent 分配切片。"""
+
+    repo = AgentRepository(db)
+    item = await repo.get_by_slug(agent_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="智能体不存在")
+    if is_builtin_agent(item):
+        raise HTTPException(status_code=409, detail="内置智能体的分配范围已锁定")
+    if not await repo.can_manage(user=current_user, agent=item):
+        raise HTTPException(status_code=403, detail="无权管理该智能体分配范围")
+    if assignment_from_share_config(item.share_config)["global_access"] and current_user.role != "superadmin":
+        raise HTTPException(status_code=403, detail="全局智能体的分配范围仅超级管理员可调整")
+    return await get_editable_agent_assignment(db, user=current_user, share_config=item.share_config)
+
+
+@agent_router.put("/{agent_id}/assignment")
+async def update_agent_assignment(
+    agent_id: str,
+    payload: AgentAssignmentUpdate,
+    request: Request,
+    current_user: User = Depends(require_permission("agents.share")),
+    db: AsyncSession = Depends(get_db),
+):
+    """更新当前用户管理范围内的 Agent 分配，并保留范围外绑定。"""
+
+    repo = AgentRepository(db)
+    item = await repo.get_by_slug(agent_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="智能体不存在")
+    if is_builtin_agent(item):
+        raise HTTPException(status_code=409, detail="内置智能体的分配范围已锁定")
+    if not await repo.can_manage(user=current_user, agent=item):
+        raise HTTPException(status_code=403, detail="无权管理该智能体分配范围")
+    if assignment_from_share_config(item.share_config)["global_access"] and current_user.role != "superadmin":
+        raise HTTPException(status_code=403, detail="全局智能体的分配范围仅超级管理员可调整")
+
+    before = item.share_config
+    try:
+        merged = await merge_agent_assignment(
+            db,
+            user=current_user,
+            current_share_config=before,
+            global_access=payload.global_access,
+            department_ids=payload.department_ids,
+            user_uids=payload.user_uids,
+            owner_uid=str(item.created_by or ""),
+        )
+        updated = await repo.update(
+            item,
+            share_config=merged,
+            updated_by=str(current_user.uid),
+            updater=current_user,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    await log_operation(
+        db,
+        current_user.id,
+        "更新智能体分配",
+        json.dumps(
+            {"agent_id": updated.slug, "before": before, "after": updated.share_config},
+            ensure_ascii=False,
+        ),
+        request,
+    )
+    return await get_editable_agent_assignment(db, user=current_user, share_config=updated.share_config)
 
 
 @agent_router.delete("/{agent_id}")
 async def delete_agent(
     agent_id: str,
+    request: Request,
     current_user: User = Depends(require_permission("agents.delete")),
     db: AsyncSession = Depends(get_db),
 ):
@@ -288,18 +479,25 @@ async def delete_agent(
     item = await repo.get_by_slug(agent_slug)
     if not item:
         raise HTTPException(status_code=404, detail="智能体不存在")
-    if not user_can_delete_agent(current_user, item):
-        raise HTTPException(status_code=403, detail="不能删除非自己创建的智能体")
+    if not await repo.can_delete(user=current_user, agent=item):
+        raise HTTPException(status_code=403, detail="不能删除非自己创建或非管理范围内的智能体")
     if is_builtin_agent(item):
         raise HTTPException(status_code=409, detail="内置智能体不能删除")
     await repo.delete(agent=item)
+    await log_operation(
+        db,
+        current_user.id,
+        "删除智能体",
+        json.dumps({"agent_id": agent_slug}, ensure_ascii=False),
+        request,
+    )
     return {"success": True}
 
 
 @agent_router.post("/{agent_id}/set_default")
 async def set_agent_default(
     agent_id: str,
-    current_user: User = Depends(require_permission("agents.update")),
+    current_user: User = Depends(get_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
     repo = AgentRepository(db)
@@ -320,19 +518,136 @@ async def create_agent_run(
     current_user: User = Depends(get_required_user),
     db: AsyncSession = Depends(get_db),
 ):
-    input_message = None
-    if payload.resume is None and payload.query:
-        input_message = build_chat_input_message(payload.query, payload.image_content)
-    return await create_agent_run_view(
-        input_message=input_message,
-        agent_slug=payload.agent_slug,
-        thread_id=payload.thread_id,
-        meta=dict(payload.meta or {}),
-        model_spec=payload.model_spec,
-        current_uid=str(current_user.uid),
+    # resume 路径：恢复已有 LangGraph 状态，跳过 request 入队与派发，直接新建 run。
+    if payload.resume is not None:
+        if payload.queue_policy != "enqueue":
+            raise HTTPException(status_code=422, detail="queue_policy 仅支持普通 Chat 请求")
+        input_message = None
+        if payload.query:
+            input_message = build_chat_input_message(payload.query, payload.image_content)
+        return await create_agent_run_view(
+            input_message=input_message,
+            agent_slug=payload.agent_slug,
+            thread_id=payload.thread_id,
+            meta=dict(payload.meta or {}),
+            model_spec=payload.model_spec,
+            tool_approval_mode=payload.tool_approval_mode,
+            current_uid=str(current_user.uid),
+            db=db,
+            resume=payload.resume,
+            created_by_run_id=payload.created_by_run_id,
+        )
+
+    # 普通 chat 路径：写入 request + message，立即派发或入队等待。
+    meta = dict(payload.meta or {})
+    request_id = meta.get("request_id") or str(uuid.uuid4())
+    meta["request_id"] = request_id
+
+    input_message = build_chat_input_message(payload.query or "", payload.image_content)
+
+    return await submit_run_command(
+        command=RunSubmissionCommand(
+            agent_slug=payload.agent_slug,
+            thread_id=payload.thread_id,
+            request_id=request_id,
+            input_message=input_message,
+            origin=RunOrigin(source="chat", channel="web"),
+            request_metadata={**meta, "tool_approval_mode": payload.tool_approval_mode},
+            model_spec=payload.model_spec,
+            tool_approval_mode=payload.tool_approval_mode,
+            queue_policy=payload.queue_policy,
+        ),
+        current_user=current_user,
         db=db,
-        resume=payload.resume,
-        created_by_run_id=payload.created_by_run_id,
+    )
+
+
+@agent_router.get("/requests/{request_id}")
+async def get_request(
+    request_id: str,
+    current_user: User = Depends(get_required_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await get_request_svc(db=db, request_id=request_id, uid=str(current_user.uid))
+    if not result:
+        raise HTTPException(status_code=404, detail="请求不存在")
+    return {"request": result}
+
+
+@agent_router.get("/thread/{thread_id}/requests")
+async def list_thread_requests(
+    thread_id: str,
+    current_user: User = Depends(get_required_user),
+    agent_slug: str = Query(..., description="智能体 slug"),
+    db: AsyncSession = Depends(get_db),
+):
+    return await get_thread_queue_snapshot(
+        db=db,
+        uid=str(current_user.uid),
+        agent_slug=agent_slug,
+        thread_id=thread_id,
+    )
+
+
+@agent_router.post("/thread/{thread_id}/requests/continue")
+async def continue_thread_requests(
+    thread_id: str,
+    current_user: User = Depends(get_required_user),
+    agent_slug: str = Query(..., description="智能体 slug"),
+    db: AsyncSession = Depends(get_db),
+):
+    dispatch = await continue_thread_queue(
+        db=db,
+        uid=str(current_user.uid),
+        agent_slug=agent_slug,
+        thread_id=thread_id,
+    )
+    await finalize_dispatch(db=db, dispatch=dispatch)
+    return {"status": "dispatched", "request_id": dispatch.request_id, "run_id": dispatch.run_id}
+
+
+@agent_router.post("/requests/{request_id}/cancel")
+async def cancel_request(
+    request_id: str,
+    current_user: User = Depends(get_required_user),
+    db: AsyncSession = Depends(get_db),
+):
+    status = await cancel_queued_request_svc(request_id=request_id, current_uid=str(current_user.uid), db=db)
+    await db.commit()
+    return {"request_id": request_id, "status": status}
+
+
+@agent_router.post("/requests/{request_id}/steer")
+async def steer_request(
+    request_id: str,
+    current_user: User = Depends(get_required_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await steer_queued_request(request_id=request_id, current_uid=str(current_user.uid), db=db)
+    await db.commit()
+    return {
+        "request_id": result.request_id,
+        "thread_id": result.thread_id,
+        "status": result.status,
+        "queue_policy": result.queue_policy,
+        "queue_position": result.queue_position,
+        "request_events_url": f"/api/agent/requests/{result.request_id}/events",
+    }
+
+
+@agent_router.get("/requests/{request_id}/events")
+async def stream_request_events_route(
+    request_id: str,
+    current_user: User = Depends(get_required_user),
+):
+    return StreamingResponse(
+        stream_request_events(
+            request_id=request_id,
+            uid=str(current_user.uid),
+            db_session_factory=pg_manager.get_async_session_context,
+        ),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
     )
 
 

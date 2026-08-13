@@ -64,25 +64,22 @@ export const useUserStore = defineStore('user', () => {
 
       const data = await response.json()
 
-      // 更新状态
-      token.value = data.access_token
-      userId.value = data.user_id
-      username.value = data.username
-      uid.value = data.uid
-      phoneNumber.value = data.phone_number || ''
-      avatar.value = data.avatar || ''
-      userRole.value = data.role
-      roleName.value = data.role_name || data.role
-      permissions.value = data.permissions || []
-      departmentId.value = data.department_id || null
-      departmentName.value = data.department_name || ''
-
-      // 只保存 token 到本地存储
-      localStorage.setItem('user_token', data.access_token)
+      await completeLogin(data.access_token)
 
       return true
     } catch (error) {
       console.error('登录错误:', error)
+      throw error
+    }
+  }
+
+  async function completeLogin(accessToken) {
+    token.value = accessToken
+    localStorage.setItem('user_token', accessToken)
+    try {
+      await getCurrentUser()
+    } catch (error) {
+      logout()
       throw error
     }
   }
@@ -486,6 +483,7 @@ export const useUserStore = defineStore('user', () => {
 
     // 方法
     login,
+    completeLogin,
     logout,
     initialize,
     checkFirstRun,

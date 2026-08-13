@@ -17,18 +17,30 @@
               overlay-class-name="config-dropdown-overlay"
             >
               <button
+                ref="agentDropdownTriggerRef"
                 type="button"
                 class="input-action-btn config-dropdown-trigger"
                 :class="{ disabled: isLoadingConfig }"
-                @click.stop
-                @mousedown.stop
+                :aria-label="currentAgentLabel"
               >
+                <FallbackAvatar
+                  v-if="currentAgentOption"
+                  class="config-dropdown-compact-icon"
+                  :src="currentAgentOption.icon"
+                  :default-src="currentAgentOption.defaultIcon"
+                  :name="currentAgentOption.label"
+                  :seed="currentAgentOption.value || currentAgentOption.label"
+                  kind="agent"
+                  :size="18"
+                  shape="rounded"
+                  alt=""
+                />
                 <span class="hide-text config-dropdown-text">{{ currentAgentLabel }}</span>
                 <ChevronDown size="15" class="config-dropdown-chevron" />
               </button>
 
               <template #overlay>
-                <div class="config-dropdown-panel" @click.stop>
+                <div ref="agentDropdownPanelRef" class="config-dropdown-panel">
                   <button
                     v-for="agent in agentQuickSwitchOptions"
                     :key="agent.value"
@@ -66,14 +78,26 @@
 
                   <div class="config-dropdown-divider"></div>
 
-                  <button
-                    type="button"
-                    class="config-dropdown-item action-item"
-                    @click="openAgentManagement"
-                  >
-                    <Settings2 :size="15" class="config-dropdown-item-icon" />
-                    <span class="config-dropdown-item-label">管理智能体</span>
-                  </button>
+                  <div class="config-dropdown-actions">
+                    <button
+                      v-if="currentAgentOption?.canUpdate"
+                      type="button"
+                      class="config-dropdown-item action-item"
+                      @click="openAgentManagement"
+                    >
+                      <Settings2 :size="15" class="config-dropdown-item-icon" />
+                      <span class="config-dropdown-item-label">编辑智能体</span>
+                    </button>
+                    <button
+                      v-if="userStore.hasPermission('agents.create')"
+                      type="button"
+                      class="config-dropdown-item action-item"
+                      @click="openCreateAgent"
+                    >
+                      <Plus :size="15" class="config-dropdown-item-icon" />
+                      <span class="config-dropdown-item-label">新建智能体</span>
+                    </button>
+                  </div>
                 </div>
               </template>
             </a-dropdown>
@@ -92,12 +116,14 @@
 <script setup>
 import { computed, nextTick, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
-import { Settings2, ChevronDown, Check } from 'lucide-vue-next'
+import { Settings2, ChevronDown, Check, Plus } from 'lucide-vue-next'
 import { useRoute, useRouter } from 'vue-router'
 import { agentApi } from '@/apis/agent_api'
+import { useOutsidePointerdown } from '@/composables/useOutsidePointerdown'
 import AgentChatComponent from '@/components/AgentChatComponent.vue'
 import AgentEditModal from '@/components/model-management/AgentEditModal.vue'
 import { isBuiltinAgent, useAgentStore } from '@/stores/agent'
+import { useUserStore } from '@/stores/user'
 import { handleChatError } from '@/utils/errorHandler'
 import { generatePixelAvatar } from '@/utils/pixelAvatar'
 import FallbackAvatar from '@/components/common/FallbackAvatar.vue'
@@ -110,6 +136,7 @@ const agentEditModalRef = ref(null)
 
 // Stores
 const agentStore = useAgentStore()
+const userStore = useUserStore()
 const route = useRoute()
 const router = useRouter()
 
@@ -213,7 +240,8 @@ const agentQuickSwitchOptions = computed(() =>
       value: agent.id,
       icon: agent.icon || '',
       defaultIcon: agent.id ? generatePixelAvatar(agent.id) : '',
-      isBuiltin: isBuiltinAgent(agent)
+      isBuiltin: isBuiltinAgent(agent),
+      canUpdate: Boolean(agent.can_update)
     }))
 )
 
@@ -227,6 +255,8 @@ const currentAgentLabel = computed(() => {
 })
 
 const agentDropdownOpen = ref(false)
+const agentDropdownTriggerRef = ref(null)
+const agentDropdownPanelRef = ref(null)
 const agentBackendOptions = ref([])
 const agentBackendsLoaded = ref(false)
 
@@ -255,10 +285,25 @@ const handleAgentSwitch = async (agentId, hasActiveThread) => {
   }
 }
 
-const handleAgentSaved = async () => {
+const handleAgentSaved = async ({ mode, agent } = {}) => {
+  if (mode === 'create' && !agent?.is_subagent) {
+    await chatComponentRef.value?.selectThreadFromRoute?.('')
+  }
+
   await agentStore.fetchAgents()
-  if (selectedAgentId.value) {
+  const selectedAgent = (agents.value || []).find((agent) => agent.id === selectedAgentId.value)
+  if (selectedAgent?.can_view_config) {
     await agentStore.fetchAgentDetail(selectedAgentId.value, true)
+  }
+}
+
+const openCreateAgent = async () => {
+  agentDropdownOpen.value = false
+  try {
+    await loadAgentBackends()
+    agentEditModalRef.value?.openCreate()
+  } catch (error) {
+    message.error(error.message || '打开新建智能体弹窗失败')
   }
 }
 
@@ -275,6 +320,8 @@ const openAgentManagement = async () => {
     message.error(error.message || '打开智能体配置失败')
   }
 }
+
+useOutsidePointerdown(agentDropdownOpen, [agentDropdownTriggerRef, agentDropdownPanelRef])
 </script>
 
 <style lang="less" scoped>
@@ -334,6 +381,27 @@ const openAgentManagement = async () => {
   color: currentColor;
 }
 
+.config-dropdown-compact-icon {
+  display: none;
+  flex-shrink: 0;
+}
+
+@container (max-width: 640px) {
+  .config-dropdown-trigger {
+    width: 30px;
+    padding-inline: 0;
+  }
+
+  .config-dropdown-compact-icon {
+    display: block;
+  }
+
+  .config-dropdown-text,
+  .config-dropdown-chevron {
+    display: none;
+  }
+}
+
 // 响应式优化
 @media (max-width: 520px) {
   .config-dropdown-trigger {
@@ -385,6 +453,15 @@ const openAgentManagement = async () => {
 
 .config-dropdown-overlay .config-dropdown-item.action-item {
   color: var(--gray-800);
+}
+
+.config-dropdown-overlay .config-dropdown-actions {
+  display: flex;
+}
+
+.config-dropdown-overlay .config-dropdown-actions .config-dropdown-item {
+  flex: 1;
+  width: auto;
 }
 
 .config-dropdown-overlay .config-dropdown-item-label {

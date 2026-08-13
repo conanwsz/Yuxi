@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import sys
 import types
 from types import SimpleNamespace
@@ -27,6 +28,8 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.unit]
 
 @pytest.fixture(autouse=True)
 def fake_token_quota_service(monkeypatch):
+    user_router_module = importlib.import_module("server.routers.user_router")
+
     module = types.ModuleType("yuxi.services.token_quota_service")
 
     async def get_user_token_quota_status(db, user, **_):
@@ -49,6 +52,19 @@ def fake_token_quota_service(monkeypatch):
     module.get_user_token_quota_status = get_user_token_quota_status
     module.batch_get_user_token_quota_statuses = batch_get_user_token_quota_statuses
     monkeypatch.setitem(sys.modules, "yuxi.services.token_quota_service", module)
+
+    async def get_user_token_quota_payload_with_breakdown(db, user):
+        return {
+            "token_quota_mode": user.token_quota_mode,
+            "weekly_token_quota": user.weekly_token_quota,
+            "token_quota": await get_user_token_quota_status(db, user),
+        }
+
+    monkeypatch.setattr(
+        user_router_module,
+        "get_user_token_quota_payload_with_breakdown",
+        get_user_token_quota_payload_with_breakdown,
+    )
 
 
 async def _create_user_with_membership(

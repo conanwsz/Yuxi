@@ -12,9 +12,17 @@ function normalizeAgent(agent) {
 }
 
 export const BUILTIN_AGENT_ID = 'default-chatbot'
+const BUILTIN_AGENT_IDS = new Set([
+  BUILTIN_AGENT_ID,
+  'general-purpose',
+  'web-search',
+  'deep-research',
+  'research-explorer',
+  'fact-verifier'
+])
 
 export function isBuiltinAgent(agent) {
-  return agent?.is_builtin || agent?.id === BUILTIN_AGENT_ID || agent?.slug === BUILTIN_AGENT_ID
+  return agent?.is_builtin || BUILTIN_AGENT_IDS.has(agent?.id) || BUILTIN_AGENT_IDS.has(agent?.slug)
 }
 
 function sortAgents(agents) {
@@ -123,6 +131,11 @@ export const useAgentStore = defineStore(
       try {
         const response = await agentApi.getAgents({ includeSubagents })
         agents.value = sortAgents((response.agents || []).map(normalizeAgent))
+        const visibleById = new Map(agents.value.map((agent) => [agent.id, agent]))
+        Object.keys(agentDetails.value).forEach((agentId) => {
+          const listed = visibleById.get(agentId)
+          if (!listed || !listed.can_view_config) delete agentDetails.value[agentId]
+        })
       } catch (err) {
         console.error('Failed to fetch agents:', err)
         handleChatError(err, 'fetch')
@@ -179,6 +192,18 @@ export const useAgentStore = defineStore(
       }
     }
 
+    /** 加载对话所需配置；只读 Agent 不请求完整管理详情。 */
+    async function fetchAgentSelectionData(agent) {
+      if (agent?.can_view_config) return fetchAgentDetail(agent.id)
+
+      const response = await agentApi.getAgentRuntimeMetadata(agent.id)
+      return {
+        ...agent,
+        config_json: { context: response.runtime_context || {} },
+        configurable_items: response.configurable_items || {}
+      }
+    }
+
     async function selectAgent(agentId, { allowSubagent = false } = {}) {
       if (!agentId) return
       let knownAgent = agentDetails.value[agentId] || agents.value.find((a) => a.id === agentId)
@@ -188,7 +213,8 @@ export const useAgentStore = defineStore(
       if (knownAgent?.is_subagent && !allowSubagent) return
       isLoadingConfig.value = true
       try {
-        const detail = agentDetails.value[agentId] || (await fetchAgentDetail(agentId))
+        const detail = agentDetails.value[agentId] || (await fetchAgentSelectionData(knownAgent))
+        agentDetails.value[agentId] = detail
         const loadedConfig = applyConfigDefaults(
           extractContext(detail),
           detail?.configurable_items || {}

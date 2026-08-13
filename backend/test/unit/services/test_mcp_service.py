@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 import pytest_asyncio
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -41,6 +42,75 @@ class _FakeClient:
 
     async def get_tools(self):
         return self._tools
+
+
+def test_stdio_mcp_config_ignores_stale_http_fields():
+    server = MCPServer(
+        slug="stdio-demo",
+        name="stdio demo",
+        transport="stdio",
+        url="https://stale.example.com/mcp",
+        command="uvx",
+        args=["demo-mcp"],
+        env={"API_KEY": "secret"},
+        headers={"Authorization": "Bearer stale"},
+        timeout=10,
+        sse_read_timeout=20,
+        created_by="admin",
+        updated_by="admin",
+    )
+
+    assert server.to_mcp_config() == {
+        "transport": "stdio",
+        "command": "uvx",
+        "args": ["demo-mcp"],
+        "env": {"API_KEY": "secret"},
+    }
+
+
+def test_http_mcp_config_ignores_stale_stdio_fields():
+    server = MCPServer(
+        slug="http-demo",
+        name="http demo",
+        transport="streamable_http",
+        url="https://example.com/mcp",
+        command="stale-command",
+        args=["stale-arg"],
+        env={"STALE": "value"},
+        headers={"Authorization": "Bearer token"},
+        timeout=10,
+        sse_read_timeout=20,
+        created_by="admin",
+        updated_by="admin",
+    )
+
+    assert server.to_mcp_config() == {
+        "transport": "streamable_http",
+        "url": "https://example.com/mcp",
+        "headers": {"Authorization": "Bearer token"},
+        "timeout": 10,
+        "sse_read_timeout": 20,
+    }
+
+
+async def test_get_mcp_tools_can_surface_connection_errors(monkeypatch):
+    class FailingClient:
+        async def get_tools(self):
+            raise RuntimeError("connection failed")
+
+    async def fake_get_enabled_mcp_server_config(server_name: str, db=None):
+        del server_name, db
+        return {"transport": "stdio", "command": "demo"}
+
+    async def fake_get_mcp_client(server_configs):
+        del server_configs
+        return FailingClient()
+
+    monkeypatch.setattr(mcp_service, "get_enabled_mcp_server_config", fake_get_enabled_mcp_server_config)
+    monkeypatch.setattr(mcp_service, "get_mcp_client", fake_get_mcp_client)
+
+    with pytest.raises(RuntimeError, match="connection failed"):
+        await mcp_service.get_mcp_tools("demo", raise_on_error=True)
 
 
 async def test_ensure_builtin_mcp_servers_removes_retired_system_server(monkeypatch, mcp_session):
@@ -126,9 +196,7 @@ async def test_get_enabled_mcp_tools_loads_latest_config_from_db(monkeypatch):
     assert captured == [
         {
             "server_name": "demo",
-            "additional_servers": {
-                "demo": {"transport": "stdio", "command": "demo", "disabled_tools": ["tool_b"]}
-            },
+            "additional_servers": {"demo": {"transport": "stdio", "command": "demo", "disabled_tools": ["tool_b"]}},
             "disabled_tools": ["tool_b"],
         }
     ]

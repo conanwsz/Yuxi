@@ -4,7 +4,6 @@ import { agentApi, threadApi } from '@/apis'
 import { handleChatError } from '@/utils/errorHandler'
 
 const PAGE_SIZE = 100
-const ACTIVE_RUN_POLL_INTERVAL = 8000
 
 export const useChatThreadsStore = defineStore('chatThreads', () => {
   const threads = ref([])
@@ -99,25 +98,22 @@ export const useChatThreadsStore = defineStore('chatThreads', () => {
     }
   }
 
-  // 轮询当前用户所有活跃 run，对比变化驱动闪烁/跳顶/未读。
-  // _prevActiveRunMap 在模块作用域持久化，保证轮询间隔跨调用状态连续。
-  let _prevActiveRunMap = new Map()
+  // 轮询活跃 run 只负责侧边栏的运行、跳顶和未读状态；请求队列状态由会话内 SSE 独立维护。
+  let previousActiveRunMap = new Map()
 
   const pollActiveRuns = async () => {
     try {
-      const resp = await agentApi.getActiveRuns()
-      const runs = resp?.runs || []
-      const currentMap = new Map(runs.map((r) => [r.run_id, r.thread_id]))
+      const response = await agentApi.getActiveRuns()
+      const runs = response?.runs || []
+      const currentMap = new Map(runs.map((run) => [run.run_id, run.thread_id]))
 
-      // 新出现的 run -> 会话开始输出
       for (const [runId, threadId] of currentMap) {
-        if (!_prevActiveRunMap.has(runId)) {
+        if (!previousActiveRunMap.has(runId)) {
           streamingThreadIds.add(threadId)
         }
       }
 
-      // 消失的 run -> 会话输出完成
-      for (const [runId, threadId] of _prevActiveRunMap) {
+      for (const [runId, threadId] of previousActiveRunMap) {
         if (!currentMap.has(runId)) {
           streamingThreadIds.delete(threadId)
           touchThread(threadId)
@@ -125,17 +121,17 @@ export const useChatThreadsStore = defineStore('chatThreads', () => {
         }
       }
 
-      _prevActiveRunMap = currentMap
+      previousActiveRunMap = currentMap
     } catch {
-      // 轮询失败静默，下次重试
+      // 轮询失败静默，下次重试。
     }
   }
 
-  const createThread = async (agentId, title = '新的对话') => {
+  const createThread = async (agentId, title = '新的对话', metadata = {}) => {
     if (!agentId) return null
 
     try {
-      const thread = await threadApi.createThread(agentId, title)
+      const thread = await threadApi.createThread(agentId, title, metadata)
       if (thread) {
         threads.value = [thread, ...threads.value.filter((item) => item.id !== thread.id)]
       }
@@ -163,42 +159,26 @@ export const useChatThreadsStore = defineStore('chatThreads', () => {
     }
   }
 
-  const updateThread = async (threadId, title, isPinned) => {
+  const updateThread = async (threadId, title, isPinned, toolApprovalMode) => {
     if (!threadId) return
 
-    if (title) {
-      const normalizedTitle = String(title).replace(/\s+/g, ' ').trim().slice(0, 255)
-      if (!normalizedTitle) return
+    const normalizedTitle = title ? String(title).replace(/\s+/g, ' ').trim().slice(0, 255) : null
+    if (title && !normalizedTitle) return
+    if (!normalizedTitle && isPinned === undefined && toolApprovalMode === undefined) return
 
-      try {
-        await threadApi.updateThread(threadId, normalizedTitle, isPinned)
-        const thread = threads.value.find((item) => item.id === threadId)
-        if (thread) {
-          thread.title = normalizedTitle
-          if (isPinned !== undefined) {
-            thread.is_pinned = isPinned
-          }
-        }
-      } catch (error) {
-        console.error('Failed to update thread:', error)
-        handleChatError(error, 'update')
-        throw error
-      }
-      return
-    }
-
-    if (isPinned !== undefined) {
-      try {
-        await threadApi.updateThread(threadId, null, isPinned)
-        const thread = threads.value.find((item) => item.id === threadId)
-        if (thread) {
-          thread.is_pinned = isPinned
-        }
-      } catch (error) {
-        console.error('Failed to update thread pin status:', error)
-        handleChatError(error, 'update')
-        throw error
-      }
+    try {
+      const updatedThread = await threadApi.updateThread(
+        threadId,
+        normalizedTitle,
+        isPinned,
+        toolApprovalMode
+      )
+      upsertThread(updatedThread)
+      return updatedThread
+    } catch (error) {
+      console.error('Failed to update thread:', error)
+      handleChatError(error, 'update')
+      throw error
     }
   }
 

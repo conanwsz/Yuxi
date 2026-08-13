@@ -113,8 +113,8 @@
       width="560px"
       @ok="submit"
     >
-      <a-form layout="vertical">
-        <a-form-item label="部门名称" required>
+      <a-form layout="vertical" class="department-form" autocomplete="off">
+        <a-form-item label="部门名称" required class="form-item">
           <a-input
             v-model:value="state.form.name"
             :maxlength="50"
@@ -145,6 +145,7 @@
             show-count
           />
         </a-form-item>
+
       </a-form>
     </a-modal>
   </div>

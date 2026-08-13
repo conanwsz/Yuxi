@@ -14,7 +14,6 @@ from server.routers.user_router import APIKeyCreate, create_api_key
 from server.utils.auth_middleware import _verify_api_key, get_current_user
 from yuxi.repositories import user_repository as user_repository_module
 from yuxi.repositories.user_repository import UserRepository
-from yuxi.services.permission_service import resolve_user_permissions
 from yuxi.storage.postgres.models_business import (
     APIKey,
     Base,

@@ -51,7 +51,7 @@ async def test_organization_hierarchy_memberships_and_archive_rules(test_client,
         user_response = await test_client.post(
             "/api/auth/users",
             json={
-                "username": f"组织用户-{suffix}",
+                "username": f"组织用户_{suffix}",
                 "password": "RouterUser123!",
                 "role": "user",
                 "primary_department_id": child_a["id"],

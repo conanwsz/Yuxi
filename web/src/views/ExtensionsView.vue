@@ -54,9 +54,9 @@ const toolsRef = ref(null)
 const extensionTabs = computed(() =>
   [
     ['knowledge.read', { key: 'knowledge', label: '知识库' }],
+    ['skills.read', { key: 'skills', label: '技能' }],
     ['tools.read', { key: 'tools', label: '工具' }],
-    ['mcp.read', { key: 'mcp', label: 'MCP' }],
-    ['skills.read', { key: 'skills', label: 'Skills' }]
+    ['mcp.read', { key: 'mcp', label: 'MCP' }]
   ]
     .filter(([permission]) => userStore.hasPermission(permission))
     .map(([, tab]) => tab)

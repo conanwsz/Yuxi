@@ -6,6 +6,7 @@ from dataclasses import MISSING, dataclass, field, fields
 from typing import Any, get_origin
 
 from yuxi.agents.backends.sandbox.paths import sandbox_workspace_agent_context_file
+from yuxi.agents.tool_approval import DEFAULT_TOOL_APPROVAL_MODE
 from yuxi.utils.logging_config import logger
 from yuxi.utils.paths import WORKSPACE_AGENT_CONTEXT_FILES
 
@@ -179,6 +180,20 @@ class BaseContext:
         },
     )
 
+    tool_approval_mode: str = field(
+        default=DEFAULT_TOOL_APPROVAL_MODE,
+        metadata={
+            "name": "工具审批模式",
+            "description": "默认审批会在写文件、编辑文件或执行命令前询问；完全信任会自动执行这些工具。",
+            "options": [
+                {"key": "default", "name": "默认审批", "description": "敏感工具执行前请求确认"},
+                {"key": "always_trust", "name": "完全信任", "description": "敏感工具无需确认，自动执行"},
+            ],
+            "type": "string",
+            "auth": "admin",
+        },
+    )
+
     tools: list[str] | None = field(
         default=None,
         metadata={
@@ -193,7 +208,9 @@ class BaseContext:
         default=None,
         metadata={
             "name": "知识库",
-            "description": "知识库列表，可以在左侧知识库页面中创建知识库。默认选择当前用户可访问的全部知识库。",
+            "description": (
+                "Agent 运行时可使用的知识库。显式选择由 Agent 授予使用范围；未选择时使用当前用户直接可访问的知识库。"
+            ),
             "type": "list",
             "kind": "knowledges",
         },
@@ -418,6 +435,7 @@ async def resolve_agent_resource_options(
     *,
     db,
     user,
+    bound_knowledge_ids: list[str] | None = None,
 ) -> dict[str, list[dict[str, str]]]:
     fields_to_load = _AGENT_RESOURCE_FIELDS if resource_fields is None else resource_fields
     if not fields_to_load:
@@ -443,11 +461,16 @@ async def resolve_agent_resource_options(
     if "knowledges" in fields_to_load:
         from yuxi.knowledge.runtime import knowledge_base
 
-        databases = (await knowledge_base.get_databases_by_user(user)).get("databases", [])
+        databases = (
+            await knowledge_base.get_databases()
+            if bound_knowledge_ids is not None
+            else await knowledge_base.get_databases_by_user(user)
+        )
+        if bound_knowledge_ids is not None:
+            bound_ids = {str(kb_id).strip() for kb_id in bound_knowledge_ids if str(kb_id).strip()}
+            databases = [database for database in databases if database.kb_id in bound_ids]
         options["knowledges"] = [
-            _resource_option(item.get("kb_id"), item.get("name"), item.get("description"))
-            for item in databases
-            if isinstance(item, dict) and item.get("kb_id")
+            _resource_option(item.kb_id, item.name, item.description) for item in databases if item.kb_id
         ]
     if "mcps" in fields_to_load:
         from yuxi.agents.mcp.service import get_all_mcp_servers
@@ -498,7 +521,14 @@ async def normalize_agent_context_config(
     if not fields_to_load:
         return normalized
 
-    resource_options = await resolve_agent_resource_options(fields_to_load, db=db, user=user)
+    selected_knowledges = normalized.get("knowledges")
+    bound_knowledge_ids = selected_knowledges if isinstance(selected_knowledges, list) else None
+    resource_options = await resolve_agent_resource_options(
+        fields_to_load,
+        db=db,
+        user=user,
+        bound_knowledge_ids=bound_knowledge_ids,
+    )
     available = {
         field_name: [option["key"] for option in field_options]
         for field_name, field_options in resource_options.items()
@@ -542,6 +572,7 @@ async def prepare_agent_runtime_context(
             setattr(context, "_readable_skills", [])
             setattr(context, "_runtime_skill_metadata", {})
             setattr(context, "_runtime_skill_dependency_map", {})
+            setattr(context, "_runtime_skill_sources", {})
             return context
 
         raw_resources = {
@@ -566,5 +597,6 @@ async def prepare_agent_runtime_context(
         setattr(context, "_readable_skills", skill_scope["readable_skills"])
         setattr(context, "_runtime_skill_metadata", skill_scope["runtime_skill_metadata"])
         setattr(context, "_runtime_skill_dependency_map", skill_scope["runtime_skill_dependency_map"])
+        setattr(context, "_runtime_skill_sources", skill_scope.get("runtime_skill_sources", {}))
 
     return context

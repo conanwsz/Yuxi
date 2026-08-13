@@ -48,6 +48,10 @@
             v-model:value="modelSearchKeyword"
             placeholder="搜索模型"
             allow-clear
+            autocomplete="off"
+            autocapitalize="none"
+            autocorrect="off"
+            spellcheck="false"
             @keydown.stop
           >
             <template #suffix>
@@ -83,21 +87,69 @@
                 :key="model.spec"
                 @click="handleSelectV2Model(model.spec)"
               >
-                {{ model.display_name }}
+                <div class="model-option">
+                  <span class="model-option-name">{{ model.display_name }}</span>
+                  <div class="model-option-signals">
+                    <a-tooltip v-if="getModelInfo(model).vision" title="支持图像输入">
+                      <span class="model-signal-icon" role="img" aria-label="支持图像输入">
+                        <Eye :size="13" />
+                      </span>
+                    </a-tooltip>
+                    <a-tooltip
+                      v-if="getModelInfo(model).isOneMillionContext"
+                      title="约 1M tokens 上下文窗口"
+                    >
+                      <span class="model-context-badge">1M</span>
+                    </a-tooltip>
+                  </div>
+                </div>
               </a-menu-item>
             </a-menu-item-group>
           </template>
         </a-menu>
+        <div
+          v-if="!modelMetadataNoticeDismissed && (userStore.isAdmin || hasModelMetadata)"
+          class="model-metadata-source"
+        >
+          <div class="model-metadata-source-content">
+            <template v-if="userStore.isAdmin">
+              没有合适的模型？
+              <RouterLink :to="{ path: '/agent-manage', query: { tab: 'providers' } }" @click.stop>
+                配置模型
+              </RouterLink>
+            </template>
+            <template v-if="hasModelMetadata">
+              <span v-if="userStore.isAdmin">。 </span>
+              部分信息（价格、能力等）来自
+              <a href="https://models.dev" target="_blank" rel="noreferrer" @click.stop
+                >models.dev</a
+              >
+              填补。仅供参考，可能和官网有偏差。
+            </template>
+          </div>
+          <button
+            type="button"
+            class="model-metadata-source-close"
+            title="不再显示"
+            aria-label="关闭模型信息提示"
+            @click.stop="dismissModelMetadataNotice"
+          >
+            <X :size="13" />
+          </button>
+        </div>
       </div>
     </template>
   </a-dropdown>
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
+import { RouterLink } from 'vue-router'
 import { modelProviderApi } from '@/apis/system_api'
-import { RefreshCw, X } from 'lucide-vue-next'
+import { Eye, RefreshCw, X } from 'lucide-vue-next'
 import { useModelStatus } from '@/composables/useModelStatus'
+import { useUserStore } from '@/stores/user'
+import { loadModelMetadataCatalog, resolveModelDisplayMetadata } from '@/utils/modelMetadata'
 
 const props = defineProps({
   model_spec: {
@@ -128,24 +180,24 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['select-model', 'invalid-model'])
+const emit = defineEmits(['select-model'])
+const userStore = useUserStore()
+const MODEL_METADATA_NOTICE_DISMISSED_KEY = 'yuxi_model_metadata_notice_dismissed'
 
 // v2 模型数据：每次展开下拉时实时从后端拉取
 const v2Models = ref({})
 const loadingV2Models = ref(false)
 const dropdownOpen = ref(false)
 const modelSearchKeyword = ref('')
+const modelMetadataBySpec = ref({})
+const modelMetadataNoticeDismissed = ref(
+  localStorage.getItem(MODEL_METADATA_NOTICE_DISMISSED_KEY) === 'true'
+)
 let fetchV2ModelsPromise = null
 
-const reconcileModelSelection = (spec) => {
-  const models = Object.values(v2Models.value).flatMap((providerData) => providerData.models || [])
-  if (!spec || !models.length || models.some((model) => model.spec === spec)) return
-
-  const fallbackModel = models.find((model) => model.is_default) || models[0]
-  emit('invalid-model', {
-    unavailableSpec: spec,
-    fallbackSpec: fallbackModel.spec
-  })
+const dismissModelMetadataNotice = () => {
+  modelMetadataNoticeDismissed.value = true
+  localStorage.setItem(MODEL_METADATA_NOTICE_DISMISSED_KEY, 'true')
 }
 
 const filteredV2Models = computed(() => {
@@ -191,6 +243,8 @@ const selectedModel = computed(() => {
   return null
 })
 
+const hasModelMetadata = computed(() => Object.keys(modelMetadataBySpec.value).length > 0)
+
 const getProviderDisplayName = (providerId, providerData = {}) => {
   return (
     providerData.provider_display_name ||
@@ -207,10 +261,17 @@ const fetchV2Models = async () => {
   loadingV2Models.value = true
   fetchV2ModelsPromise = (async () => {
     try {
+      const catalogRequest = loadModelMetadataCatalog().catch((error) => {
+        console.warn('Failed to load model metadata catalog:', error)
+        return null
+      })
       const response = await modelProviderApi.getV2Models('chat')
       if (response.success) {
         v2Models.value = response.data || {}
-        reconcileModelSelection(props.model_spec)
+        const catalog = await catalogRequest
+        modelMetadataBySpec.value = catalog
+          ? buildModelMetadataBySpec(v2Models.value, catalog.providers)
+          : {}
       }
     } catch (error) {
       console.warn('Failed to load v2 models:', error)
@@ -223,7 +284,17 @@ const fetchV2Models = async () => {
   return fetchV2ModelsPromise
 }
 
-onMounted(fetchV2Models)
+const buildModelMetadataBySpec = (modelsByProvider, providers) => {
+  return Object.entries(modelsByProvider).reduce((result, [providerId, providerData]) => {
+    for (const model of providerData.models || []) {
+      const info = resolveModelDisplayMetadata(providers, providerId, model)
+      if (info.matched) result[model.spec] = info
+    }
+    return result
+  }, {})
+}
+
+const getModelInfo = (model) => modelMetadataBySpec.value[model.spec] || {}
 
 // 下拉展开前先刷新模型列表，避免弹层打开后再因数据加载发生高度跳变。
 const handleOpenChange = async (open) => {
@@ -271,7 +342,6 @@ watch(
   (spec, previousSpec) => {
     if (spec !== previousSpec) {
       state.currentModelStatus = null
-      reconcileModelSelection(spec)
     }
   }
 )
@@ -394,7 +464,13 @@ const handleClear = () => {
   background-color: transparent;
   border: none;
   outline: none;
+  color: var(--gray-400);
   cursor: pointer;
+  transition: color 0.15s ease;
+
+  &:hover:not(:disabled) {
+    color: var(--gray-600);
+  }
 }
 
 .model-select--nano {
@@ -448,17 +524,25 @@ const handleClear = () => {
 }
 
 .model-dropdown {
-  min-width: 280px;
-  max-width: 420px;
+  width: min(360px, calc(100vw - 24px));
+  padding: 8px 0;
   overflow: hidden;
   background: var(--gray-0);
   border-radius: 8px;
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.08);
+  box-shadow: 0 0 18px rgba(0, 0, 0, 0.1);
 }
 
 .model-search {
   padding: 8px;
-  border-bottom: 1px solid var(--gray-100);
+}
+
+.model-search :deep(.ant-input-affix-wrapper) {
+  border-color: var(--gray-0);
+  background: var(--gray-25);
+}
+
+.model-search :deep(.ant-input) {
+  background: transparent;
 }
 
 :deep(.ant-dropdown-menu) {
@@ -466,6 +550,10 @@ const handleClear = () => {
     max-height: 260px;
     overflow-y: auto;
     box-shadow: none;
+  }
+
+  .ant-dropdown-menu-item-group-list {
+    margin: 0;
   }
 
   .ant-dropdown-menu-item,
@@ -485,6 +573,99 @@ const handleClear = () => {
   .ant-dropdown-menu-item-selected.ant-dropdown-menu-item-active {
     color: var(--gray-1000);
     background: var(--main-50);
+  }
+}
+
+.model-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.model-option-name {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--gray-1000);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-option-signals {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  color: var(--gray-500);
+}
+
+.model-context-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 17px;
+  padding: 0 5px;
+  border-radius: 4px;
+  color: var(--gray-600);
+  background: var(--gray-100);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.model-signal-icon {
+  display: inline-flex;
+  align-items: center;
+}
+
+.model-metadata-source {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 7px 10px;
+  border-top: 1px solid var(--gray-100);
+  color: var(--gray-500);
+  background: var(--gray-25);
+  font-size: 11px;
+  line-height: 16px;
+
+  a {
+    color: var(--main-600);
+  }
+}
+
+.model-metadata-source-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.model-metadata-source-close {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  margin: -2px -3px 0 0;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  color: var(--gray-500);
+  background: transparent;
+  cursor: pointer;
+  transition:
+    color 0.15s ease,
+    background-color 0.15s ease;
+
+  &:hover {
+    color: var(--gray-800);
+    background: var(--gray-100);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--main-400);
+    outline-offset: 1px;
   }
 }
 </style>
