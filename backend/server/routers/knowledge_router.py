@@ -226,15 +226,14 @@ async def _has_running_graph_build_task(kb_id: str) -> bool:
     )
 
 
-async def _assert_database_models_allowed(kb_id: str, current_user: User) -> dict:
+async def _assert_database_models_allowed(kb_id: str, current_user: User) -> KnowledgeBaseDetail:
     database = await knowledge_base.get_database_info(kb_id)
     if not database:
         raise HTTPException(status_code=404, detail=f"知识库 {kb_id} 不存在")
-    for field_name, model_type in (
-        ("embedding_model_spec", "embedding"),
-        ("llm_model_spec", "chat"),
+    for model_spec, model_type in (
+        (database.embedding_model_spec, "embedding"),
+        (database.llm_model_spec, "chat"),
     ):
-        model_spec = database.get(field_name)
         if model_spec:
             assert_model_spec_allowed(current_user, model_spec, model_type=model_type)
     return database

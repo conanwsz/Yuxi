@@ -11,7 +11,7 @@
 - 解耦知识库管理权限与 Agent 运行授权：`knowledge.read/create/update/delete` 等权限只控制知识库管理能力；拥有 `knowledge.read` 的自定义角色可加载知识库类型、分块策略和列表，扩展标签按各自 read 权限展示，资源共享范围仍限制具体知识库访问；Agent 运行继续仅使用显式绑定的知识库。
 - 细分知识库类型创建权限：新增 `knowledge.types.manage`，未授予该权限的创建者在新建窗口仅可选择默认向量“知识库”，服务端同步拒绝创建 Dify、Notion 等扩展类型；默认类型展示名称由“Yuxi”调整为“知识库”。
 - 同步上游主线到 preview：吸收 Agent 请求队列、知识库读模型/缓存、个人 Skill、文件二进制预览、安全沙箱与 CLI 更新；保留 OIDC、组织权限、额度、调度、多搜索源、模型授权及失败消息恢复，并恢复“超级楚楚”名称、Logo 与版权，兼容旧共享配置和部门索引升级。
-- 收窄知识库状态边界：读取模型统一收口至 `read_models.py`；创建、列表、详情与更新由 Manager 统一返回 `KnowledgeBaseSummary/Detail`，Router 只转换 HTTP 响应；Manager 协调查询配置、主记录与聚合统计，Repository 在行锁内合并统计投影；executor 接收 frozen `KnowledgeBaseConfig`，负责类型资源、文档操作与类型专属一致性检测，不再写知识库主记录。
+- 收窄知识库状态边界：Manager 统一返回 `KnowledgeBaseSummary/Detail`，Router 仅转换 HTTP 响应；Repository 在行锁内合并统计，executor 使用 frozen `KnowledgeBaseConfig`。模型权限校验同步读取类型字段，修复检索测试与 RAG 评估将详情对象误作字典而返回 500。
 - 修复 Agent worker 知识库运行配置不一致：`get_kb_config` 从 Redis 读取最小 Config 快照，未命中时在 KB 级分布式锁内回源 PostgreSQL，Redis 连接故障时只读请求直接回源且不回填；更新与删除先可靠失效缓存再提交数据库，避免旧请求回填过期配置。查询参数在数据库行锁内合并，并发保存不再互相覆盖。
 - 修复 Agent 流式消息重复：worker 的 `loading` 增量仅经批量 `items` 事件写入，不再同时写入单条 `chunk` 事件，避免生成中每段文本显示两次、完成后才恢复正常。
 - 精简知识库文档内容接口响应：`GET /api/knowledge/databases/{kb_id}/documents/{doc_id}/content` 不再返回分块内部的实体 ID 与抽取结果，避免向文档预览请求传输仅供知识图谱构建使用的数据。

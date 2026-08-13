@@ -5,6 +5,29 @@ import pytest
 from fastapi import HTTPException
 
 from yuxi.knowledge.eval import service as evaluation_service
+from yuxi.knowledge.read_models import KnowledgeBaseDetail
+
+
+def _database_detail(
+    *,
+    embedding_model_spec: str | None = None,
+    llm_model_spec: str | None = None,
+) -> KnowledgeBaseDetail:
+    """构造评估任务权限复验所需的知识库详情。"""
+
+    return KnowledgeBaseDetail(
+        kb_id="kb-1",
+        name="测试知识库",
+        description=None,
+        kb_type="milvus",
+        embedding_model_spec=embedding_model_spec,
+        llm_model_spec=llm_model_spec,
+        query_params={},
+        additional_params={},
+        share_config={},
+        created_by="user-1",
+        created_at=None,
+    )
 
 
 @pytest.mark.asyncio
@@ -43,11 +66,10 @@ async def test_queued_evaluation_reloads_current_role_and_rechecks_all_models(mo
         evaluation_service.knowledge_base,
         "get_database_info",
         lambda kb_id: _async_value(
-            {
-                "kb_id": kb_id,
-                "embedding_model_spec": "provider:embedding",
-                "llm_model_spec": "provider:kb-chat",
-            }
+            _database_detail(
+                embedding_model_spec="provider:embedding",
+                llm_model_spec="provider:kb-chat",
+            )
         ),
     )
     monkeypatch.setattr(evaluation_service, "assert_model_spec_allowed", fake_assert)
@@ -97,7 +119,7 @@ async def test_queued_evaluation_stops_when_role_was_downgraded(monkeypatch):
     monkeypatch.setattr(
         evaluation_service.knowledge_base,
         "get_database_info",
-        lambda kb_id: _async_value({"kb_id": kb_id, "embedding_model_spec": "provider:embedding"}),
+        lambda kb_id: _async_value(_database_detail(embedding_model_spec="provider:embedding")),
     )
     monkeypatch.setattr(evaluation_service, "assert_model_spec_allowed", deny_model)
 
