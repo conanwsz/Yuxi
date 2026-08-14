@@ -11,6 +11,7 @@
 - **MCP 工具缓存加 TTL**：cache key 仍以 `server_slug:config_hash` 为准，hash 只覆盖 DB 侧 `disabled_tools`，无法感知上游 MCP 服务自身增减工具。补一个默认 5 分钟的 TTL（`MCP_TOOLS_CACHE_TTL_SECONDS` 可覆盖，`<=0` 禁用缓存），TTL 到期强制重拉；新增 `clear_mcp_server_tools_cache` 同步清理 `_mcp_tools_cache_loaded_at`，避免过期条目假命中。修复楚能办公 MCP 新增 `create_schedule` 等工具后 agent 一直看不到的问题。
 
 - 修复公开图片上传的存储型 XSS 风险：头像与用户图片不再信任客户端 MIME 或文件名后缀，服务端校验真实图片内容且仅接受 PNG、JPEG、WebP、GIF，对象名使用识别出的固定安全后缀，拒绝伪装成图片的 SVG。
+- 修复知识库图片公开访问风险：解析产生的知识库图片从 `public` bucket 迁移到私有 `kb-images` bucket，新增带知识库读权限校验的后端代理接口按需读取；Markdown 预览对代理图片携带鉴权头加载为 blob URL，未登录或无权限用户无法匿名访问图片，头像/Agent 图标等公开资源不受影响。
 - 登录新增 IP 级失败限速并修复锁定计数残留：`/auth/token` 按「IP+账号」与「IP 全局」在 Redis 滑动窗口内累计失败（10 分钟内 10/30 次，跨 worker 与重启有效），超限返回 429 与 Retry-After，与账号级锁定叠加；账号锁定到期后首次访问清零失败计数，解锁后首次失败不再立即重新锁定；登录成功清除对应 IP+账号失败记录。
 - 修复拥有 MCP 查看权限的普通用户打开 MCP 详情时路由携带 `undefined` 的问题：脱敏列表保留稳定 `slug`，详情与工具读取按 `mcp.read` 放行并继续校验 MCP 数据权限；普通用户响应不再包含连接、命令、环境变量和请求头等敏感配置。
 - 权限管理中新建角色支持勾选“复制权限”，按当前选中角色同时复制功能权限与数据权限；未勾选时继续创建无权限角色。
