@@ -2,7 +2,10 @@
   <div class="basic-settings-section">
     <template v-if="userStore.isAdmin">
       <template v-if="userStore.isSuperAdmin">
-        <div class="section-title">默认项配置</div>
+        <div class="section-title default-config-title">
+          <span>默认项配置</span>
+          <span class="auto-save-hint">更改后自动保存</span>
+        </div>
         <div class="settings-panel">
           <div class="setting-row two-cols">
             <div class="col-item">
@@ -183,6 +186,7 @@
 
 <script setup>
 import { computed, h } from 'vue'
+import { message } from 'ant-design-vue'
 import { useConfigStore } from '@/stores/config'
 import { useUserStore } from '@/stores/user'
 import { Globe } from 'lucide-vue-next'
@@ -193,29 +197,39 @@ import RerankModelSelector from '@/components/RerankModelSelector.vue'
 const configStore = useConfigStore()
 const userStore = useUserStore()
 const items = computed(() => configStore.config?._config_items || {})
+
+const saveConfigValue = async (key, value) => {
+  const saved = await configStore.setConfigValue(key, value)
+  if (saved) {
+    message.success('配置已保存')
+  } else {
+    message.error('保存配置失败，已恢复原值')
+  }
+}
+
 const handleChange = (key, e) => {
-  configStore.setConfigValue(key, e)
+  void saveConfigValue(key, e)
 }
 
 const handleDefaultWeeklyQuotaChange = (value) => {
-  configStore.setConfigValue('default_weekly_token_quota', value ?? 0)
+  void saveConfigValue('default_weekly_token_quota', value ?? 0)
 }
 
 const handleChatModelSelect = (spec) => {
   if (typeof spec === 'string' && spec) {
-    configStore.setConfigValue('default_model', spec)
+    void saveConfigValue('default_model', spec)
   }
 }
 
 const handleFastModelSelect = (spec) => {
   if (typeof spec === 'string' && spec) {
-    configStore.setConfigValue('fast_model', spec)
+    void saveConfigValue('fast_model', spec)
   }
 }
 
 const handleContentGuardModelSelect = (spec) => {
   if (typeof spec === 'string' && spec) {
-    configStore.setConfigValue('content_guard_llm_model', spec)
+    void saveConfigValue('content_guard_llm_model', spec)
   }
 }
 
@@ -226,6 +240,18 @@ const openLink = (url) => {
 
 <style lang="less" scoped>
 .basic-settings-section {
+  .default-config-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .auto-save-hint {
+    color: var(--gray-500);
+    font-size: 12px;
+    font-weight: 400;
+  }
+
   .section {
     background-color: var(--gray-0);
     padding: 10px 16px;
