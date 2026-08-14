@@ -143,7 +143,7 @@
 </template>
 
 <script setup>
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import { modelProviderApi } from '@/apis/system_api'
 import { Eye, RefreshCw, X } from 'lucide-vue-next'
@@ -283,6 +283,12 @@ const fetchV2Models = async () => {
 
   return fetchV2ModelsPromise
 }
+
+onMounted(() => {
+  if (props.model_spec) {
+    void fetchV2Models()
+  }
+})
 
 const buildModelMetadataBySpec = (modelsByProvider, providers) => {
   return Object.entries(modelsByProvider).reduce((result, [providerId, providerData]) => {

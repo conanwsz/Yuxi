@@ -1,5 +1,5 @@
 import { ref } from 'vue'
-import { defineStore } from 'pinia'
+import { acceptHMRUpdate, defineStore } from 'pinia'
 import { configApi } from '@/apis/system_api'
 
 export const useConfigStore = defineStore('config', () => {
@@ -8,12 +8,19 @@ export const useConfigStore = defineStore('config', () => {
     config.value = newConfig
   }
 
-  function setConfigValue(key, value) {
+  /** 自动保存单个系统配置项，并在失败时恢复界面原值。 */
+  async function setConfigValue(key, value) {
+    const previousValue = config.value[key]
     config.value[key] = value
-    configApi.updateConfigBatch({ [key]: value }).then((data) => {
-      console.debug('Success:', data)
+
+    try {
+      const data = await configApi.updateConfigBatch({ [key]: value })
       setConfig(data)
-    })
+      return true
+    } catch {
+      config.value[key] = previousValue
+      return false
+    }
   }
 
   async function refreshConfig() {
@@ -25,3 +32,7 @@ export const useConfigStore = defineStore('config', () => {
 
   return { config, setConfigValue, refreshConfig }
 })
+
+if (import.meta.hot) {
+  import.meta.hot.accept(acceptHMRUpdate(useConfigStore, import.meta.hot))
+}
