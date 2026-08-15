@@ -1,6 +1,8 @@
 #!/bin/bash
 set -e
 
+rm -rf .env
+
 cp -f .env.cn_test .env
 
 docker compose down
