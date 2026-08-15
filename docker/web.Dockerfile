@@ -30,7 +30,7 @@ RUN npm install -g pnpm@latest
 
 # 复制依赖文件
 COPY ./web/package*.json ./
-COPY ./web/pnpm-lock.yaml* ./
+#COPY ./web/pnpm-lock.yaml* ./
 
 # 安装依赖
 #RUN pnpm install --frozen-lockfile --registry=https://registry.npmmirror.com
