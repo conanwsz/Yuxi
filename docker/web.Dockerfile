@@ -10,8 +10,8 @@ RUN npm install -g pnpm@latest
 COPY ./web/package*.json ./
 COPY ./web/pnpm-lock.yaml ./
 
-# 安装依赖（plain install works because lockfile is platform-incompatible anyway）
-RUN pnpm install --registry=https://registry.npmmirror.com
+# 安装依赖
+RUN rm -f pnpm-lock.yaml && pnpm install --force --registry=https://registry.npmmirror.com
 
 # 复制源代码
 COPY ./web .
@@ -33,7 +33,7 @@ COPY ./web/package*.json ./
 COPY ./web/pnpm-lock.yaml ./
 
 # 安装依赖
-RUN pnpm install --registry=https://registry.npmmirror.com
+RUN rm -f pnpm-lock.yaml && pnpm install --force --registry=https://registry.npmmirror.com
 
 # 复制源代码并构建
 COPY ./web .
