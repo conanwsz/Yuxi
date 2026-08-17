@@ -920,6 +920,7 @@ class PostgresManager(metaclass=SingletonMeta):
             """,
             "ALTER TABLE IF EXISTS agents ADD COLUMN IF NOT EXISTS backend_id VARCHAR(64)",
             "ALTER TABLE IF EXISTS agents ADD COLUMN IF NOT EXISTS share_config JSONB NOT NULL DEFAULT '{}'::jsonb",
+            "ALTER TABLE IF EXISTS agents ADD COLUMN IF NOT EXISTS manage_config JSONB NOT NULL DEFAULT '{}'::jsonb",
             "ALTER TABLE IF EXISTS agents ALTER COLUMN share_config TYPE JSONB USING share_config::jsonb",
             (
                 "UPDATE agents SET share_config = jsonb_build_object("
