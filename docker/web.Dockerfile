@@ -12,7 +12,7 @@ COPY ./web/package*.json ./
 
 # 安装依赖（--frozen-lockfile 保证 dev 与 build/CI 三处依赖与 pnpm-lock.yaml 一致，避免漂移）
 #RUN pnpm install --frozen-lockfile --registry=https://registry.npmmirror.com
-RUN rm -f pnpm-lock.yaml && pnpm install --no-lockfile --registry=https://registry.npmmirror.com
+RUN pnpm install --ignore-scripts --registry=https://registry.npmmirror.com
 
 # 复制源代码
 COPY ./web .
@@ -35,7 +35,7 @@ COPY ./web/package*.json ./
 
 # 安装依赖
 #RUN pnpm install --frozen-lockfile --registry=https://registry.npmmirror.com
-RUN rm -f pnpm-lock.yaml && pnpm install --no-lockfile --registry=https://registry.npmmirror.com
+RUN pnpm install --ignore-scripts --registry=https://registry.npmmirror.com
 
 # 复制源代码并构建
 COPY ./web .
