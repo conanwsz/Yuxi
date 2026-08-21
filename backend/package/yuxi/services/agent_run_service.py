@@ -525,10 +525,8 @@ async def create_agent_run_view(
 
     if run_type == "resume":
         resolved_model_spec = scope.parent_run.input_payload["model_spec"]
-        # 旧版本固化的 input_payload 没有 tool_approval_mode，回退默认值以兼容历史 interrupted run。
-        resolved_tool_approval_mode = scope.parent_run.input_payload.get(
-            "tool_approval_mode", DEFAULT_TOOL_APPROVAL_MODE
-        )
+        # 旧版本 Run 创建时尚无模式快照，继续按当时的请求审批语义恢复，避免升级后扩大权限。
+        resolved_tool_approval_mode = scope.parent_run.input_payload.get("tool_approval_mode", "default")
     else:
         resolved_model_spec, resolved_tool_approval_mode = resolve_agent_run_config(
             model_spec,

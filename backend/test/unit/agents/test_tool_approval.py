@@ -1,6 +1,8 @@
 import pytest
 
+from yuxi.agents.context import BaseContext
 from yuxi.agents.tool_approval import (
+    DEFAULT_TOOL_APPROVAL_MODE,
     SENSITIVE_BACKEND_TOOLS,
     TOOL_APPROVAL_INTERRUPT_ON,
     create_tool_approval_middleware,
@@ -8,15 +10,17 @@ from yuxi.agents.tool_approval import (
 )
 
 
+def test_system_default_mode_is_always_trust():
+    assert DEFAULT_TOOL_APPROVAL_MODE == "always_trust"
+    assert BaseContext().tool_approval_mode == "always_trust"
+
+
 def test_default_mode_builds_sensitive_tool_approval_middleware():
     middleware = create_tool_approval_middleware("default")
 
     assert middleware.interrupt_on == TOOL_APPROVAL_INTERRUPT_ON
     assert set(middleware.interrupt_on) == SENSITIVE_BACKEND_TOOLS
-    assert all(
-        config["allowed_decisions"] == ["approve", "reject"]
-        for config in middleware.interrupt_on.values()
-    )
+    assert all(config["allowed_decisions"] == ["approve", "reject"] for config in middleware.interrupt_on.values())
 
 
 def test_always_trust_mode_does_not_build_approval_middleware():
