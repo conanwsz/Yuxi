@@ -40,6 +40,15 @@ def normalize_env(env: dict | None) -> dict[str, str]:
     return {str(key): "" if value is None else str(value) for key, value in env.items() if str(key)}
 
 
+def merge_user_agent_env(uid: str, env: dict | None, *, is_oidc: bool) -> dict[str, str]:
+    """合成沙盒环境变量，并强制 OIDC uid 与系统用户身份保持一致。"""
+
+    merged = normalize_env(env)
+    if is_oidc:
+        merged["uid"] = str(uid)
+    return merged
+
+
 def postgres_conninfo() -> str:
     db_url = os.getenv("POSTGRES_URL", "").strip()
     return db_url.replace("+asyncpg", "").replace("+psycopg", "")
@@ -55,21 +64,34 @@ def load_user_agent_env(uid: str) -> dict[str, str]:
 
         with psycopg.connect(conninfo, connect_timeout=3) as conn:
             with conn.cursor() as cursor:
-                cursor.execute("SELECT env FROM agent_envs WHERE uid = %s", (uid,))
+                cursor.execute(
+                    """
+                    SELECT agent_envs.env,
+                           EXISTS (
+                               SELECT 1
+                               FROM external_identities
+                               JOIN users ON users.id = external_identities.user_id
+                               WHERE users.uid = %s AND users.is_deleted = 0
+                           ) AS is_oidc
+                    FROM (VALUES (1)) AS seed(value)
+                    LEFT JOIN agent_envs ON agent_envs.uid = %s
+                    """,
+                    (uid, uid),
+                )
                 row = cursor.fetchone()
     except Exception as exc:
         raise RuntimeError(f"failed to load agent env for uid {uid}: {exc}") from exc
 
     if not row:
-        return {}
+        return merge_user_agent_env(uid, {}, is_oidc=False)
 
-    value = row[0]
+    value, is_oidc = row
     if isinstance(value, str):
         try:
             value = json.loads(value)
         except json.JSONDecodeError as exc:
             raise RuntimeError(f"stored agent env for uid {uid} is not valid JSON") from exc
-    return normalize_env(value)
+    return merge_user_agent_env(uid, value, is_oidc=bool(is_oidc))
 
 
 @dataclass(slots=True)

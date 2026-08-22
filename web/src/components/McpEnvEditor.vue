@@ -5,7 +5,7 @@
         v-model:value="row.key"
         placeholder="Key"
         class="env-key-input"
-        :disabled="isKeyLocked(row)"
+        :disabled="isKeyLocked(row) || isRowReadOnly(row)"
       />
       <div class="env-value-field">
         <a-input
@@ -13,6 +13,7 @@
           placeholder="Value"
           class="env-value-input"
           :type="isValueHidden(row) ? 'password' : 'text'"
+          :disabled="isRowReadOnly(row)"
         />
         <a-button
           v-if="shouldConcealRow(row)"
@@ -26,7 +27,15 @@
           <EyeOff v-else :size="14" />
         </a-button>
       </div>
-      <a-button size="small" type="text" danger @click="removeRow(index)"> 删除 </a-button>
+      <a-button
+        size="small"
+        type="text"
+        danger
+        :disabled="isRowReadOnly(row)"
+        @click="removeRow(index)"
+      >
+        删除
+      </a-button>
     </div>
     <a-button @click="addRow" class="add-env">
       <template #icon><PlusOutlined /></template>
@@ -49,6 +58,10 @@ const props = defineProps({
     type: Array,
     default: () => []
   },
+  readonlyKeys: {
+    type: Array,
+    default: () => []
+  },
   concealLockedValues: {
     type: Boolean,
     default: false
@@ -61,6 +74,7 @@ const rows = ref([{ key: '', value: '' }])
 const syncingFromObject = ref(false)
 const visibleValueKeys = ref(new Set())
 const lockedKeySet = computed(() => new Set(props.lockedKeys.map((key) => String(key))))
+const readonlyKeySet = computed(() => new Set(props.readonlyKeys.map((key) => String(key))))
 
 const objectToRows = (envObj) => {
   if (!envObj || typeof envObj !== 'object') {
@@ -128,6 +142,11 @@ const getRowKey = (row) => String(row?.key || '').trim()
 const isKeyLocked = (row) => {
   const key = getRowKey(row)
   return Boolean(key && lockedKeySet.value.has(key))
+}
+
+const isRowReadOnly = (row) => {
+  const key = getRowKey(row)
+  return Boolean(key && readonlyKeySet.value.has(key))
 }
 
 const shouldConcealRow = (row) => props.concealLockedValues && isKeyLocked(row)

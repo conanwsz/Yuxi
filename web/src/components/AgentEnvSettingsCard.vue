@@ -18,13 +18,17 @@
       </div>
     </div>
 
-    <div class="env-tip">保存后仅对新建沙盒生效，已运行沙盒不会热更新。</div>
+    <div class="env-tip">
+      保存后仅对新建沙盒生效，已运行沙盒不会热更新。
+      <span v-if="readonlyEnvKeys.includes('uid')">OIDC 用户的 uid 由系统提供，不可修改。</span>
+    </div>
 
     <a-spin :spinning="loading">
       <McpEnvEditor
         :key="editorRevision"
         :modelValue="draftEnv"
         :locked-keys="savedEnvKeys"
+        :readonly-keys="readonlyEnvKeys"
         conceal-locked-values
         @update:modelValue="updateDraftEnv"
       />
@@ -48,6 +52,7 @@ const loading = ref(false)
 const saving = ref(false)
 const draftEnv = ref({})
 const lastSavedEnv = ref({})
+const readonlyEnvKeys = ref([])
 const editorRevision = ref(0)
 
 const normalizeEnv = (env) => {
@@ -68,7 +73,9 @@ const isSameEnv = (left, right) => {
   return leftEntries.every(([key, value]) => right[key] === value)
 }
 
-const savedEnvKeys = computed(() => Object.keys(lastSavedEnv.value || {}))
+const savedEnvKeys = computed(() =>
+  Object.keys(lastSavedEnv.value || {}).filter((key) => !readonlyEnvKeys.value.includes(key))
+)
 const hasUnsavedChanges = computed(
   () => !isSameEnv(normalizeEnv(draftEnv.value), lastSavedEnv.value)
 )
@@ -110,6 +117,7 @@ const loadAgentEnv = async () => {
   try {
     const res = await agentEnvApi.get()
     const env = normalizeEnv(res.env)
+    readonlyEnvKeys.value = Array.isArray(res.readonly_keys) ? res.readonly_keys : []
     draftEnv.value = env
     lastSavedEnv.value = env
     editorRevision.value += 1
@@ -130,9 +138,11 @@ const saveAgentEnv = async () => {
 
   saving.value = true
   try {
-    await agentEnvApi.update(env)
-    draftEnv.value = env
-    lastSavedEnv.value = env
+    const res = await agentEnvApi.update(env)
+    const savedEnv = normalizeEnv(res.env)
+    readonlyEnvKeys.value = Array.isArray(res.readonly_keys) ? res.readonly_keys : []
+    draftEnv.value = savedEnv
+    lastSavedEnv.value = savedEnv
     editorRevision.value += 1
     message.success('环境变量已保存')
   } catch (error) {

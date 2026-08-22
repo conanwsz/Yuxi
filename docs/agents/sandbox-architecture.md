@@ -289,6 +289,8 @@ CHECK_YUXI_SANDBOX_ENV_EXISTS=True
 
 如果需要给所有沙盒容器注入额外的环境变量（如代理配置、认证信息等），可以添加到 `sandbox.env` 文件中。
 
+用户在设置页维护的沙盒环境变量保存在 PostgreSQL `agent_envs` 表中，创建沙盒时覆盖同名 `sandbox.env` 配置。对于已经绑定 `external_identities` 的 OIDC 用户，系统还会根据 `User.uid` 动态合成只读的 `uid` 环境变量，并在用户变量合并后强制覆盖同名值；因此既有 OIDC 用户无需数据迁移，但该变量同样只对新建沙盒生效。
+
 ### 配置方式汇总
 
 | 配置目标 | 配置位置 | 示例变量 |
@@ -296,6 +298,7 @@ CHECK_YUXI_SANDBOX_ENV_EXISTS=True
 | 应用层连接 provisioner | `.env` 或 compose 环境 | `SANDBOX_PROVISIONER_URL`, `SANDBOX_PROVISIONER_TOKEN` |
 | provisioner 自身行为 | `.env` 或 compose 环境 | `PROVISIONER_BACKEND`, `DOCKER_*` |
 | 沙盒容器内部环境 | `sandbox.env` 文件 | 代理、认证等运行时变量 |
+| OIDC 用户身份环境 | `users` + `external_identities` 动态派生 | 只读 `uid` |
 
 ## 十四、和旧版文档相比，今天最重要的理解方式
 

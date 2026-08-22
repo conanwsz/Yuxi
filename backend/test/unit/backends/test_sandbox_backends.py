@@ -343,6 +343,16 @@ def test_sandbox_id_for_thread_includes_skills_scope():
     assert sandbox_id_for_thread("parent-thread", "parent-thread") == parent_only
 
 
+def test_oidc_uid_is_forced_into_sandbox_env() -> None:
+    from yuxi.agents.backends.sandbox.provider import merge_user_agent_env
+
+    assert merge_user_agent_env("employee-1", {"uid": "spoofed", "TOKEN": "value"}, is_oidc=True) == {
+        "uid": "employee-1",
+        "TOKEN": "value",
+    }
+    assert merge_user_agent_env("local-1", {"uid": "custom"}, is_oidc=False) == {"uid": "custom"}
+
+
 def test_provider_uses_distinct_sandbox_scope_for_different_uid(monkeypatch) -> None:
     from yuxi.agents.backends.sandbox.provider import ProvisionerSandboxProvider
 

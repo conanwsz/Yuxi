@@ -32,9 +32,11 @@ function sortAgents(agents) {
   })
 }
 
-function getPreferredAgentId(agents, persistedId) {
+export function getPreferredAgentId(agents, persistedId) {
   const chatAgents = agents.filter((agent) => !agent.is_subagent)
   if (persistedId && chatAgents.some((agent) => agent.id === persistedId)) return persistedId
+  const defaultAgent = chatAgents.find((agent) => agent.is_default)
+  if (defaultAgent) return defaultAgent.id
   return chatAgents.find(isBuiltinAgent)?.id || chatAgents[0]?.id || null
 }
 

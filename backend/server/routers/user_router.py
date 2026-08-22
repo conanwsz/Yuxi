@@ -16,7 +16,7 @@ from yuxi.services.token_quota_service import (
     get_user_token_quota_payload_with_breakdown,
 )
 from yuxi.storage.minio import upload_image_to_minio
-from yuxi.storage.postgres.models_business import APIKey, AgentEnv, User
+from yuxi.storage.postgres.models_business import APIKey, AgentEnv, ExternalIdentity, User
 from yuxi.utils.auth_utils import AuthUtils
 from yuxi.utils.datetime_utils import coerce_any_to_utc_datetime, format_utc_datetime, utc_now_naive
 
@@ -66,6 +66,7 @@ class AgentEnvUpdate(BaseModel):
 
 class AgentEnvResponse(BaseModel):
     env: dict[str, str]
+    readonly_keys: list[str] = Field(default_factory=list)
     updated_at: str | None = None
 
 
@@ -150,6 +151,30 @@ def validate_agent_env(env: dict[str, Any]) -> dict[str, str]:
             raise HTTPException(status_code=400, detail=f"环境变量 {name} 的值过长")
         normalized[name] = value
     return normalized
+
+
+async def is_oidc_user(db: AsyncSession, user: User) -> bool:
+    """判断用户是否绑定了任一 OIDC 外部身份。"""
+
+    result = await db.execute(select(ExternalIdentity.id).where(ExternalIdentity.user_id == user.id).limit(1))
+    return result.scalar_one_or_none() is not None
+
+
+def build_agent_env_response(
+    env: dict[str, str],
+    *,
+    user: User,
+    oidc_user: bool,
+    updated_at: str | None = None,
+) -> AgentEnvResponse:
+    """合成用户可见环境变量，OIDC uid 始终以用户身份记录为准。"""
+
+    visible_env = dict(env)
+    readonly_keys: list[str] = []
+    if oidc_user:
+        visible_env["uid"] = str(user.uid)
+        readonly_keys.append("uid")
+    return AgentEnvResponse(env=visible_env, readonly_keys=readonly_keys, updated_at=updated_at)
 
 
 def ensure_api_key_owner(api_key: APIKey, current_user: User) -> None:
@@ -288,9 +313,15 @@ async def get_agent_env(
 ):
     result = await db.execute(select(AgentEnv).filter(AgentEnv.uid == current_user.uid))
     agent_env = result.scalar_one_or_none()
+    oidc_user = await is_oidc_user(db, current_user)
     if agent_env is None:
-        return AgentEnvResponse(env={})
-    return AgentEnvResponse(env=agent_env.env or {}, updated_at=format_utc_datetime(agent_env.updated_at))
+        return build_agent_env_response({}, user=current_user, oidc_user=oidc_user)
+    return build_agent_env_response(
+        agent_env.env or {},
+        user=current_user,
+        oidc_user=oidc_user,
+        updated_at=format_utc_datetime(agent_env.updated_at),
+    )
 
 
 @user_router.put("/agent-env", response_model=AgentEnvResponse)
@@ -300,11 +331,19 @@ async def update_agent_env(
     db: AsyncSession = Depends(get_db),
 ):
     env = validate_agent_env(data.env)
+    oidc_user = await is_oidc_user(db, current_user)
+    if oidc_user:
+        requested_uid = env.pop("uid", None)
+        if requested_uid is not None and requested_uid != str(current_user.uid):
+            raise HTTPException(status_code=400, detail="OIDC 用户环境变量 uid 由系统维护，不能修改")
+
     result = await db.execute(select(AgentEnv).filter(AgentEnv.uid == current_user.uid))
     current_agent_env = result.scalar_one_or_none()
     if current_agent_env is not None and (current_agent_env.env or {}) == env:
-        return AgentEnvResponse(
-            env=current_agent_env.env or {},
+        return build_agent_env_response(
+            current_agent_env.env or {},
+            user=current_user,
+            oidc_user=oidc_user,
             updated_at=format_utc_datetime(current_agent_env.updated_at),
         )
 
@@ -321,4 +360,9 @@ async def update_agent_env(
     await db.execute(stmt)
     await db.commit()
     # 直接返回刚写入的 env/now，避免身份映射中的旧实例属性导致返回陈旧值
-    return AgentEnvResponse(env=env, updated_at=format_utc_datetime(now))
+    return build_agent_env_response(
+        env,
+        user=current_user,
+        oidc_user=oidc_user,
+        updated_at=format_utc_datetime(now),
+    )
