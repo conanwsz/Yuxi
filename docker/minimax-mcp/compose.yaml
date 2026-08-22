@@ -1,0 +1,23 @@
+services:
+  minimax-mcp:
+    image: yuxi/minimax-coding-plan-mcp:0.0.4
+    build:
+      context: .
+      args:
+        MINIMAX_MCP_VERSION: 0.0.4
+        SUPERGATEWAY_VERSION: 3.4.3
+    environment:
+      MINIMAX_API_KEY: ${MINIMAX_API_KEY:?MINIMAX_API_KEY is required}
+      MINIMAX_API_HOST: ${MINIMAX_API_HOST:-https://api.minimaxi.com}
+      FASTMCP_LOG_LEVEL: ${FASTMCP_LOG_LEVEL:-WARNING}
+      MCP_LOG_LEVEL: ${MCP_LOG_LEVEL:-info}
+    ports:
+      - "${MINIMAX_MCP_BIND_ADDRESS:-127.0.0.1}:${MINIMAX_MCP_PORT:-18080}:8000"
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true

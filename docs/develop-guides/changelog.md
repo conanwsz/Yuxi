@@ -7,6 +7,7 @@
 ## v0.7.2 (current)
 
 - 修复新登录用户可能因内置智能体名称排序而默认进入“深度研究”的问题，前端在无历史选择时优先使用后端 `is_default` 标记；OIDC 用户设置新增系统只读 `uid=User.uid`，保存时不可覆盖或删除，新建沙盒强制注入该值，已绑定 OIDC 身份的既有用户无需迁移即可生效。
+- 新增 MiniMax Coding Plan MCP 独立 Docker 部署包：固定兼容依赖并通过 Streamable HTTP 暴露 `web_search`、`understand_image`，附带 Compose、健康检查、离线镜像迁移和 Yuxi 接入说明；Key 仅由运行环境注入，默认只监听本机。
 - 修复 Agent 文件侧栏中 `outputs` 目录的 PPTX/DOCX 被误判为不支持预览：统一复用 Office 转 PDF 预览能力并返回 PDF 元数据，与 `workspace/saved_artifacts` 行为保持一致，原文件下载不受影响。
 - 完善基本设置自动保存体验：重新打开时解析已选模型的友好名称，明确标注自动保存；保存成功给出提示，失败时恢复原值并显示错误，开发热更新同步 Store 动作，避免误报失败或误以为配置回退。
 - 优化智能体工具名称展示：网页搜索统一显示为“网页搜索”，不再把实际使用的 backend 链路显示在名称括号中；backend 详情仍保留在配置说明中。
