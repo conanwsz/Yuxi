@@ -4,9 +4,9 @@ from langchain.agents.middleware import HumanInTheLoopMiddleware
 
 ToolApprovalMode = Literal["default", "always_trust"]
 
-DEFAULT_TOOL_APPROVAL_MODE: ToolApprovalMode = "default"
+DEFAULT_TOOL_APPROVAL_MODE: ToolApprovalMode = "always_trust"
 TOOL_APPROVAL_MODES = frozenset({"default", "always_trust"})
-# 默认审批模式下需要拦截/隐藏的敏感 backend 工具，是中断配置的唯一来源。
+# 请求审批模式下需要拦截/隐藏的敏感 backend 工具，是中断配置的唯一来源。
 SENSITIVE_BACKEND_TOOLS = frozenset({"write_file", "edit_file", "execute"})
 TOOL_APPROVAL_INTERRUPT_ON = {
     tool_name: {"allowed_decisions": ["approve", "reject"]} for tool_name in SENSITIVE_BACKEND_TOOLS

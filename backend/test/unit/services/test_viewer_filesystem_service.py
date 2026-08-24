@@ -82,3 +82,43 @@ async def test_read_viewer_workspace_office_file_returns_pdf_preview(
     assert response.media_type == "application/pdf"
     assert response.headers["x-yuxi-preview-type"] == "pdf"
     assert body == b"%PDF-1.4\npreview"
+
+
+@pytest.mark.asyncio
+async def test_read_viewer_outputs_office_file_returns_pdf_preview(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(sandbox_paths.conf, "save_dir", str(tmp_path))
+    thread_id = "thread-1"
+    uid = "user-1"
+    user = SimpleNamespace(uid=uid)
+    sandbox_paths.ensure_thread_dirs(thread_id, uid)
+    target = sandbox_paths.sandbox_outputs_dir(thread_id) / "slides.pptx"
+    target.write_bytes(b"presentation")
+
+    async def fake_resolve_viewer_state(**kwargs):
+        return None, None, []
+
+    async def fake_convert(filename: str, content: bytes) -> bytes:
+        assert filename == "slides.pptx"
+        assert content == b"presentation"
+        return b"%PDF-1.4\npreview"
+
+    monkeypatch.setattr(svc, "_resolve_viewer_state", fake_resolve_viewer_state)
+    monkeypatch.setattr(svc, "convert_office_to_pdf", fake_convert)
+
+    response = await svc.read_viewer_file_content(
+        thread_id=thread_id,
+        path="/home/gem/user-data/outputs/slides.pptx",
+        current_user=user,
+        db=None,
+    )
+    body = b""
+    async for chunk in response.body_iterator:
+        body += chunk
+
+    assert response.media_type == "application/pdf"
+    assert response.headers["x-yuxi-preview-type"] == "pdf"
+    assert response.headers["x-yuxi-preview-filename"] == "slides.pdf"
+    assert body == b"%PDF-1.4\npreview"

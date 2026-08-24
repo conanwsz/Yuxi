@@ -26,11 +26,15 @@ from yuxi.agents.middlewares import (
     save_attachments_to_fs,
 )
 from yuxi.agents.middlewares.skills import SkillsMiddleware
-from yuxi.agents.tool_approval import SENSITIVE_BACKEND_TOOLS, normalize_tool_approval_mode
+from yuxi.agents.tool_approval import (
+    DEFAULT_TOOL_APPROVAL_MODE,
+    SENSITIVE_BACKEND_TOOLS,
+    normalize_tool_approval_mode,
+)
 from yuxi.agents.toolkits.service import resolve_configured_runtime_tools
 
 _SUBAGENT_DISABLED_TOOLS = frozenset({"present_artifacts", "ask_user_question", "install_skill"})
-# 默认审批模式额外隐藏敏感 backend 工具，避免子智能体绕过主线程逐项审批。
+# 请求审批模式额外隐藏敏感 backend 工具，避免子智能体绕过主线程逐项审批。
 _SUBAGENT_DISABLED_TOOLS_DEFAULT_MODE = _SUBAGENT_DISABLED_TOOLS | SENSITIVE_BACKEND_TOOLS
 
 
@@ -54,7 +58,7 @@ def _filter_disabled_tools(tools, disabled_tools: frozenset[str]):
 
 
 class _SubAgentToolFilterMiddleware(AgentMiddleware[Any, Any, Any]):
-    def __init__(self, tool_approval_mode: str = "default"):
+    def __init__(self, tool_approval_mode: str = DEFAULT_TOOL_APPROVAL_MODE):
         self.disabled_tools = _disabled_tools_for(tool_approval_mode)
 
     def wrap_model_call(self, request, handler):
@@ -140,7 +144,9 @@ class SubAgentBackend(BaseAgent):
         )
         await sync_agent_context_skills(context)
         model_spec = resolve_chat_model_spec(context.model)
-        tool_approval_mode = normalize_tool_approval_mode(getattr(context, "tool_approval_mode", "default"))
+        tool_approval_mode = normalize_tool_approval_mode(
+            getattr(context, "tool_approval_mode", DEFAULT_TOOL_APPROVAL_MODE)
+        )
         disabled_tools = _disabled_tools_for(tool_approval_mode)
 
         return create_agent(

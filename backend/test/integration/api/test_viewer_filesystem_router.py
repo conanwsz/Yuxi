@@ -10,6 +10,7 @@ from fastapi import HTTPException
 import pytest
 from yuxi.agents.backends.sandbox import (
     ensure_thread_dirs,
+    sandbox_outputs_dir,
     sandbox_user_data_dir,
     sandbox_workspace_dir,
     virtual_path_for_thread_file,
@@ -302,6 +303,29 @@ async def test_viewer_file_returns_pdf_preview_metadata(test_client, standard_us
     assert response.headers["content-type"] == "application/pdf"
     assert response.headers["x-yuxi-preview-type"] == "pdf"
     assert response.content == actual_path.read_bytes()
+
+
+async def test_viewer_outputs_office_file_returns_pdf_preview_metadata(test_client, standard_user):
+    headers = standard_user["headers"]
+    uid = str(standard_user["user"]["uid"])
+    thread_id = await _create_thread_for_user(test_client, headers)
+
+    ensure_thread_dirs(thread_id, uid)
+    actual_path = sandbox_outputs_dir(thread_id) / "slides.pptx"
+    actual_path.write_bytes(b"presentation")
+    file_path = virtual_path_for_thread_file(thread_id, actual_path, uid=uid)
+
+    response = await test_client.get(
+        "/api/viewer/filesystem/file",
+        params={"thread_id": thread_id, "path": file_path},
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.headers["x-yuxi-preview-type"] == "pdf"
+    assert response.headers["x-yuxi-preview-filename"] == "slides.pdf"
+    assert response.content.startswith(b"%PDF-")
 
 
 async def test_viewer_download_returns_attachment_response(test_client, standard_user):

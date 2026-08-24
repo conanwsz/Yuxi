@@ -19,7 +19,6 @@ from typing import Any
 import yuxi.services.agent_run_service as agent_run_service
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from yuxi.agents.tool_approval import DEFAULT_TOOL_APPROVAL_MODE
 from yuxi.repositories.agent_run_repository import AgentRunRepository
 from yuxi.repositories.conversation_repository import ConversationRepository
 from yuxi.repositories.subagent_thread_repository import SubagentThreadRepository
@@ -236,7 +235,8 @@ class SubagentRunService:
         }
         input_payload = {
             "model_spec": resolved_model_spec,
-            "tool_approval_mode": creator_run.input_payload.get("tool_approval_mode", DEFAULT_TOOL_APPROVAL_MODE),
+            # 缺少快照的是旧版本父 Run，保持其原有请求审批语义。
+            "tool_approval_mode": creator_run.input_payload.get("tool_approval_mode", "default"),
             "runtime": {key: value for key, value in runtime_payload.items() if value is not None},
         }
         subagent_input_message = input_message.with_metadata(
