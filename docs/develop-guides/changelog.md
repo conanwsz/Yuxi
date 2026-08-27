@@ -6,6 +6,7 @@
 
 ## v0.7.2 (current)
 
+- OIDC 登录新增静态 Provider 适配器层，通过 `OIDC_PROVIDER_TYPE` 选择单个启用的认证中心，并兼容 GET Query 与 `form_post` 回调；Token、UserInfo 和 Claim 差异收敛在适配器内，state、PKCE、ID Token 验签及 `issuer + sub` 身份绑定继续由核心强制执行。
 - 修复新登录用户可能因内置智能体名称排序而默认进入“深度研究”的问题，前端在无历史选择时优先使用后端 `is_default` 标记；OIDC 用户设置新增系统只读 `uid=User.uid`，保存时不可覆盖或删除，新建沙盒强制注入该值，已绑定 OIDC 身份的既有用户无需迁移即可生效。
 - 新增 MiniMax Coding Plan MCP 独立 Docker 部署包：固定兼容依赖并通过 Streamable HTTP 暴露 `web_search`、`understand_image`，附带 Compose、健康检查、离线镜像迁移和 Yuxi 接入说明；Key 仅由运行环境注入，默认只监听本机。
 - 修复 Agent 文件侧栏中 `outputs` 目录的 PPTX/DOCX 被误判为不支持预览：统一复用 Office 转 PDF 预览能力并返回 PDF 元数据，与 `workspace/saved_artifacts` 行为保持一致，原文件下载不受影响。

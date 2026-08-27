@@ -35,6 +35,7 @@ https://<your-yuxi-host>/api/auth/oidc/callback
 ```dotenv
 OIDC_ENABLED=true
 OIDC_PROVIDER_NAME=统一认证
+OIDC_PROVIDER_TYPE=standard
 
 # 首选变量：Issuer 根地址，Yuxi 从其 Discovery 文档读取协议端点。
 OIDC_ISSUER_BASE_URL=https://cnoidc.t.cn-np.com
@@ -47,6 +48,18 @@ OIDC_SCOPES=openid profile email
 ```
 
 服务端优先读取 `OIDC_ISSUER_BASE_URL`，仅在该变量未设置时回退读取旧配置名 `OIDC_ISSUER_URL`；不要同时配置两个变量。不要在前端构建变量、前端资源、代码仓库、请求 URL 或普通日志中存放或输出 `OIDC_CLIENT_SECRET`、授权码、Token、`state`、`nonce` 或 PKCE verifier。
+
+### Provider 适配器
+
+`OIDC_PROVIDER_TYPE` 选择后端内置的 OIDC Provider 适配器。当前内置类型如下：
+
+| 类型 | 适用范围 | 回调方式 |
+| --- | --- | --- |
+| `standard` | 符合标准 Discovery、Token 和 UserInfo 结构的 OIDC Server | GET Query 或 `response_mode=form_post` |
+
+未配置时默认使用 `standard`。配置值不在内置注册表中时，服务会明确拒绝启动 OIDC 流程，不会静默回退。Provider 显示名称仍由 `OIDC_PROVIDER_NAME` 控制，与适配器类型无关。
+
+适配器只处理授权参数、回调承载、Token/UserInfo 请求及 Claim 结构差异。`state`、`nonce`、PKCE、ID Token 验签、Issuer 校验以及 `issuer + sub` 身份绑定始终由 Yuxi 核心流程执行，不能由适配器关闭。新增 Provider 类型前必须提供脱敏的 callback、Token、UserInfo/ID Token 样例及契约测试；不要通过放宽安全校验兼容不合规 Server。
 
 修改 `.env` 后，Compose 已创建的容器不会自动读取新环境变量。重建 API 容器使配置生效：
 
@@ -116,6 +129,7 @@ Yuxi 必须以 `issuer + sub`（例如 `issuer|sub`）作为外部身份的唯�
 
 - [ ] 每个环境均登记独立 Confidential Client、精确的 HTTPS 回调地址和需要时的退出回调地址。
 - [ ] 服务端通过 OIDC Discovery 获取协议端点，授权流为 Authorization Code + PKCE S256。
+- [ ] `OIDC_PROVIDER_TYPE` 是已登记的内置适配器；非标准适配器有脱敏 fixture 和契约测试。
 - [ ] `state`、`nonce`、`code_verifier` 只保存在短期服务端事务中，`state` 仅能消费一次。
 - [ ] 回调在换取 Token 前完成 state 校验；ID Token 完成签名、issuer、audience、时间和 nonce 校验。
 - [ ] UserInfo 的 `sub` 与 Issuer 组成外部身份键；email 不作为主身份。
