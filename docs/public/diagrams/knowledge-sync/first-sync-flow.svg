@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="380" viewBox="0 0 1280 380" role="img" aria-labelledby="title desc">
+  <title id="title">第三方系统首次同步知识库流程</title>
+  <desc id="desc">从业务数据抽取、文件生成、知识库解析入库到检索验证的完整流程。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L10,3 L0,6 Z" fill="#5b6472"/></marker>
+    <style>
+      .box{fill:#f7f9fc;stroke:#45627d;stroke-width:2;rx:12}.accent{fill:#e8f4ff;stroke:#1677c8}.success{fill:#e9f8ef;stroke:#23894e}.warn{fill:#fff4dd;stroke:#b87912}.text{font:16px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#1e2937;text-anchor:middle}.small{font-size:14px}.line{stroke:#5b6472;stroke-width:2;fill:none;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <rect width="1280" height="380" fill="#fff"/>
+  <text x="40" y="42" style="font:700 24px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;fill:#17324d">首次全量同步</text>
+  <rect class="box" x="40" y="90" width="160" height="72"/><text class="text" x="120" y="120"><tspan x="120">抽取业务数据</tspan><tspan class="small" x="120" dy="23">固定同步快照</tspan></text>
+  <path class="line" d="M200 126 H235"/>
+  <rect class="box" x="240" y="90" width="160" height="72"/><text class="text" x="320" y="120"><tspan x="320">生成知识文件</tspan><tspan class="small" x="320" dy="23">保留来源标识</tspan></text>
+  <path class="line" d="M400 126 H435"/>
+  <polygon class="box accent" points="500,80 565,126 500,172 435,126"/><text class="text small" x="500" y="121"><tspan x="500">知识库</tspan><tspan x="500" dy="20">存在？</tspan></text>
+  <path class="line" d="M565 126 H605"/><text class="text small" x="585" y="112">是</text>
+  <path class="line" d="M500 172 V212 H605"/><text class="text small" x="520" y="198">否：创建</text>
+  <rect class="box accent" x="610" y="90" width="160" height="72"/><text class="text" x="690" y="120"><tspan x="690">上传原始文件</tspan><tspan class="small" x="690" dy="23">取得 hash 与路径</tspan></text>
+  <path class="line" d="M770 126 H805"/>
+  <rect class="box accent" x="810" y="90" width="180" height="72"/><text class="text" x="900" y="120"><tspan x="900">提交 auto_index</tspan><tspan class="small" x="900" dy="23">获得 task_id</tspan></text>
+  <path class="line" d="M990 126 H1025"/>
+  <rect class="box warn" x="1030" y="90" width="180" height="72"/><text class="text" x="1120" y="120"><tspan x="1120">轮询任务终态</tspan><tspan class="small" x="1120" dy="23">pending / running</tspan></text>
+  <path class="line" d="M1120 162 V220 H900 V250"/>
+  <polygon class="box" points="900,245 970,290 900,335 830,290"/><text class="text small" x="900" y="285"><tspan x="900">任务</tspan><tspan x="900" dy="20">成功？</tspan></text>
+  <path class="line" d="M830 290 H685"/><text class="text small" x="755" y="276">否</text>
+  <rect class="box warn" x="480" y="254" width="200" height="72"/><text class="text" x="580" y="284"><tspan x="580">保留错误并重试</tspan><tspan class="small" x="580" dy="23">不删除旧知识</tspan></text>
+  <path class="line" d="M970 290 H1025"/><text class="text small" x="997" y="276">是</text>
+  <rect class="box success" x="1030" y="254" width="180" height="72"/><text class="text" x="1120" y="284"><tspan x="1120">保存 file_id</tspan><tspan class="small" x="1120" dy="23">执行检索验证</tspan></text>
+</svg>

@@ -19,6 +19,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
+from yuxi import get_version
 
 from server.routers import router
 from server.utils.lifespan import lifespan
@@ -72,7 +73,36 @@ def _build_cors_options(origins: list[str] | None = None) -> dict[str, object]:
     }
 
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(
+    title="超级楚楚开放 API",
+    summary="超级楚楚智能体、知识库与平台管理接口",
+    description=(
+        "超级楚楚后端 API。第三方系统通过 `Authorization: Bearer yxkey_...` 调用。\n\n"
+        "知识库自动同步请按以下顺序执行：上传文件 -> 提交文档处理任务 -> 查询任务状态 -> "
+        "查询文档或执行检索验证。上传成功仅表示原始文件已保存，不表示知识已经可检索。"
+    ),
+    version=get_version(),
+    lifespan=lifespan,
+    openapi_tags=[
+        {
+            "name": "knowledge",
+            "description": (
+                "知识库管理、文件上传、解析、向量入库与检索。三方同步的核心流程是 "
+                "`POST /api/knowledge/files/upload` -> "
+                "`POST /api/knowledge/databases/{kb_id}/documents` -> "
+                "`GET /api/tasks/{task_id}`。"
+            ),
+        },
+        {
+            "name": "tasks",
+            "description": "查询知识解析和入库等后台任务的进度与最终结果。",
+        },
+        {
+            "name": "user",
+            "description": "用户配置与 API Key 管理。API Key 完整 secret 仅在创建时返回一次。",
+        },
+    ],
+)
 # 所有业务接口统一挂载到 /api，具体分组在 server.routers 中集中注册。
 app.include_router(router, prefix="/api")
 

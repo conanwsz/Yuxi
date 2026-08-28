@@ -17,7 +17,15 @@ async def list_tasks(
     return await tasker.list_tasks(status=status, limit=limit)
 
 
-@tasks.get("/{task_id}")
+@tasks.get(
+    "/{task_id}",
+    summary="查询后台任务进度和结果",
+    description=(
+        "知识文档处理接口返回 `task_id` 后轮询本接口。`task.status` 为 `pending` 或 `running` 时继续等待；"
+        "`success` 表示解析/入库链路完成；`failed` 或 `cancelled` 必须记录错误并处理。需要 `system.tasks.manage`。"
+    ),
+    responses={404: {"description": "任务不存在或已被清理"}},
+)
 async def get_task(task_id: str, current_user: User = Depends(require_permission("system.tasks.manage"))):
     """Retrieve a single task by id."""
     task = await tasker.get_task(task_id)

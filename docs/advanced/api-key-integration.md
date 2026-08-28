@@ -28,6 +28,8 @@ Yuxi 后端服务绑定在 `0.0.0.0:5050`，不会自动探测或对外宣告本
 
 完整的 API 交互流程可参考自动生成的 Swagger 文档：`{base_url}/docs`。
 
+Swagger 负责单个接口字段和在线调试。需要从第三方系统自动抽取数据、建立或持续更新知识库时，请按[知识库开放接口对接指南](./knowledge-api-integration.md)中的上传、解析入库、任务轮询、安全更新和检索验收顺序开发，不要把“文件上传成功”当成“知识已经可检索”。
+
 ## 接口调用方式
 
 > **关于 `agent_id` / `agent_slug` 的说明**：创建会话线程时仍使用 `agent_id` 绑定目标 Agent；创建运行任务时使用 `agent_slug` 快照本次运行目标。二者的取值都是智能体的 **slug**（如 `default-chatbot`），不是数据库自增 ID 或 `agent_config_id`。

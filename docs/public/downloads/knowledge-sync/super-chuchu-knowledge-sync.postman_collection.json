@@ -1,0 +1,340 @@
+{
+  "info": {
+    "_postman_id": "8ab4e2b1-4c1a-4d5d-a7ee-17c9270d2bc3",
+    "name": "超级楚楚 - 知识库自动同步",
+    "description": "面向第三方系统的知识库同步联调集合。按 00 -> 06 顺序执行：验证身份和知识库、上传文件、提交自动解析入库、轮询任务、查询文档、检索验证。\n\n上传成功只表示文件进入对象存储；只有后台任务 status=success 且检索验证通过，才表示知识同步完成。\n\n导入后只填写 collection variables 中的 base_url、api_key、kb_id。不要把带真实 api_key 的集合导出或提交到版本库。",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{api_key}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {"key": "base_url", "value": "http://10.32.10.3:5050", "type": "string"},
+    {"key": "api_key", "value": "yxkey_replace_me", "type": "string"},
+    {"key": "kb_id", "value": "kb_replace_me", "type": "string"},
+    {"key": "database_name", "value": "三方同步测试知识库", "type": "string"},
+    {"key": "embedding_model_spec", "value": "replace_with_allowed_embedding_model", "type": "string"},
+    {"key": "file_path", "value": "", "type": "string"},
+    {"key": "content_hash", "value": "", "type": "string"},
+    {"key": "file_size", "value": "0", "type": "string"},
+    {"key": "task_id", "value": "", "type": "string"},
+    {"key": "file_id", "value": "", "type": "string"},
+    {"key": "verify_query", "value": "这份文档的核心内容是什么？", "type": "string"}
+  ],
+  "item": [
+    {
+      "name": "00 - 接入检查",
+      "item": [
+        {
+          "name": "00.1 验证 API Key 并列出知识库",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/knowledge/databases",
+              "host": ["{{base_url}}"],
+              "path": ["api", "knowledge", "databases"]
+            },
+            "description": "成功返回当前 API Key 身份可访问的知识库。确认目标 kb_id 在列表中；401 表示 Key 无效，403 表示缺少 apikey.invoke 或 knowledge.read。"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "const data = pm.response.json();",
+                  "pm.test('返回 databases 数组', function () { pm.expect(data.databases).to.be.an('array'); });"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "00.2 可选：创建默认知识库",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"database_name\": \"{{database_name}}\",\n  \"description\": \"由第三方同步联调集合创建\",\n  \"embedding_model_spec\": \"{{embedding_model_spec}}\",\n  \"kb_type\": \"milvus\"\n}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {
+              "raw": "{{base_url}}/api/knowledge/databases",
+              "host": ["{{base_url}}"],
+              "path": ["api", "knowledge", "databases"]
+            },
+            "description": "仅在管理员没有预建知识库时执行。需要 knowledge.create 和对应模型权限；生产集成更推荐使用管理员提供的固定 kb_id。"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('创建成功', function () { pm.expect(pm.response.code).to.be.oneOf([200, 201]); });",
+                  "const data = pm.response.json();",
+                  "if (data.kb_id) pm.collectionVariables.set('kb_id', data.kb_id);",
+                  "pm.test('保存 kb_id', function () { pm.expect(data.kb_id).to.be.a('string').and.not.empty; });"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "01 - 上传",
+      "item": [
+        {
+          "name": "01.1 上传一个知识文件",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": [],
+                  "description": "在 Postman 中选择一个小于 100 MB 的受支持文件"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/api/knowledge/files/upload?kb_id={{kb_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "knowledge", "files", "upload"],
+              "query": [{"key": "kb_id", "value": "{{kb_id}}"}]
+            },
+            "description": "第一阶段只保存原始文件，不创建知识文档、不解析、不向量入库。相同内容返回 409。"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('上传成功', function () { pm.response.to.have.status(200); });",
+                  "const data = pm.response.json();",
+                  "pm.collectionVariables.set('file_path', data.file_path);",
+                  "pm.collectionVariables.set('content_hash', data.content_hash);",
+                  "pm.collectionVariables.set('file_size', String(data.size));",
+                  "pm.test('保存后续请求所需字段', function () {",
+                  "  pm.expect(data.file_path).to.be.a('string').and.not.empty;",
+                  "  pm.expect(data.content_hash).to.be.a('string').and.not.empty;",
+                  "  pm.expect(data.size).to.be.a('number');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "02 - 解析与入库",
+      "item": [
+        {
+          "name": "02.1 提交自动解析和向量入库",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"items\": [\"{{file_path}}\"],\n  \"params\": {\n    \"content_type\": \"file\",\n    \"content_hashes\": {\n      \"{{file_path}}\": \"{{content_hash}}\"\n    },\n    \"file_sizes\": {\n      \"{{file_path}}\": {{file_size}}\n    },\n    \"auto_index\": true\n  }\n}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {
+              "raw": "{{base_url}}/api/knowledge/databases/{{kb_id}}/documents",
+              "host": ["{{base_url}}"],
+              "path": ["api", "knowledge", "databases", "{{kb_id}}", "documents"]
+            },
+            "description": "第二阶段创建文件记录，并在后台执行解析、分块、Embedding 和向量入库。必须使用上传响应的 file_path/content_hash。"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('任务已入队', function () { pm.response.to.have.status(200); });",
+                  "const data = pm.response.json();",
+                  "pm.collectionVariables.set('task_id', data.task_id);",
+                  "pm.test('保存 task_id', function () { pm.expect(data.task_id).to.be.a('string').and.not.empty; });"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "03 - 任务状态",
+      "item": [
+        {
+          "name": "03.1 查询处理任务（重复执行至终态）",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/tasks/{{task_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "tasks", "{{task_id}}"]
+            },
+            "description": "需要 system.tasks.manage。pending/running 时等待后重试；success 后脚本会从 result.items 保存 file_id；failed/cancelled 必须检查 error。"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('任务可查询', function () { pm.response.to.have.status(200); });",
+                  "const task = pm.response.json().task;",
+                  "pm.collectionVariables.set('task_status', task.status);",
+                  "console.log('task status=', task.status, 'progress=', task.progress, 'message=', task.message);",
+                  "if (task.status === 'success' && task.result && Array.isArray(task.result.items)) {",
+                  "  const item = task.result.items.find(item => item.file_id && item.status !== 'failed');",
+                  "  if (item) pm.collectionVariables.set('file_id', item.file_id);",
+                  "}",
+                  "pm.test('任务没有失败', function () { pm.expect(task.status).not.eql('failed'); });"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "04 - 同步结果",
+      "item": [
+        {
+          "name": "04.1 分页查询知识文档",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/knowledge/databases/{{kb_id}}/documents?status=all&page=1&page_size=100&recursive=true",
+              "host": ["{{base_url}}"],
+              "path": ["api", "knowledge", "databases", "{{kb_id}}", "documents"],
+              "query": [
+                {"key": "status", "value": "all"},
+                {"key": "page", "value": "1"},
+                {"key": "page_size", "value": "100"},
+                {"key": "recursive", "value": "true"}
+              ]
+            },
+            "description": "核对文档状态；没有 system.tasks.manage 时也可使用此接口观察文档，但拿不到完整任务错误。"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('查询成功', function () { pm.response.to.have.status(200); });"]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "04.2 按文件名检查存在性",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/knowledge/databases/{{kb_id}}/documents/exists?filename=replace_me.pdf",
+              "host": ["{{base_url}}"],
+              "path": ["api", "knowledge", "databases", "{{kb_id}}", "documents", "exists"],
+              "query": [{"key": "filename", "value": "replace_me.pdf", "description": "改为实际文件名或来源相对路径"}]
+            },
+            "description": "只匹配文件名/相对路径，不比较内容。内容幂等应依靠 content_hash 和接入方同步状态。"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "05 - 检索验收",
+      "item": [
+        {
+          "name": "05.1 知识检索验证",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"query\": \"{{verify_query}}\",\n  \"meta\": {}\n}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {
+              "raw": "{{base_url}}/api/knowledge/databases/{{kb_id}}/query",
+              "host": ["{{base_url}}"],
+              "path": ["api", "knowledge", "databases", "{{kb_id}}", "query"]
+            },
+            "description": "任务 success 后仍应执行真实业务问题，确认新知识能够返回并符合预期。"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('检索请求成功', function () { pm.response.to.have.status(200); });",
+                  "const data = pm.response.json();",
+                  "pm.test('业务状态成功', function () { pm.expect(data.status).to.eql('success'); });",
+                  "pm.test('检索结果非空', function () { pm.expect(data.result).to.exist; });"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "06 - 生命周期操作（谨慎）",
+      "item": [
+        {
+          "name": "06.1 删除旧版或失效文档",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/knowledge/databases/{{kb_id}}/documents/{{file_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "knowledge", "databases", "{{kb_id}}", "documents", "{{file_id}}"]
+            },
+            "description": "危险操作。更新场景必须先让新版本成功入库并通过检索验证，再把 file_id 改为旧版本 ID 执行删除。"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('删除成功', function () { pm.response.to.have.status(200); });"]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    }
+  ]
+}
