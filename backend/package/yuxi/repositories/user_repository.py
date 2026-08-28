@@ -86,7 +86,7 @@ class UserRepository:
         async with pg_manager.get_async_session_context() as session:
             from yuxi.storage.postgres.models_business import Department
 
-            query = select(User, Department.name.label("department_name")).outerjoin(
+            query = select(User, Department.display_name.label("department_name")).outerjoin(
                 Department, User.department_id == Department.id
             )
             if not include_disabled:

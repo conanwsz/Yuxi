@@ -530,6 +530,24 @@ class PostgresManager(metaclass=SingletonMeta):
             "ALTER TABLE IF EXISTS departments ADD COLUMN IF NOT EXISTS is_system BOOLEAN DEFAULT FALSE",
             "ALTER TABLE IF EXISTS departments ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()",
             "ALTER TABLE IF EXISTS departments ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ",
+            "ALTER TABLE IF EXISTS departments ADD COLUMN IF NOT EXISTS oidc_name VARCHAR(100)",
+            "ALTER TABLE IF EXISTS departments ADD COLUMN IF NOT EXISTS entity_code VARCHAR(64)",
+            "ALTER TABLE IF EXISTS departments ADD COLUMN IF NOT EXISTS department_code VARCHAR(128)",
+            "ALTER TABLE IF EXISTS departments ALTER COLUMN name DROP NOT NULL",
+            """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'ck_departments_department_code_requires_entity'
+                      AND conrelid = 'departments'::regclass
+                ) THEN
+                    ALTER TABLE departments
+                    ADD CONSTRAINT ck_departments_department_code_requires_entity
+                    CHECK (department_code IS NULL OR entity_code IS NOT NULL);
+                END IF;
+            END $$
+            """,
             "UPDATE departments SET status = 'active' WHERE status IS NULL",
             "UPDATE departments SET sort_order = 0 WHERE sort_order IS NULL",
             "UPDATE departments SET is_system = FALSE WHERE is_system IS NULL",
@@ -574,6 +592,7 @@ class PostgresManager(metaclass=SingletonMeta):
             """,
             "CREATE INDEX IF NOT EXISTS ix_departments_parent_id ON departments(parent_id)",
             "CREATE INDEX IF NOT EXISTS ix_departments_status ON departments(status)",
+            "CREATE INDEX IF NOT EXISTS ix_departments_department_code ON departments(department_code)",
             """
             CREATE UNIQUE INDEX IF NOT EXISTS uq_departments_root_name
             ON departments (LOWER(name))
@@ -583,6 +602,16 @@ class PostgresManager(metaclass=SingletonMeta):
             CREATE UNIQUE INDEX IF NOT EXISTS uq_departments_sibling_name
             ON departments (parent_id, LOWER(name))
             WHERE parent_id IS NOT NULL
+            """,
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_departments_root_entity_code
+            ON departments (UPPER(entity_code))
+            WHERE parent_id IS NULL AND entity_code IS NOT NULL
+            """,
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_departments_entity_department_code
+            ON departments (UPPER(entity_code), UPPER(department_code))
+            WHERE entity_code IS NOT NULL AND department_code IS NOT NULL
             """,
             """
             CREATE TABLE IF NOT EXISTS department_closure (

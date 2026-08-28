@@ -43,6 +43,9 @@
           <template v-else-if="column.key === 'path'">
             <span class="path-text">{{ record.path_label }}</span>
           </template>
+          <template v-else-if="column.key === 'code'">
+            <span class="code-text">{{ record.department_code || record.entity_code || '—' }}</span>
+          </template>
           <template v-else-if="column.key === 'members'">
             {{ record.direct_user_count }} / {{ record.total_user_count }}
           </template>
@@ -114,17 +117,44 @@
       @ok="submit"
     >
       <a-form layout="vertical" class="department-form" autocomplete="off">
-        <a-form-item label="部门名称" required class="form-item">
+        <a-form-item
+          label="本地名称"
+          :required="
+            !state.editRecord?.oidc_name &&
+            !state.editRecord?.department_code &&
+            !state.editRecord?.entity_code
+          "
+          class="form-item"
+        >
           <a-input
             v-model:value="state.form.name"
             :maxlength="50"
-            placeholder="同一上级下名称不能重复"
+            :placeholder="
+              state.editRecord?.oidc_name ? '留空时展示 OIDC 名称' : '同一上级下名称不能重复'
+            "
           />
         </a-form-item>
+        <template v-if="state.editRecord?.entity_code || state.editRecord?.department_code">
+          <a-form-item label="OIDC 名称">
+            <a-input :value="state.editRecord.oidc_name || '尚未同步名称'" disabled />
+          </a-form-item>
+          <a-form-item :label="state.editRecord.department_code ? '部门编码' : '公司编码'">
+            <a-input
+              :value="state.editRecord.department_code || state.editRecord.entity_code"
+              disabled
+            />
+          </a-form-item>
+        </template>
         <a-form-item label="上级部门">
           <a-select
             v-model:value="state.form.parentId"
-            :disabled="Boolean(state.editRecord?.is_system)"
+            :disabled="
+              Boolean(
+                state.editRecord?.is_system ||
+                state.editRecord?.entity_code ||
+                state.editRecord?.department_code
+              )
+            "
             allow-clear
             placeholder="留空表示根主体"
           >
@@ -132,7 +162,9 @@
               {{ item.path_label }}
             </a-select-option>
           </a-select>
-          <div class="help-text">普通管理员只能在管理范围内创建和移动；节点不能跨主体移动。</div>
+          <div class="help-text">
+            OIDC 节点的层级由编码维护；其他节点只能在管理范围及同一主体内移动。
+          </div>
         </a-form-item>
         <a-form-item label="排序">
           <a-input-number v-model:value="state.form.sortOrder" :min="0" style="width: 100%" />
@@ -145,7 +177,6 @@
             show-count
           />
         </a-form-item>
-
       </a-form>
     </a-modal>
   </div>
@@ -170,6 +201,7 @@ import {
 const userStore = useUserStore()
 const columns = [
   { title: '名称', key: 'name', width: 240 },
+  { title: '组织编码', key: 'code', width: 180 },
   { title: '完整路径', key: 'path', ellipsis: true },
   { title: '直属 / 全部成员', key: 'members', width: 140, align: 'center' },
   { title: '状态', key: 'status', width: 90, align: 'center' },
@@ -239,7 +271,7 @@ const openEdit = (record) => {
   state.editId = record.id
   state.editRecord = record
   state.form = {
-    name: record.name,
+    name: record.local_name || '',
     parentId: record.parent_id,
     description: record.description || '',
     sortOrder: record.sort_order || 0
@@ -249,16 +281,26 @@ const openEdit = (record) => {
 
 const submit = async () => {
   const name = state.form.name.trim()
-  if (!name) return message.error('部门名称不能为空')
+  const canUseOidcFallback = Boolean(
+    state.editRecord?.oidc_name ||
+    state.editRecord?.department_code ||
+    state.editRecord?.entity_code
+  )
+  if (!name && !canUseOidcFallback) return message.error('部门名称不能为空')
   state.submitting = true
   try {
     if (state.editId) {
       await departmentApi.updateDepartment(state.editId, {
-        name,
+        local_name: name || null,
         description: state.form.description.trim() || null,
         sort_order: state.form.sortOrder
       })
-      if (!state.editRecord.is_system && state.form.parentId !== state.editRecord.parent_id) {
+      if (
+        !state.editRecord.is_system &&
+        !state.editRecord.entity_code &&
+        !state.editRecord.department_code &&
+        state.form.parentId !== state.editRecord.parent_id
+      ) {
         if (state.form.parentId == null) throw new Error('暂不支持将现有节点移动为根主体')
         await departmentApi.moveDepartment(state.editId, state.form.parentId)
       }
@@ -327,8 +369,14 @@ onMounted(load)
   }
 
   .path-text,
+  .code-text,
   .help-text {
     color: var(--gray-600);
+  }
+
+  .code-text {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 12px;
   }
 
   .department-table {

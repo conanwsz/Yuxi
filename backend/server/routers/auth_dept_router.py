@@ -24,7 +24,8 @@ department = APIRouter(prefix="/departments", tags=["department"])
 
 
 class DepartmentCreate(BaseModel):
-    name: str
+    name: str | None = None
+    local_name: str | None = None
     description: str | None = None
     parent_id: int | None = None
     sort_order: int = 0
@@ -32,6 +33,7 @@ class DepartmentCreate(BaseModel):
 
 class DepartmentUpdate(BaseModel):
     name: str | None = None
+    local_name: str | None = None
     description: str | None = None
     sort_order: int | None = None
 
@@ -43,6 +45,10 @@ class DepartmentMove(BaseModel):
 class DepartmentResponse(BaseModel):
     id: int
     name: str
+    local_name: str | None = None
+    oidc_name: str | None = None
+    entity_code: str | None = None
+    department_code: str | None = None
     description: str | None = None
     parent_id: int | None = None
     root_id: int
@@ -72,6 +78,26 @@ async def _get_department_or_404(db: AsyncSession, department_id: int) -> Depart
     if item is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="组织节点不存在")
     return item
+
+
+def _resolve_local_name(payload: DepartmentCreate | DepartmentUpdate, *, required: bool) -> tuple[bool, str | None]:
+    """兼容旧 name 字段，并识别显式清空本地名称的请求。"""
+    fields = payload.model_fields_set
+    has_name = "name" in fields
+    has_local_name = "local_name" in fields
+
+    if has_name and has_local_name:
+        legacy_name = payload.name.strip() if payload.name else None
+        local_name = payload.local_name.strip() if payload.local_name else None
+        if legacy_name != local_name:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="name 与 local_name 必须一致")
+
+    was_set = has_local_name or has_name
+    value = payload.local_name if has_local_name else payload.name
+    normalized = value.strip() if value else None
+    if required and not normalized:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="组织名称不能为空")
+    return was_set, normalized
 
 
 def _ensure_manage_scope(current_user: User, department_id: int) -> None:
@@ -125,6 +151,8 @@ async def create_department(
     current_user: User = Depends(require_permission("departments.create")),
     db: AsyncSession = Depends(get_db),
 ):
+    _name_was_set, local_name = _resolve_local_name(payload, required=True)
+    assert local_name is not None
     if payload.parent_id is None and current_user.role != "superadmin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="只有超级管理员可以创建根主体")
     if payload.parent_id is not None:
@@ -132,14 +160,14 @@ async def create_department(
     try:
         item = await OrganizationService.create_department(
             db,
-            name=payload.name,
+            name=local_name,
             description=payload.description,
             parent_id=payload.parent_id,
             sort_order=payload.sort_order,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
-    await log_operation(db, current_user.id, "创建组织节点", f"创建组织节点: {item.name}", request)
+    await log_operation(db, current_user.id, "创建组织节点", f"创建组织节点: {item.display_name}", request)
     return next(value for value in await OrganizationService.list_departments(db) if value["id"] == item.id)
 
 
@@ -153,17 +181,19 @@ async def update_department(
 ):
     _ensure_manage_scope(current_user, department_id)
     item = await _get_department_or_404(db, department_id)
+    name_was_set, local_name = _resolve_local_name(payload, required=False)
     try:
         await OrganizationService.update_department(
             db,
             item,
-            name=payload.name,
+            name=local_name if name_was_set and local_name is not None else None,
+            clear_name=name_was_set and local_name is None,
             description=payload.description,
             sort_order=payload.sort_order,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
-    await log_operation(db, current_user.id, "更新组织节点", f"更新组织节点: {item.name}", request)
+    await log_operation(db, current_user.id, "更新组织节点", f"更新组织节点: {item.display_name}", request)
     return next(value for value in await OrganizationService.list_departments(db) if value["id"] == item.id)
 
 
@@ -182,7 +212,7 @@ async def move_department(
         await OrganizationService.move_department(db, item, payload.parent_id)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
-    await log_operation(db, current_user.id, "移动组织节点", f"移动组织节点: {item.name}", request)
+    await log_operation(db, current_user.id, "移动组织节点", f"移动组织节点: {item.display_name}", request)
     return next(value for value in await OrganizationService.list_departments(db) if value["id"] == item.id)
 
 
@@ -199,7 +229,7 @@ async def archive_department(
         await OrganizationService.archive_department(db, item)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-    await log_operation(db, current_user.id, "停用组织节点", f"停用组织节点: {item.name}", request)
+    await log_operation(db, current_user.id, "停用组织节点", f"停用组织节点: {item.display_name}", request)
     return next(value for value in await OrganizationService.list_departments(db) if value["id"] == item.id)
 
 
@@ -216,7 +246,7 @@ async def restore_department(
         await OrganizationService.restore_department(db, item)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-    await log_operation(db, current_user.id, "恢复组织节点", f"恢复组织节点: {item.name}", request)
+    await log_operation(db, current_user.id, "恢复组织节点", f"恢复组织节点: {item.display_name}", request)
     return next(value for value in await OrganizationService.list_departments(db) if value["id"] == item.id)
 
 
@@ -266,7 +296,7 @@ async def delete_department(
     if resource_reference.scalar_one_or_none() is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="组织节点仍被资源授权引用，不能物理删除")
 
-    name = item.name
+    name = item.display_name
     await db.execute(delete(DepartmentClosure).where(DepartmentClosure.descendant_id == department_id))
     await db.delete(item)
     await db.commit()

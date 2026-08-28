@@ -132,6 +132,90 @@ async def test_oidc_callback_allows_existing_binding_when_sub_contains_colon(oid
     assert user.avatar == "https://issuer.example/avatars/alice.png"
 
 
+async def test_cnnp_callback_syncs_existing_user_primary_department(oidc_session, monkeypatch):
+    user = await _create_user(oidc_session)
+    await oidc_service.bind_external_identity(
+        oidc_session,
+        user,
+        "https://issuer.example",
+        "cnnp-subject",
+        "alice@example.com",
+    )
+
+    monkeypatch.setattr(oidc_service.oidc_config, "provider_type", "cnnp")
+    monkeypatch.setattr(oidc_service.oidc_config, "enabled", True)
+    monkeypatch.setattr(oidc_service.oidc_config, "issuer_url", "https://issuer.example")
+    monkeypatch.setattr(oidc_service.oidc_config, "use_raw_username", False)
+    monkeypatch.setattr(oidc_service.oidc_config, "auto_create_user", True)
+    monkeypatch.setattr(oidc_service.oidc_config, "client_id", "cid")
+    monkeypatch.setattr(oidc_service.oidc_config, "client_secret", "secret")
+    monkeypatch.setattr(oidc_service.oidc_config, "redirect_uri", "https://yuxi.example/api/auth/oidc/callback")
+    monkeypatch.setattr(
+        oidc_service.OIDCUtils,
+        "verify_state",
+        classmethod(lambda cls, state: {"redirect_path": "/", "nonce": "nonce", "code_verifier": "verifier"}),
+    )
+
+    async def fake_exchange(cls, code, code_verifier):
+        return oidc_service.OIDCTokenSet(access_token="token", id_token="id-token")
+
+    async def fake_verify_id_token(cls, id_token, expected_nonce):
+        return {"iss": "https://issuer.example", "sub": "cnnp-subject"}
+
+    async def fake_userinfo(cls, access_token):
+        return {"sub": "cnnp-subject"}
+
+    def fake_extract_user_info(cls, userinfo, verified_claims):
+        return {
+            "sub": "cnnp-subject",
+            "username": "alice",
+            "email": "alice@example.com",
+            "name": "Alice",
+            "avatar": None,
+            "entity_code": "HK600001",
+            "entity_short_name": "测试公司",
+            "department_name": "测试部门",
+            "department_code": "JXI-BM4605",
+            "department_description": None,
+            "raw": userinfo,
+        }
+
+    resolved_department = SimpleNamespace(id=999)
+    sync_calls = []
+
+    async def fake_resolve(cls, db, **kwargs):
+        assert kwargs["entity_code"] == "HK600001"
+        assert kwargs["department_code"] == "JXI-BM4605"
+        return resolved_department
+
+    async def fake_sync(db, *, user, department):
+        sync_calls.append((user.id, department.id))
+
+    async def fake_log_operation(db, user_id, operation, request=None):
+        return None
+
+    monkeypatch.setattr(oidc_service.OIDCUtils, "exchange_code_for_token", classmethod(fake_exchange))
+    monkeypatch.setattr(oidc_service.OIDCUtils, "verify_id_token", classmethod(fake_verify_id_token))
+    monkeypatch.setattr(oidc_service.OIDCUtils, "get_userinfo", classmethod(fake_userinfo))
+    monkeypatch.setattr(oidc_service.OIDCUtils, "extract_user_info", classmethod(fake_extract_user_info))
+    monkeypatch.setattr(
+        oidc_service.OIDCOrganizationService,
+        "resolve_cnnp_department",
+        classmethod(fake_resolve),
+    )
+    monkeypatch.setattr(
+        oidc_service.OIDCOrganizationService,
+        "sync_user_primary_department",
+        staticmethod(fake_sync),
+    )
+    monkeypatch.setattr(oidc_service, "log_operation", fake_log_operation)
+
+    response = await oidc_service.oidc_callback_handler("code", "state", oidc_session)
+
+    assert response.status_code == 302
+    assert sync_calls == [(user.id, 999)]
+
+
 async def test_oidc_callback_rejects_disabled_user_instead_of_restoring(oidc_session, monkeypatch):
     user = await _create_user(oidc_session, "oidc:legacy-user")
     await oidc_service.bind_external_identity(

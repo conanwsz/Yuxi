@@ -14,6 +14,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    func,
     Index,
     Integer,
     Numeric,
@@ -24,6 +25,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import relationship
 from yuxi.storage.minio.client import normalize_public_minio_url
 from yuxi.utils.datetime_utils import format_utc_datetime, utc_now_naive
@@ -54,7 +56,10 @@ class Department(Base):
     __tablename__ = "departments"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    name = Column(String(50), nullable=False, index=True)
+    name = Column(String(50), nullable=True, index=True, comment="管理员维护的本地名称")
+    oidc_name = Column(String(100), nullable=True, comment="OIDC 返回的组织名称")
+    entity_code = Column(String(64), nullable=True, comment="OIDC 公司主体编码")
+    department_code = Column(String(128), nullable=True, comment="OIDC 部门编码")
     description = Column(String(255), nullable=True)
     parent_id = Column(Integer, ForeignKey("departments.id", ondelete="RESTRICT"), nullable=True, index=True)
     status = Column(String(16), nullable=False, default="active", index=True)
@@ -76,12 +81,30 @@ class Department(Base):
     __table_args__ = (
         CheckConstraint("parent_id IS NULL OR parent_id <> id", name="ck_departments_not_self_parent"),
         CheckConstraint("status IN ('active', 'inactive')", name="ck_departments_status"),
+        CheckConstraint(
+            "department_code IS NULL OR entity_code IS NOT NULL",
+            name="ck_departments_department_code_requires_entity",
+        ),
     )
+
+    @hybrid_property
+    def display_name(self) -> str:
+        """返回本地名称优先的组织展示名称。"""
+        return self.name or self.oidc_name or self.department_code or self.entity_code or "未命名组织"
+
+    @display_name.expression
+    def display_name(cls):
+        """提供可用于查询排序和投影的有效名称表达式。"""
+        return func.coalesce(cls.name, cls.oidc_name, cls.department_code, cls.entity_code, "未命名组织")
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
-            "name": self.name,
+            "name": self.display_name,
+            "local_name": self.name,
+            "oidc_name": self.oidc_name,
+            "entity_code": self.entity_code,
+            "department_code": self.department_code,
             "description": self.description,
             "parent_id": self.parent_id,
             "status": self.status,

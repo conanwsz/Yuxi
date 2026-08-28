@@ -82,6 +82,31 @@ async def test_ensure_business_schema_creates_and_backfills_roles_before_adding_
 
 
 @pytest.mark.asyncio
+async def test_ensure_business_schema_adds_oidc_organization_columns_and_indexes():
+    manager = PostgresManager()
+    original_initialized = manager._initialized
+    original_engine = manager.async_engine
+    connection = _RecordingConnection()
+
+    manager._initialized = True
+    manager.async_engine = _RecordingEngine(connection)
+    try:
+        await manager.ensure_business_schema()
+    finally:
+        manager._initialized = original_initialized
+        manager.async_engine = original_engine
+
+    statements = "\n".join(connection.statements)
+    assert "ADD COLUMN IF NOT EXISTS oidc_name VARCHAR(100)" in statements
+    assert "ADD COLUMN IF NOT EXISTS entity_code VARCHAR(64)" in statements
+    assert "ADD COLUMN IF NOT EXISTS department_code VARCHAR(128)" in statements
+    assert "ALTER COLUMN name DROP NOT NULL" in statements
+    assert "ADD CONSTRAINT ck_departments_department_code_requires_entity" in statements
+    assert "CREATE UNIQUE INDEX IF NOT EXISTS uq_departments_root_entity_code" in statements
+    assert "CREATE UNIQUE INDEX IF NOT EXISTS uq_departments_entity_department_code" in statements
+
+
+@pytest.mark.asyncio
 async def test_ensure_business_schema_backfills_subagent_thread_columns_before_dropping_legacy_columns():
     manager = PostgresManager()
     original_initialized = manager._initialized

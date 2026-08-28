@@ -29,6 +29,7 @@ from yuxi.services.oidc_provider import (
     get_oidc_provider,
     normalize_provider_type,
 )
+from yuxi.services.oidc_organization_service import OIDCOrganizationService
 from yuxi.services.operation_log_service import log_operation
 from yuxi.services.permission_service import resolve_user_permissions
 from yuxi.storage.postgres.models_business import (
@@ -542,7 +543,10 @@ class OIDCUtils:
             "email": profile.email,
             "name": profile.name,
             "avatar": profile.avatar,
+            "entity_code": profile.entity_code,
+            "entity_short_name": profile.entity_short_name,
             "department_name": profile.department_name,
+            "department_code": profile.department_code,
             "department_description": profile.department_description,
             "raw": profile.raw,
         }
@@ -1127,15 +1131,44 @@ async def oidc_callback_handler(
         # 标准 OIDC 模式，通过 sub 查找
         user = user_by_sub
 
+    cnnp_department = None
     if user:
         logger.info(f"OIDC user logged in: {user.username}")
+        if oidc_config.provider_type == "cnnp":
+            try:
+                cnnp_department = await OIDCOrganizationService.resolve_cnnp_department(
+                    db,
+                    entity_code=extracted_info.get("entity_code"),
+                    entity_short_name=extracted_info.get("entity_short_name"),
+                    department_code=extracted_info.get("department_code"),
+                    department_name=extracted_info.get("department_name"),
+                    default_department_name=oidc_config.default_department,
+                )
+            except (IntegrityError, ValueError):
+                logger.warning("OIDC organization synchronization failed for an existing user")
+                return _redirect_to_login_with_error("组织信息同步失败，请联系管理员")
     elif oidc_config.auto_create_user:
         if not email:
             return _redirect_to_login_with_error("无法获取有效邮箱，请联系管理员检查第三方登录配置")
-        # 从用户信息中获取部门信息
-        dept_name = extracted_info.get("department_name")
-        dept_desc = extracted_info.get("department_description")
-        dept = await get_or_create_oidc_department(db, dept_name, dept_desc)
+        if oidc_config.provider_type == "cnnp":
+            try:
+                cnnp_department = await OIDCOrganizationService.resolve_cnnp_department(
+                    db,
+                    entity_code=extracted_info.get("entity_code"),
+                    entity_short_name=extracted_info.get("entity_short_name"),
+                    department_code=extracted_info.get("department_code"),
+                    department_name=extracted_info.get("department_name"),
+                    default_department_name=oidc_config.default_department,
+                )
+            except (IntegrityError, ValueError):
+                logger.warning("OIDC organization synchronization failed while creating a user")
+                return _redirect_to_login_with_error("组织信息同步失败，请联系管理员")
+            dept = cnnp_department
+        else:
+            # 标准适配器保持原有的首次登录按名称创建部门语义。
+            dept_name = extracted_info.get("department_name")
+            dept_desc = extracted_info.get("department_description")
+            dept = await get_or_create_oidc_department(db, dept_name, dept_desc)
         department_id = dept.id if dept else None
         try:
             user = await create_oidc_user(db, extracted_info, issuer, email, department_id)
@@ -1151,6 +1184,16 @@ async def oidc_callback_handler(
         user = await bind_external_identity(db, user, issuer, sub, email)
     except OIDCIdentityConflict:
         return _redirect_to_login_with_error("该邮箱已绑定其他第三方身份，请联系管理员处理")
+    if cnnp_department is not None:
+        try:
+            await OIDCOrganizationService.sync_user_primary_department(
+                db,
+                user=user,
+                department=cnnp_department,
+            )
+        except ValueError:
+            logger.warning("OIDC user department membership synchronization failed")
+            return _redirect_to_login_with_error("组织成员关系同步失败，请联系管理员")
     await update_oidc_user_login(db, user, extracted_info.get("avatar"))
 
     token_data = {"sub": str(user.id)}
@@ -1160,7 +1203,7 @@ async def oidc_callback_handler(
 
     department_name = None
     if user.department_id:
-        result = await db.execute(select(Department.name).filter(Department.id == user.department_id))
+        result = await db.execute(select(Department.display_name).filter(Department.id == user.department_id))
         department_name = result.scalar_one_or_none()
 
     await resolve_user_permissions(db, user)

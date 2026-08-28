@@ -128,7 +128,7 @@ async def exchange_cli_auth_token(db: AsyncSession, device_code: str) -> dict:
         raise CLIAuthError("invalid_state", "授权会话状态无效", status_code=409)
 
     user_result = await db.execute(
-        select(User, Department.name)
+        select(User, Department.display_name)
         .outerjoin(Department, User.department_id == Department.id)
         .filter(User.id == session.approved_user_id, User.is_deleted == 0)
     )

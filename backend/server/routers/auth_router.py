@@ -387,7 +387,7 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
     # 获取部门名称
     department_name = None
     if user.department_id:
-        result = await db.execute(select(Department.name).filter(Department.id == user.department_id))
+        result = await db.execute(select(Department.display_name).filter(Department.id == user.department_id))
         department_name = result.scalar_one_or_none()
 
     await resolve_user_permissions(db, user)
@@ -1353,7 +1353,7 @@ async def impersonate_user(
     # 获取部门名称
     department_name = None
     if target_user.department_id:
-        result = await db.execute(select(Department.name).filter(Department.id == target_user.department_id))
+        result = await db.execute(select(Department.display_name).filter(Department.id == target_user.department_id))
         department_name = result.scalar_one_or_none()
 
     # 记录操作（危险操作标记）

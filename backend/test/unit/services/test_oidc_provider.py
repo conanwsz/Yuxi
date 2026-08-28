@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from yuxi.services.oidc_provider import (
+    CnnpOIDCProvider,
     OIDCCallbackData,
     OIDCHTTPRequest,
     OIDCProfile,
@@ -34,15 +35,18 @@ def standard_config() -> SimpleNamespace:
 def test_get_oidc_provider_defaults_to_standard_and_normalizes_type(standard_config):
     provider = get_oidc_provider(None, standard_config)
     normalized_provider = get_oidc_provider(" Standard ", standard_config)
+    cnnp_provider = get_oidc_provider(" CNNP ", standard_config)
 
     assert isinstance(provider, StandardOIDCProvider)
     assert isinstance(normalized_provider, StandardOIDCProvider)
+    assert isinstance(cnnp_provider, CnnpOIDCProvider)
     assert normalize_provider_type("") == "standard"
     assert normalize_provider_type(" STANDARD ") == "standard"
+    assert normalize_provider_type(" CNNP ") == "cnnp"
 
 
 def test_get_oidc_provider_rejects_unknown_type(standard_config):
-    with pytest.raises(ValueError, match="支持的类型: standard"):
+    with pytest.raises(ValueError, match="支持的类型: cnnp, standard"):
         get_oidc_provider("custom-provider", standard_config)
 
 
@@ -240,7 +244,10 @@ def test_standard_provider_maps_profile_with_existing_claim_semantics(standard_c
         email="alice@example.com",
         name="Alice Example",
         avatar="https://issuer.example/avatar.png",
+        entity_code=None,
+        entity_short_name=None,
         department_name="研发部",
+        department_code=None,
         department_description="负责平台研发",
         raw={
             "sub": "subject-1234567890",
@@ -287,6 +294,74 @@ def test_standard_provider_falls_back_to_email_prefix_and_subject(standard_confi
     )
     assert profile_without_email.username == "subject-1234567890-a"
     assert profile_without_email.name == "subject-1234567890-a"
+
+
+def test_cnnp_provider_reuses_standard_protocol_and_maps_entity_fields(standard_config):
+    provider = CnnpOIDCProvider(standard_config)
+    metadata = SimpleNamespace(
+        token_endpoint="https://issuer.example/token",
+        userinfo_endpoint="https://issuer.example/userinfo",
+    )
+
+    callback = provider.parse_callback(query={"code": "query-code", "state": "query-state"}, form=None)
+    authorization_params = provider.authorization_params({"client_id": "client-id"})
+    token_request = provider.token_request({"code": "auth-code"}, metadata)
+    userinfo_request = provider.userinfo_request("secret-access-token", metadata)
+    profile = provider.map_profile(
+        {
+            "sub": "subject-1234567890",
+            "preferred_username": "alice",
+            "email": "alice@example.com",
+            "name": "Alice Example",
+            "entity_code": "E1001",
+            "entity_short_name": "超级楚楚",
+            "dept_code": "D2002",
+            "dept_name": "平台研发部",
+        },
+        {"sub": "subject-1234567890"},
+    )
+
+    assert callback == OIDCCallbackData(code="query-code", state="query-state")
+    assert authorization_params == {"client_id": "client-id", "prompt": "login"}
+    assert token_request == OIDCHTTPRequest(
+        method="POST",
+        url="https://issuer.example/token",
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+        form={"code": "auth-code"},
+    )
+    assert userinfo_request == OIDCHTTPRequest(
+        method="GET",
+        url="https://issuer.example/userinfo",
+        headers={
+            "Accept": "application/json",
+            "Authorization": "Bearer secret-access-token",
+        },
+    )
+    assert profile == OIDCProfile(
+        subject="subject-1234567890",
+        username="alice",
+        email="alice@example.com",
+        name="Alice Example",
+        avatar=None,
+        entity_code="E1001",
+        entity_short_name="超级楚楚",
+        department_name="平台研发部",
+        department_code="D2002",
+        department_description=None,
+        raw={
+            "sub": "subject-1234567890",
+            "preferred_username": "alice",
+            "email": "alice@example.com",
+            "name": "Alice Example",
+            "entity_code": "E1001",
+            "entity_short_name": "超级楚楚",
+            "dept_code": "D2002",
+            "dept_name": "平台研发部",
+        },
+    )
 
 
 class FixtureOIDCProvider(OIDCProviderAdapter):
@@ -339,7 +414,10 @@ class FixtureOIDCProvider(OIDCProviderAdapter):
             email=profile["contacts"]["primary_email"],
             name=profile["display"]["full_name"],
             avatar=profile["display"].get("avatar_url"),
+            entity_code=None,
+            entity_short_name=None,
             department_name=org["department"]["name"],
+            department_code=None,
             department_description=org["department"].get("description"),
             raw=dict(userinfo_payload),
         )
@@ -424,7 +502,10 @@ def test_fixture_provider_demonstrates_alias_wrapper_and_nested_claim_compatibil
         email="alice@example.com",
         name="Alice Example",
         avatar="https://issuer.example/avatar.png",
+        entity_code=None,
+        entity_short_name=None,
         department_name="研发平台部",
+        department_code=None,
         department_description="负责 OIDC 接入",
         raw={
             "payload": {

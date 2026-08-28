@@ -47,7 +47,10 @@ class OIDCProfile:
     email: str
     name: str
     avatar: str | None = None
+    entity_code: str | None = None
+    entity_short_name: str | None = None
     department_name: str | None = None
+    department_code: str | None = None
     department_description: str | None = None
     raw: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
@@ -293,7 +296,35 @@ class StandardOIDCProvider(OIDCProviderAdapter):
         return normalized or None
 
 
+class CnnpOIDCProvider(StandardOIDCProvider):
+    """CNNP OIDC 适配器，复用标准协议并补充实体与部门编码映射。"""
+
+    provider_type = "cnnp"
+
+    def map_profile(
+        self,
+        userinfo_payload: Mapping[str, Any],
+        verified_id_token_claims: Mapping[str, Any],
+    ) -> OIDCProfile:
+        """在标准资料映射基础上补充 CNNP 的扩展字段。"""
+        profile = super().map_profile(userinfo_payload, verified_id_token_claims)
+        return OIDCProfile(
+            subject=profile.subject,
+            username=profile.username,
+            email=profile.email,
+            name=profile.name,
+            avatar=profile.avatar,
+            entity_code=self._read_string(userinfo_payload, "entity_code"),
+            entity_short_name=self._read_string(userinfo_payload, "entity_short_name"),
+            department_name=self._read_string(userinfo_payload, "dept_name") or profile.department_name,
+            department_code=self._read_string(userinfo_payload, "dept_code"),
+            department_description=profile.department_description,
+            raw=profile.raw,
+        )
+
+
 OIDC_PROVIDER_REGISTRY: dict[str, type[OIDCProviderAdapter]] = {
+    CnnpOIDCProvider.provider_type: CnnpOIDCProvider,
     StandardOIDCProvider.provider_type: StandardOIDCProvider,
 }
 

@@ -50,11 +50,11 @@ async def get_agent_assignment_options(db: AsyncSession, user: User) -> dict[str
         .order_by(User.username.asc(), User.id.asc())
     )
     users = list(user_result.scalars().all())
-    department_names = {department.id: department.name for department in all_departments}
+    department_names = {department.id: department.display_name for department in all_departments}
 
     return {
         "allowed_access_levels": allowed_levels,
-        "departments": [{"id": item.id, "name": item.name} for item in departments],
+        "departments": [{"id": item.id, "name": item.display_name} for item in departments],
         "users": [
             {
                 "uid": item.uid,
