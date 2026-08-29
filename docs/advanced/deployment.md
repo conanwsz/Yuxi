@@ -73,6 +73,98 @@ docker compose -f docker-compose.prod.yml --profile all up -d --build
 
 开发环境（`YUXI_ENV=development` 且未设置该变量）默认允许 `http://localhost:5173` 与 `http://127.0.0.1:5173`，方便本地前后端独立启动调试。从 0.7.0 升级到 0.7.1 时，如果此前是跨域部署但未显式声明来源，必须补上 `YUXI_CORS_ORIGINS`，否则前端跨域请求会被拒绝。
 
+## 独立测试环境
+
+测试环境与开发环境使用相同的后端、数据库、环境变量、持久化目录、容器名和宿主机端口。唯一差异是 `web`：开发环境运行 Vite 热更新服务器，测试环境执行 `vite build` 并由 Nginx 提供编译后的静态资源，从而避免 Vite 开发模式通过 JavaScript 注入 CSS。
+
+测试配置要求 Docker Compose 2.24.4 或更高版本，以支持 `!override` 和 `!reset`。
+
+::: danger 不要分两次启动
+不能先执行 `docker compose up -d`，再执行 `docker compose -f docker-compose.test.yml up -d`。每条 Compose 命令都是一次独立配置解析，第二条命令不会继承第一条命令加载过的基础文件，而且测试覆盖文件本身没有完整的 API、数据库等服务定义。
+
+必须在同一条命令中先传基础 `docker-compose.yml`，再传覆盖文件 `docker-compose.test.yml`。后续的 `up`、`ps`、`logs`、`down` 也必须使用相同的两个文件和相同顺序。
+:::
+
+推荐发布顺序如下。
+
+### 1. 拉取代码并检查 Compose 版本
+
+```bash
+git pull
+docker compose version
+```
+
+### 2. 预览最终合并配置
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.test.yml \
+  config
+```
+
+合并结果中 `api`、数据库等服务应保持 dev 配置；`web` 应显示 `docker/web.test.Dockerfile`、容器内端口 `80`、宿主机端口 `5173`，且不再包含 `/app/src` 等源码挂载。
+
+### 3. 一次性构建并启动
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.test.yml \
+  up -d --build
+```
+
+如果服务器之前已经运行普通 dev，仍然只需要执行上面这一条组合命令。Compose 会保留配置没有变化的服务，只重新构建并重建 `web-dev`。
+
+### 4. 查看容器和日志
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.test.yml \
+  ps
+
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.test.yml \
+  logs --tail=100 web
+```
+
+测试环境仍对外使用宿主机 `5173`，所以服务器外围 Nginx 的 `proxy_pass http://127.0.0.1:5173` 无需修改。容器内端口从 Vite 的 `5173` 变为 Nginx 的 `80`，由 Compose 保持宿主机端口不变。
+
+编译会把项目全局样式变成 `/assets/*.css`，但 Ant Design Vue 的生产包仍会动态生成部分组件 `<style>`。如果外围 Nginx 只有 `default-src 'self'`，这些组件样式仍会被 CSP 拒绝。测试域名需要用 `docker/nginx/test-site.conf.example` 中的策略替换原 CSP，其中 `style-src 'self' 'unsafe-inline'` 专门允许组件动态样式；不要叠加两条 CSP，因为浏览器会同时执行两者，旧策略仍会产生拦截。
+
+### 5. 验证测试环境已经使用编译产物
+
+```bash
+curl -s http://127.0.0.1:5173/ | grep -E '/@vite/client|/src/main.js'
+# 正确结果：无输出。首页资源应为 /assets/*.js 和 /assets/*.css。
+
+curl -s http://127.0.0.1:5173/ | grep '/assets/'
+# 正确结果：能够看到 /assets/*.js 和 /assets/*.css。
+```
+
+### 6. 更新或停止
+
+后续更新仍执行相同的组合命令：
+
+```bash
+git pull
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.test.yml \
+  up -d --build
+```
+
+停止测试环境时也必须使用相同的两个文件：
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.test.yml \
+  down
+```
+
 ## 维护与更新
 
 ### 从使用默认凭据的版本升级

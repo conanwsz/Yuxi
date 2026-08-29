@@ -5,8 +5,9 @@ import time
 import traceback
 from urllib.parse import quote, unquote
 
-from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, Security, UploadFile
 from fastapi.responses import FileResponse
+from fastapi.security import HTTPBearer
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -61,7 +62,16 @@ from server.utils.knowledge_permissions import (
     require_knowledge_base_read,
 )
 
-knowledge = APIRouter(prefix="/knowledge", tags=["knowledge"])
+knowledge_bearer = HTTPBearer(
+    auto_error=False,
+    scheme_name="BearerAuth",
+    description="输入 API Key（`yxkey_...`）或登录 JWT；Swagger 会自动添加 `Bearer` 前缀。",
+)
+knowledge = APIRouter(
+    prefix="/knowledge",
+    tags=["knowledge"],
+    dependencies=[Security(knowledge_bearer)],
+)
 
 ACTIVE_GRAPH_BUILD_STATUSES = {"pending", "running"}
 ACTIVE_DOCUMENT_ACTION_TASK_STATUSES = {"pending", "running"}
@@ -244,7 +254,11 @@ async def _assert_database_models_allowed(kb_id: str, current_user: User) -> Kno
 # =============================================================================
 
 
-@knowledge.get("/databases")
+@knowledge.get(
+    "/databases",
+    summary="列出当前身份可访问的知识库",
+    description="三方同步前用此接口取得目标 `kb_id`。结果同时受功能权限和知识库共享范围约束。",
+)
 async def get_databases(current_user: User = Depends(get_knowledge_user)):
     """获取所有知识库（根据用户权限过滤）"""
     try:
@@ -254,7 +268,18 @@ async def get_databases(current_user: User = Depends(get_knowledge_user)):
         return {"message": f"获取数据库列表失败 {e}", "databases": []}
 
 
-@knowledge.post("/databases")
+@knowledge.post(
+    "/databases",
+    summary="创建知识库",
+    description=(
+        "创建一个可接收文档的知识库。默认 `kb_type=milvus`。创建者需要 `knowledge.create`；"
+        "非默认类型还需要 `knowledge.types.manage`。自动同步通常只需创建一次并长期复用返回的 `kb_id`。"
+    ),
+    responses={
+        403: {"description": "缺少创建、类型选择、模型或共享权限"},
+        409: {"description": "知识库名称冲突"},
+    },
+)
 async def create_database(
     database_name: str = Body(...),
     description: str = Body(...),
@@ -733,7 +758,14 @@ async def export_database(
 # =============================================================================
 
 
-@knowledge.get("/databases/{kb_id}/documents")
+@knowledge.get(
+    "/databases/{kb_id}/documents",
+    summary="分页查询知识库文档及处理状态",
+    description=(
+        "用于同步结果核验或在没有 `system.tasks.manage` 权限时轮询文档状态。"
+        "上传完成不代表可检索，文档完成向量入库后才可用于知识查询。"
+    ),
+)
 async def list_documents(
     kb_id: str,
     parent_id: str | None = Query(None, description="父文件夹 ID，空值表示根目录"),
@@ -787,7 +819,11 @@ async def search_documents(
     )
 
 
-@knowledge.get("/databases/{kb_id}/documents/exists")
+@knowledge.get(
+    "/databases/{kb_id}/documents/exists",
+    summary="按文件名或相对路径检查文档是否存在",
+    description="仅检查名称/路径，不比较文件内容；可靠的内容去重仍以上传接口的 `content_hash` 检查为准。",
+)
 async def document_file_exists(
     kb_id: str,
     filename: str = Query(..., min_length=1, description="知识库文件展示名或相对路径"),
@@ -805,11 +841,41 @@ async def document_file_exists(
     return {"kb_id": kb_id, "filename": normalized_filename, "exists": exists}
 
 
-@knowledge.post("/databases/{kb_id}/documents")
+@knowledge.post(
+    "/databases/{kb_id}/documents",
+    summary="提交文档解析和可选自动入库任务",
+    description=(
+        "`items` 必须使用上传接口返回的 MinIO `file_path`；`params.content_hashes` 必须按该地址映射到 "
+        "`content_hash`。设置 `params.auto_index=true` 后，后台任务依次创建文件记录、解析、分块并向量入库。"
+        "接口返回 `task_id`，应继续查询 `/api/tasks/{task_id}`，任务 `success` 才表示处理链路完成。"
+    ),
+    responses={
+        400: {"description": "文件地址、content_hash 或处理参数不合法"},
+        403: {"description": "缺少文档管理或目标知识库管理权限"},
+        500: {"description": "后台任务提交失败"},
+    },
+)
 async def add_documents(
     kb_id: str,
-    items: list[str] = Body(...),
-    params: dict = Body(...),
+    items: list[str] = Body(
+        ...,
+        description="上传接口返回的 `file_path` 列表。",
+        examples=[["minio://knowledgebases/kb_example/upload/manual_1720000000000.pdf"]],
+    ),
+    params: dict = Body(
+        ...,
+        description="解析与入库参数；三方自动同步应传 `content_type=file`、`content_hashes` 和 `auto_index=true`。",
+        examples=[
+            {
+                "content_type": "file",
+                "content_hashes": {
+                    "minio://knowledgebases/kb_example/upload/manual_1720000000000.pdf": "sha256-example"
+                },
+                "file_sizes": {"minio://knowledgebases/kb_example/upload/manual_1720000000000.pdf": 1048576},
+                "auto_index": True,
+            }
+        ],
+    ),
     current_user: User = Depends(require_knowledge_base_manage),
 ):
     """添加文档到知识库（上传 -> 解析 -> 可选入库）"""
@@ -1598,7 +1664,13 @@ async def batch_delete_documents(
     return {"message": f"批量删除成功: 已删除 {deleted_count} 个文件", "deleted_count": deleted_count}
 
 
-@knowledge.delete("/databases/{kb_id}/documents/{doc_id}")
+@knowledge.delete(
+    "/databases/{kb_id}/documents/{doc_id}",
+    summary="删除知识库文档",
+    description=(
+        "删除文档记录、向量数据和相关存储对象。更新文档时应先确保新版本任务成功并验证可检索，再删除旧 `doc_id`。"
+    ),
+)
 async def delete_document(kb_id: str, doc_id: str, current_user: User = Depends(require_knowledge_base_manage)):
     """删除文档或文件夹"""
     logger.debug(f"DELETE document {doc_id} info in {kb_id}")
@@ -1718,7 +1790,11 @@ async def download_document(kb_id: str, doc_id: str, current_user: User = Depend
 # =============================================================================
 
 
-@knowledge.post("/databases/{kb_id}/query")
+@knowledge.post(
+    "/databases/{kb_id}/query",
+    summary="检索知识库",
+    description="在同步任务成功后执行一次业务问题检索，用于确认新知识已经可检索，而不只是文档状态发生变化。",
+)
 async def query_knowledge_base(
     kb_id: str,
     query: str = Body(...),
@@ -2017,10 +2093,26 @@ async def import_workspace_files(
     return {"status": "success", "items": results}
 
 
-@knowledge.post("/files/upload")
+@knowledge.post(
+    "/files/upload",
+    summary="上传知识原始文件",
+    description=(
+        "第一阶段接口：只将原始文件写入对象存储并返回 `file_path`、`content_hash` 和 `size`，"
+        "不会创建知识文档，也不会解析或向量入库。随后必须调用 "
+        "`POST /api/knowledge/databases/{kb_id}/documents`。单文件最大 100 MB；相同内容返回 409。"
+    ),
+    responses={
+        400: {"description": "文件为空、类型不支持或超过 100 MB"},
+        403: {"description": "缺少文档管理或目标知识库管理权限"},
+        409: {"description": "目标知识库已存在相同内容"},
+    },
+)
 async def upload_file(
-    file: UploadFile = File(...),
-    kb_id: str | None = Query(None),
+    file: UploadFile = File(
+        ...,
+        description="待同步的知识文件。支持类型可通过 `/api/knowledge/files/supported-types` 查询。",
+    ),
+    kb_id: str | None = Query(None, description="目标知识库 ID；三方同步必须传入，以执行资源管理权限和内容去重校验。"),
     current_user: User = Depends(get_knowledge_user),
 ):
     """上传文件"""

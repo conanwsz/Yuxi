@@ -35,6 +35,7 @@ https://<your-yuxi-host>/api/auth/oidc/callback
 ```dotenv
 OIDC_ENABLED=true
 OIDC_PROVIDER_NAME=统一认证
+OIDC_PROVIDER_TYPE=standard
 
 # 首选变量：Issuer 根地址，Yuxi 从其 Discovery 文档读取协议端点。
 OIDC_ISSUER_BASE_URL=https://cnoidc.t.cn-np.com
@@ -47,6 +48,34 @@ OIDC_SCOPES=openid profile email
 ```
 
 服务端优先读取 `OIDC_ISSUER_BASE_URL`，仅在该变量未设置时回退读取旧配置名 `OIDC_ISSUER_URL`；不要同时配置两个变量。不要在前端构建变量、前端资源、代码仓库、请求 URL 或普通日志中存放或输出 `OIDC_CLIENT_SECRET`、授权码、Token、`state`、`nonce` 或 PKCE verifier。
+
+### Provider 适配器
+
+`OIDC_PROVIDER_TYPE` 选择后端内置的 OIDC Provider 适配器。当前内置类型如下：
+
+| 类型 | 适用范围 | 回调方式 |
+| --- | --- | --- |
+| `standard` | 符合标准 Discovery、Token 和 UserInfo 结构的 OIDC Server | GET Query 或 `response_mode=form_post` |
+| `cnnp` | CNNP 标准协议端点，以及公司、部门编码扩展字段 | GET Query 或 `response_mode=form_post` |
+
+未配置时默认使用 `standard`。配置值不在内置注册表中时，服务会明确拒绝启动 OIDC 流程，不会静默回退。Provider 显示名称仍由 `OIDC_PROVIDER_NAME` 控制，与适配器类型无关。
+
+适配器只处理授权参数、回调承载、Token/UserInfo 请求及 Claim 结构差异。`state`、`nonce`、PKCE、ID Token 验签、Issuer 校验以及 `issuer + sub` 身份绑定始终由 Yuxi 核心流程执行，不能由适配器关闭。新增 Provider 类型前必须提供脱敏的 callback、Token、UserInfo/ID Token 样例及契约测试；不要通过放宽安全校验兼容不合规 Server。
+
+### CNNP 组织字段同步
+
+CNNP 认证中心使用标准 OIDC 协议，并在 UserInfo 中增加以下字段。启用时配置 `OIDC_PROVIDER_TYPE=cnnp`：
+
+| UserInfo 字段 | 超级楚楚字段 | 同步语义 |
+| --- | --- | --- |
+| `entity_code` | 公司编码 | 唯一匹配或创建公司主体根节点。 |
+| `entity_short_name` | 主体 OIDC 名称 | 认证中心更新时同步，不覆盖管理员本地名称。 |
+| `dept_code` | 部门编码 | `-BM` 后每两位一级，唯一确定部门身份和父子关系。 |
+| `dept_name` | 部门 OIDC 名称 | 只补充或更新当前编码节点的 OIDC 名称。 |
+
+例如 `JXI-BM460503` 会解析为 `JXI-BM46 / JXI-BM4605 / JXI-BM460503`。缺少名称的父级先以编码展示，父级人员后续登录时补齐 OIDC 名称。管理员可设置独立的本地名称作为展示别名，但不能修改编码或移动 OIDC 节点。
+
+CNNP 用户每次登录都会同步主部门；切换公司主体时，仅保留新主体内的兼职部门。`entity_code` 或 `dept_code` 缺失、格式不合法时，登录继续完成，但用户主部门会同步到 `OIDC_DEFAULT_DEPARTMENT`。编码和名称来自 UserInfo 响应，不是浏览器回调 query 参数。
 
 修改 `.env` 后，Compose 已创建的容器不会自动读取新环境变量。重建 API 容器使配置生效：
 
@@ -99,6 +128,10 @@ code_challenge_method=S256
 | `name` | 可选显示名称。 |
 | `preferred_username` | `name` 缺失时的显示名称兜底。 |
 | `picture` | 可选头像。 |
+| `entity_code` | `cnnp` 适配器使用的公司编码。 |
+| `entity_short_name` | `cnnp` 适配器使用的公司简称。 |
+| `dept_code` | `cnnp` 适配器使用的层级部门编码。 |
+| `dept_name` | `cnnp` 适配器使用的部门名称。 |
 
 Yuxi 必须以 `issuer + sub`（例如 `issuer|sub`）作为外部身份的唯一键；不能使用 email、用户名或显示名称作为跨认证中心的稳定身份。若启用既有账号的 email 自动关联，必须规范化 email、拒绝已关联到其他 OIDC 身份的冲突，并在缺少首次映射所需字段时拒绝自动登录，而不是猜测用户身份。
 
@@ -116,6 +149,7 @@ Yuxi 必须以 `issuer + sub`（例如 `issuer|sub`）作为外部身份的唯�
 
 - [ ] 每个环境均登记独立 Confidential Client、精确的 HTTPS 回调地址和需要时的退出回调地址。
 - [ ] 服务端通过 OIDC Discovery 获取协议端点，授权流为 Authorization Code + PKCE S256。
+- [ ] `OIDC_PROVIDER_TYPE` 是已登记的内置适配器；非标准适配器有脱敏 fixture 和契约测试。
 - [ ] `state`、`nonce`、`code_verifier` 只保存在短期服务端事务中，`state` 仅能消费一次。
 - [ ] 回调在换取 Token 前完成 state 校验；ID Token 完成签名、issuer、audience、时间和 nonce 校验。
 - [ ] UserInfo 的 `sub` 与 Issuer 组成外部身份键；email 不作为主身份。

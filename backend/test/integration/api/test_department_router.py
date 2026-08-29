@@ -5,6 +5,11 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from sqlalchemy import select
+
+from yuxi.services.oidc_organization_service import OIDCOrganizationService
+from yuxi.storage.postgres.manager import pg_manager
+from yuxi.storage.postgres.models_business import Department
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
@@ -35,6 +40,14 @@ async def test_organization_hierarchy_memberships_and_archive_rules(test_client,
     try:
         root_a = await _create_department(test_client, admin_headers, name=f"公司A-{suffix}")
         root_b = await _create_department(test_client, admin_headers, name=f"公司B-{suffix}")
+
+        clear_local_root = await test_client.put(
+            f"/api/departments/{root_a['id']}",
+            json={"local_name": None},
+            headers=admin_headers,
+        )
+        assert clear_local_root.status_code == 422, clear_local_root.text
+
         child_a = await _create_department(test_client, admin_headers, name=f"研发-{suffix}", parent_id=root_a["id"])
         child_b = await _create_department(test_client, admin_headers, name=f"产品-{suffix}", parent_id=root_a["id"])
         same_a = await _create_department(test_client, admin_headers, name="同名部门", parent_id=child_a["id"])
@@ -122,3 +135,86 @@ async def test_default_department_is_protected(test_client, admin_headers):
 
     deleted = await test_client.delete(f"/api/departments/{default_department['id']}", headers=admin_headers)
     assert deleted.status_code == 400, deleted.text
+
+
+async def test_oidc_department_api_exposes_names_and_rejects_local_move(test_client, admin_headers):
+    suffix = uuid.uuid4().hex[:8].upper()
+    entity_code = f"API{suffix}"
+    created_ids: list[int] = []
+    try:
+        pg_manager._initialized = False
+        pg_manager.async_engine = None
+        pg_manager.AsyncSession = None
+        pg_manager.initialize()
+        await pg_manager.ensure_business_schema()
+        async with pg_manager.get_async_session_context() as db:
+            leaf = await OIDCOrganizationService.resolve_cnnp_department(
+                db,
+                entity_code=entity_code,
+                entity_short_name="接口测试公司",
+                department_code="JXI-BM4605",
+                department_name="OIDC 接口部门",
+                default_department_name="默认部门",
+            )
+            leaf_id = leaf.id
+            oidc_departments = list(
+                (await db.execute(select(Department).where(Department.entity_code == entity_code))).scalars().all()
+            )
+            created_ids = [
+                item.id
+                for item in sorted(oidc_departments, key=lambda value: len(value.department_code or ""), reverse=True)
+            ]
+        await pg_manager.async_engine.dispose()
+        pg_manager._initialized = False
+        pg_manager.async_engine = None
+        pg_manager.AsyncSession = None
+
+        departments_response = await test_client.get("/api/departments", headers=admin_headers)
+        assert departments_response.status_code == 200, departments_response.text
+        oidc_items = [item for item in departments_response.json() if item["entity_code"] == entity_code]
+        leaf_item = next(item for item in oidc_items if item["id"] == leaf_id)
+        assert leaf_item["name"] == "OIDC 接口部门"
+        assert leaf_item["local_name"] is None
+        assert leaf_item["oidc_name"] == "OIDC 接口部门"
+        assert leaf_item["department_code"] == "JXI-BM4605"
+
+        local_override = await test_client.put(
+            f"/api/departments/{leaf_id}",
+            json={"local_name": "本地接口部门"},
+            headers=admin_headers,
+        )
+        assert local_override.status_code == 200, local_override.text
+        assert local_override.json()["name"] == "本地接口部门"
+        assert local_override.json()["oidc_name"] == "OIDC 接口部门"
+
+        clear_override = await test_client.put(
+            f"/api/departments/{leaf_id}",
+            json={"local_name": None},
+            headers=admin_headers,
+        )
+        assert clear_override.status_code == 200, clear_override.text
+        assert clear_override.json()["name"] == "OIDC 接口部门"
+        assert clear_override.json()["local_name"] is None
+
+        root = next(item for item in oidc_items if item["parent_id"] is None)
+        move = await test_client.post(
+            f"/api/departments/{leaf_id}/move",
+            json={"parent_id": root["id"]},
+            headers=admin_headers,
+        )
+        assert move.status_code == 422, move.text
+
+        conflicting_names = await test_client.put(
+            f"/api/departments/{leaf_id}",
+            json={"name": "名称 A", "local_name": "名称 B"},
+            headers=admin_headers,
+        )
+        assert conflicting_names.status_code == 422, conflicting_names.text
+    finally:
+        for department_id in created_ids:
+            await _archive_and_delete(test_client, admin_headers, department_id)
+        if pg_manager.async_engine is not None:
+            await pg_manager.async_engine.dispose()
+        pg_manager._initialized = False
+        pg_manager.async_engine = None
+        pg_manager.AsyncSession = None

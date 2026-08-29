@@ -1,4 +1,5 @@
 import re
+from urllib.parse import parse_qsl
 from yuxi.utils import logger
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status, UploadFile, File
@@ -52,7 +53,7 @@ from yuxi.services.organization_service import OrganizationService
 # OIDC 认证相关导入
 from yuxi.services.oidc_service import (
     get_oidc_config_handler,
-    oidc_callback_handler,
+    oidc_callback_request_handler,
     oidc_exchange_code_handler,
     oidc_login_url_handler,
 )
@@ -386,7 +387,7 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
     # 获取部门名称
     department_name = None
     if user.department_id:
-        result = await db.execute(select(Department.name).filter(Department.id == user.department_id))
+        result = await db.execute(select(Department.display_name).filter(Department.id == user.department_id))
         department_name = result.scalar_one_or_none()
 
     await resolve_user_permissions(db, user)
@@ -1352,7 +1353,7 @@ async def impersonate_user(
     # 获取部门名称
     department_name = None
     if target_user.department_id:
-        result = await db.execute(select(Department.name).filter(Department.id == target_user.department_id))
+        result = await db.execute(select(Department.display_name).filter(Department.id == target_user.department_id))
         department_name = result.scalar_one_or_none()
 
     # 记录操作（危险操作标记）
@@ -1395,17 +1396,41 @@ async def get_oidc_login_url(redirect_path: str = "/"):
     return await oidc_login_url_handler(redirect_path)
 
 
-@auth.get("/oidc/callback", response_class=RedirectResponse)
+@auth.api_route("/oidc/callback", methods=["GET", "POST"], response_class=RedirectResponse)
 async def oidc_callback(
     request: Request,
-    code: str | None = None,
-    state: str | None = None,
-    error: str | None = None,
-    error_description: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """处理 OIDC 回调 - 重定向到前端 Vue 路由"""
-    return await oidc_callback_handler(code, state, db, request, error, error_description)
+    """接收 query 或 form_post 回调，并交给当前 Provider 适配器解析。"""
+    if len(request.query_params.multi_items()) > 16:
+        raise HTTPException(status_code=400, detail="OIDC 回调参数过多")
+    query = {key: request.query_params.getlist(key) for key in request.query_params}
+    form = None
+
+    if request.method == "POST":
+        content_type = request.headers.get("content-type", "").partition(";")[0].strip().lower()
+        if content_type != "application/x-www-form-urlencoded":
+            raise HTTPException(status_code=400, detail="OIDC 回调请求格式不支持")
+
+        body = await request.body()
+        if len(body) > 16_384:
+            raise HTTPException(status_code=400, detail="OIDC 回调请求过大")
+
+        try:
+            pairs = parse_qsl(
+                body.decode("utf-8"),
+                keep_blank_values=True,
+                strict_parsing=True,
+                max_num_fields=16,
+            )
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="OIDC 回调请求格式无效") from exc
+
+        form = {}
+        for key, value in pairs:
+            form.setdefault(key, []).append(value)
+
+    return await oidc_callback_request_handler(query, form, db, request)
 
 
 @auth.post("/oidc/exchange-code", response_model=OIDCLoginResponse)

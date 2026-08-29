@@ -43,6 +43,7 @@ export const createDepartment = (data) => {
  * @param {number} departmentId - 部门ID
  * @param {Object} data - 部门数据
  * @param {string} [data.name] - 部门名称
+ * @param {string|null} [data.local_name] - 管理员本地名称；OIDC 节点可传 null 清除覆盖
  * @param {string} [data.description] - 部门描述
  * @returns {Promise<Object>} 更新后的部门
  */

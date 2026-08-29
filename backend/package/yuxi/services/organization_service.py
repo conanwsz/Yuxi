@@ -17,7 +17,9 @@ from yuxi.utils.datetime_utils import utc_now_naive
 class OrganizationService:
     @staticmethod
     async def list_departments(db: AsyncSession, *, include_inactive: bool = True) -> list[dict[str, Any]]:
-        query = select(Department).order_by(Department.sort_order.asc(), Department.name.asc(), Department.id.asc())
+        query = select(Department).order_by(
+            Department.sort_order.asc(), Department.display_name.asc(), Department.id.asc()
+        )
         if not include_inactive:
             query = query.where(Department.status == "active")
         departments = list((await db.execute(query)).scalars().all())
@@ -53,7 +55,7 @@ class OrganizationService:
             root_id = department_id
             while current is not None and current.id not in seen:
                 seen.add(current.id)
-                names.append(current.name)
+                names.append(current.display_name)
                 root_id = current.id
                 current = by_id.get(current.parent_id) if current.parent_id is not None else None
             names.reverse()
@@ -176,10 +178,15 @@ class OrganizationService:
         department: Department,
         *,
         name: str | None = None,
+        clear_name: bool = False,
         description: str | None = None,
         sort_order: int | None = None,
     ) -> Department:
-        if name is not None:
+        if clear_name:
+            if not (department.oidc_name or department.department_code or department.entity_code):
+                raise ValueError("纯本地组织节点的名称不能为空")
+            department.name = None
+        elif name is not None:
             normalized_name = name.strip()
             if not normalized_name or len(normalized_name) > 50:
                 raise ValueError("组织名称长度必须在 1-50 个字符之间")
@@ -200,6 +207,8 @@ class OrganizationService:
     async def move_department(cls, db: AsyncSession, department: Department, new_parent_id: int) -> Department:
         if department.is_system or department.parent_id is None:
             raise ValueError("系统节点和根主体不允许移动")
+        if department.department_code or department.entity_code:
+            raise ValueError("OIDC 组织节点的层级由部门编码维护，不允许本地移动")
         if department.id == new_parent_id:
             raise ValueError("组织节点不能移动到自身")
         new_parent = await db.get(Department, new_parent_id)
@@ -218,7 +227,7 @@ class OrganizationService:
         if descendant_check.scalar_one_or_none() is not None:
             raise ValueError("组织节点不能移动到自身后代")
         await cls._ensure_sibling_name_available(
-            db, name=department.name, parent_id=new_parent_id, exclude_id=department.id
+            db, name=department.display_name, parent_id=new_parent_id, exclude_id=department.id
         )
 
         await db.execute(
@@ -360,16 +369,16 @@ class OrganizationService:
             select(UserDepartmentMembership, Department)
             .join(Department, Department.id == UserDepartmentMembership.department_id)
             .where(UserDepartmentMembership.user_id == user_id, UserDepartmentMembership.status == "active")
-            .order_by(UserDepartmentMembership.membership_type.asc(), Department.name.asc())
+            .order_by(UserDepartmentMembership.membership_type.asc(), Department.display_name.asc())
         )
         departments = await OrganizationService.list_departments(db)
         by_id = {item["id"]: item for item in departments}
         return [
             {
                 "department_id": department.id,
-                "name": department.name,
-                "path": by_id.get(department.id, {}).get("path", [department.name]),
-                "path_label": by_id.get(department.id, {}).get("path_label", department.name),
+                "name": department.display_name,
+                "path": by_id.get(department.id, {}).get("path", [department.display_name]),
+                "path_label": by_id.get(department.id, {}).get("path_label", department.display_name),
                 "membership_type": membership.membership_type,
             }
             for membership, department in result.all()

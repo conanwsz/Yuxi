@@ -20,7 +20,7 @@ class DepartmentRepository:
     async def get_by_name(self, name: str) -> Department | None:
         """根据名称获取部门"""
         async with pg_manager.get_async_session_context() as session:
-            result = await session.execute(select(Department).where(Department.name == name))
+            result = await session.execute(select(Department).where(Department.display_name == name))
             return result.scalar_one_or_none()
 
     async def list_departments(self) -> list[Department]:
@@ -93,5 +93,5 @@ class DepartmentRepository:
     async def exists_by_name(self, name: str) -> bool:
         """检查部门名称是否存在"""
         async with pg_manager.get_async_session_context() as session:
-            result = await session.execute(select(Department.id).where(Department.name == name))
+            result = await session.execute(select(Department.id).where(Department.display_name == name))
             return result.scalar_one_or_none() is not None

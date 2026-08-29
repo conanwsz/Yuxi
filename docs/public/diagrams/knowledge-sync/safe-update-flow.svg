@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="300" viewBox="0 0 1280 300" role="img" aria-labelledby="title desc">
+  <title id="title">知识文件安全更新流程</title>
+  <desc id="desc">先让新版本入库并验证，再删除旧版本，失败时保留旧知识。</desc>
+  <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L10,3 L0,6 Z" fill="#5b6472"/></marker><style>.box{fill:#f7f9fc;stroke:#45627d;stroke-width:2;rx:12}.accent{fill:#e8f4ff;stroke:#1677c8}.success{fill:#e9f8ef;stroke:#23894e}.warn{fill:#fff4dd;stroke:#b87912}.text{font:15px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#1e2937;text-anchor:middle}.line{stroke:#5b6472;stroke-width:2;fill:none;marker-end:url(#arrow)}</style></defs>
+  <rect width="1280" height="300" fill="#fff"/>
+  <text x="40" y="42" style="font:700 24px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;fill:#17324d">安全更新：新版本成功后再删除旧版本</text>
+  <rect class="box" x="35" y="100" width="150" height="66"/><text class="text" x="110" y="128"><tspan x="110">来源内容变化</tspan><tspan x="110" dy="21">hash 不同</tspan></text>
+  <path class="line" d="M185 133 H220"/><rect class="box accent" x="225" y="100" width="150" height="66"/><text class="text" x="300" y="139">上传新版本</text>
+  <path class="line" d="M375 133 H410"/><rect class="box accent" x="415" y="100" width="170" height="66"/><text class="text" x="500" y="128"><tspan x="500">解析并向量入库</tspan><tspan x="500" dy="21">等待任务成功</tspan></text>
+  <path class="line" d="M585 133 H620"/><polygon class="box" points="690,90 755,133 690,176 625,133"/><text class="text" x="690" y="128"><tspan x="690">检索验证</tspan><tspan x="690" dy="20">通过？</tspan></text>
+  <path class="line" d="M690 176 V230 H475"/><text class="text" x="645" y="216">否</text><rect class="box warn" x="255" y="202" width="215" height="58"/><text class="text" x="362" y="236">保留旧版本并告警</text>
+  <path class="line" d="M755 133 H790"/><text class="text" x="772" y="118">是</text><rect class="box success" x="795" y="100" width="160" height="66"/><text class="text" x="875" y="128"><tspan x="875">删除旧 file_id</tspan><tspan x="875" dy="21">无知识空窗</tspan></text>
+  <path class="line" d="M955 133 H990"/><rect class="box success" x="995" y="100" width="235" height="66"/><text class="text" x="1112" y="128"><tspan x="1112">保存新 hash/file_id</tspan><tspan x="1112" dy="21">更新同步状态</tspan></text>
+</svg>

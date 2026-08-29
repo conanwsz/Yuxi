@@ -1,0 +1,21 @@
+# 测试环境直接复用 docker-compose.yml；唯一差异是 web 使用编译后的静态资源。
+# 启动时必须按顺序同时传入两个 Compose 文件。
+#
+# 正确：docker compose -f docker-compose.yml -f docker-compose.test.yml up -d --build
+# 错误：先执行 docker compose up，再单独执行 docker compose -f docker-compose.test.yml up
+# 每次 up、ps、logs、down 都应传入相同的两个文件；Compose 不会记住上一次的文件组合。
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: docker/web.test.Dockerfile
+      target: test
+    # 保持 dev 对外端口 5173 不变，容器内由 Nginx 监听 80。
+    ports: !override
+      - "5173:80"
+    # 移除 dev 的源码热挂载，确保运行的是镜像内已经编译的 dist。
+    volumes: !reset []
+    environment:
+      NODE_ENV: production
+    command: nginx -g "daemon off;"

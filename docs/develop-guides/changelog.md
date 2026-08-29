@@ -6,6 +6,9 @@
 
 ## v0.7.2 (current)
 
+- 新增测试服务器 Web 编译覆盖配置：后端、数据库、环境变量、数据目录和宿主机 5173 端口与 dev 保持一致，仅将 Vite 热更新前端替换为固定 pnpm 版本构建的静态资源和 Nginx；同时提供测试域名 CSP 修正，允许 Ant Design Vue 的动态组件样式。
+- OIDC 登录新增静态 Provider 适配器层，通过 `OIDC_PROVIDER_TYPE` 选择单个认证中心；新增 `cnnp` 适配器按公司、部门编码自动补齐组织树和占位父级，每次登录同步主部门。部门名称拆分为本地别名与 OIDC 名称并按本地优先展示，核心仍强制执行 state、PKCE、ID Token 验签及 `issuer + sub` 绑定。
+- 新增知识库三方自动同步对接包：正式指南覆盖全量、增量、安全更新、删除、任务恢复与检索验收，Swagger 补充 Bearer 认证、调用顺序和请求示例，并提供可串联变量的 Postman 集合及纯标准库 Python 目录同步工程；明确当前非版本化接口、用户级 Key 权限、两阶段提交和进程内任务恢复边界。
 - 修复新登录用户可能因内置智能体名称排序而默认进入“深度研究”的问题，前端在无历史选择时优先使用后端 `is_default` 标记；OIDC 用户设置新增系统只读 `uid=User.uid`，保存时不可覆盖或删除，新建沙盒强制注入该值，已绑定 OIDC 身份的既有用户无需迁移即可生效。
 - 新增 MiniMax Coding Plan MCP 独立 Docker 部署包：固定兼容依赖并通过 Streamable HTTP 暴露 `web_search`、`understand_image`，附带 Compose、健康检查、离线镜像迁移和 Yuxi 接入说明；Key 仅由运行环境注入，默认只监听本机。
 - 修复 Agent 文件侧栏中 `outputs` 目录的 PPTX/DOCX 被误判为不支持预览：统一复用 Office 转 PDF 预览能力并返回 PDF 元数据，与 `workspace/saved_artifacts` 行为保持一致，原文件下载不受影响。

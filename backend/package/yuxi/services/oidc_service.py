@@ -10,6 +10,7 @@ import secrets
 import time
 import urllib.parse
 from base64 import urlsafe_b64encode
+from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlencode, urlparse
 
@@ -21,6 +22,14 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from yuxi.repositories.role_repository import RoleRepository
+from yuxi.services.oidc_provider import (
+    OIDCCallbackData,
+    OIDCHTTPRequest,
+    OIDCTokenSet,
+    get_oidc_provider,
+    normalize_provider_type,
+)
+from yuxi.services.oidc_organization_service import OIDCOrganizationService
 from yuxi.services.operation_log_service import log_operation
 from yuxi.services.permission_service import resolve_user_permissions
 from yuxi.storage.postgres.models_business import (
@@ -48,6 +57,7 @@ class OIDCConfig(BaseModel):
     """OIDC 配置模型"""
 
     enabled: bool = Field(default=False, description="是否启用 OIDC 认证")
+    provider_type: str = Field(default="standard", description="OIDC Provider 适配器类型")
     issuer_url: str = Field(default="", description="OIDC Provider 的 issuer URL")
     client_id: str = Field(default="", description="OIDC Client ID")
     client_secret: str = Field(default="", description="OIDC Client Secret")
@@ -79,6 +89,12 @@ class OIDCConfig(BaseModel):
             raise ValueError("OIDC_DEFAULT_ROLE 仅支持 user 或 admin")
         return role
 
+    @field_validator("provider_type")
+    @classmethod
+    def validate_provider_type(cls, value: str) -> str:
+        """规范化 Provider 类型，具体可用性由静态注册表校验。"""
+        return normalize_provider_type(value)
+
     @field_validator("id_token_algorithms", mode="before")
     @classmethod
     def validate_id_token_algorithms(cls, value: str | tuple[str, ...]) -> tuple[str, ...]:
@@ -104,6 +120,7 @@ class OIDCConfig(BaseModel):
 
         return cls(
             enabled=enabled,
+            provider_type=_env("OIDC_PROVIDER_TYPE", "standard"),
             provider_name=_env("OIDC_PROVIDER_NAME", "OIDC登录"),
             issuer_url=_env("OIDC_ISSUER_BASE_URL") or _env("OIDC_ISSUER_URL"),
             client_id=_env("OIDC_CLIENT_ID"),
@@ -150,6 +167,7 @@ class OIDCConfig(BaseModel):
 
 
 oidc_config = OIDCConfig.from_env()
+oidc_provider = get_oidc_provider(oidc_config.provider_type, oidc_config)
 
 
 class OIDCProviderMetadata:
@@ -350,7 +368,7 @@ class OIDCUtils:
 
         redirect_uri = oidc_config.redirect_uri
 
-        params = {
+        common_params = {
             "client_id": oidc_config.client_id,
             "response_type": "code",
             "scope": oidc_config.scopes,
@@ -360,16 +378,13 @@ class OIDCUtils:
             "code_challenge": cls.code_challenge(code_verifier),
             "code_challenge_method": "S256",
         }
-
-        # 如果配置强制登录，添加 prompt=login 参数
-        if oidc_config.force_prompt_login:
-            params["prompt"] = "login"
+        params = oidc_provider.authorization_params(common_params)
 
         query_string = urllib.parse.urlencode(params)
         return f"{metadata.authorization_endpoint}?{query_string}"
 
     @classmethod
-    async def exchange_code_for_token(cls, code: str, code_verifier: str) -> dict[str, Any] | None:
+    async def exchange_code_for_token(cls, code: str, code_verifier: str) -> OIDCTokenSet | None:
         """用授权码交换令牌"""
         metadata = await cls.get_metadata()
         if not metadata or not metadata.token_endpoint:
@@ -377,7 +392,7 @@ class OIDCUtils:
 
         redirect_uri = oidc_config.redirect_uri
 
-        data = {
+        common_form = {
             "grant_type": "authorization_code",
             "code": code,
             "redirect_uri": redirect_uri,
@@ -387,45 +402,44 @@ class OIDCUtils:
         }
 
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    metadata.token_endpoint,
-                    data=data,
-                    headers={
-                        "Accept": "application/json",
-                        "Content-Type": "application/x-www-form-urlencoded",
-                    },
-                    timeout=30.0,
-                )
-                response.raise_for_status()
-                payload = response.json()
-                return payload if isinstance(payload, dict) else None
+            request = oidc_provider.token_request(common_form, metadata)
+            payload = await cls._execute_json_request(request)
+            return oidc_provider.parse_token_response(payload) if payload is not None else None
 
         except Exception as exc:
             logger.error(f"Failed to exchange OIDC code: {type(exc).__name__}")
             return None
 
     @classmethod
-    async def get_userinfo(cls, access_token: str) -> dict[str, Any] | None:
+    async def get_userinfo(cls, access_token: str) -> Mapping[str, Any] | None:
         """获取用户信息"""
         metadata = await cls.get_metadata()
         if not metadata or not metadata.userinfo_endpoint:
             return None
 
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(
-                    metadata.userinfo_endpoint,
-                    headers={"Accept": "application/json", "Authorization": f"Bearer {access_token}"},
-                    timeout=30.0,
-                )
-                response.raise_for_status()
-                payload = response.json()
-                return payload if isinstance(payload, dict) else None
+            request = oidc_provider.userinfo_request(access_token, metadata)
+            return await cls._execute_json_request(request)
 
         except Exception as exc:
             logger.error(f"Failed to get OIDC userinfo: {type(exc).__name__}")
             return None
+
+    @staticmethod
+    async def _execute_json_request(request: OIDCHTTPRequest) -> dict[str, Any] | None:
+        """统一执行适配器描述的 HTTP 请求，并只接受 JSON 对象响应。"""
+        request_kwargs: dict[str, Any] = {
+            "headers": dict(request.headers),
+            "timeout": 30.0,
+        }
+        if request.form is not None:
+            request_kwargs["data"] = dict(request.form)
+
+        async with httpx.AsyncClient() as client:
+            response = await client.request(request.method, request.url, **request_kwargs)
+            response.raise_for_status()
+            payload = response.json()
+        return payload if isinstance(payload, dict) else None
 
     @classmethod
     async def _get_signing_jwk(cls, metadata: OIDCProviderMetadata, id_token: str):
@@ -516,52 +530,25 @@ class OIDCUtils:
         return f"{metadata.end_session_endpoint}?{query_string}"
 
     @classmethod
-    def extract_user_info(cls, userinfo: dict[str, Any]) -> dict[str, Any]:
-        """从 userinfo 中提取用户信息"""
-        sub = userinfo.get("sub", "")
-
-        username = userinfo.get(oidc_config.username_claim, "")
-        if not username:
-            username = userinfo.get("preferred_username", "")
-        if not username:
-            username = userinfo.get("email", "").split("@")[0]
-        if not username:
-            username = sub[:20]
-
-        email = userinfo.get(oidc_config.email_claim, "")
-        if not email:
-            email = userinfo.get("email", "")
-
-        name = userinfo.get(oidc_config.name_claim, "")
-        if not name:
-            name = userinfo.get("name", "")
-        if not name:
-            name = username
-
-        picture = userinfo.get("picture")
-        avatar = picture.strip() if isinstance(picture, str) and picture.strip() else None
-
-        department_name = None
-        department_description = None
-        if oidc_config.fetch_department_info:
-            department_name = userinfo.get(oidc_config.department_claim)
-            if not department_name:
-                department_name = userinfo.get("department")
-
-            # 获取部门描述
-            department_description = userinfo.get("department_description")
-            if not department_description:
-                department_description = userinfo.get("department_desc")
-
+    def extract_user_info(
+        cls,
+        userinfo: Mapping[str, Any],
+        verified_id_token_claims: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """通过当前 Provider 将原始用户资料归一化为现有业务结构。"""
+        profile = oidc_provider.map_profile(userinfo, verified_id_token_claims or {})
         return {
-            "sub": sub,
-            "username": username,
-            "email": email,
-            "name": name,
-            "avatar": avatar,
-            "department_name": department_name,
-            "department_description": department_description,
-            "raw": userinfo,
+            "sub": profile.subject,
+            "username": profile.username,
+            "email": profile.email,
+            "name": profile.name,
+            "avatar": profile.avatar,
+            "entity_code": profile.entity_code,
+            "entity_short_name": profile.entity_short_name,
+            "department_name": profile.department_name,
+            "department_code": profile.department_code,
+            "department_description": profile.department_description,
+            "raw": profile.raw,
         }
 
 
@@ -1003,6 +990,28 @@ def _redirect_to_login_with_error(error_message: str) -> RedirectResponse:
     return RedirectResponse(url=url, status_code=302)
 
 
+async def oidc_callback_request_handler(
+    query: Mapping[str, Any] | None,
+    form: Mapping[str, Any] | None,
+    db,
+    request: Request | None = None,
+):
+    """通过当前 Provider 解析回调数据，再进入不可替换的核心认证流程。"""
+    try:
+        callback: OIDCCallbackData = oidc_provider.parse_callback(query, form)
+    except ValueError:
+        return _redirect_to_login_with_error("登录回调参数无效，请返回登录页重试")
+
+    return await oidc_callback_handler(
+        callback.code,
+        callback.state,
+        db,
+        request,
+        callback.error,
+        callback.error_description,
+    )
+
+
 async def get_oidc_config_handler():
     """获取 OIDC 配置（供前端使用）"""
     if not oidc_config.enabled or not oidc_config.is_configured():
@@ -1044,12 +1053,8 @@ async def oidc_callback_handler(
     if not token_response:
         return _redirect_to_login_with_error("无法获取访问令牌，请返回登录页重试")
 
-    access_token = token_response.get("access_token")
-    id_token = token_response.get("id_token")
-    if not access_token:
-        return _redirect_to_login_with_error("无法获取访问令牌，请返回登录页重试")
-    if not isinstance(id_token, str):
-        return _redirect_to_login_with_error("无法获取身份令牌，请返回登录页重试")
+    access_token = token_response.access_token
+    id_token = token_response.id_token
 
     id_token_claims = await OIDCUtils.verify_id_token(id_token, state_data["nonce"])
     if not id_token_claims:
@@ -1059,7 +1064,7 @@ async def oidc_callback_handler(
     if not userinfo:
         return _redirect_to_login_with_error("无法获取用户信息，请返回登录页重试")
 
-    extracted_info = OIDCUtils.extract_user_info(userinfo)
+    extracted_info = OIDCUtils.extract_user_info(userinfo, id_token_claims)
     sub = extracted_info["sub"]
 
     if not sub or sub != id_token_claims["sub"]:
@@ -1126,15 +1131,44 @@ async def oidc_callback_handler(
         # 标准 OIDC 模式，通过 sub 查找
         user = user_by_sub
 
+    cnnp_department = None
     if user:
         logger.info(f"OIDC user logged in: {user.username}")
+        if oidc_config.provider_type == "cnnp":
+            try:
+                cnnp_department = await OIDCOrganizationService.resolve_cnnp_department(
+                    db,
+                    entity_code=extracted_info.get("entity_code"),
+                    entity_short_name=extracted_info.get("entity_short_name"),
+                    department_code=extracted_info.get("department_code"),
+                    department_name=extracted_info.get("department_name"),
+                    default_department_name=oidc_config.default_department,
+                )
+            except (IntegrityError, ValueError):
+                logger.warning("OIDC organization synchronization failed for an existing user")
+                return _redirect_to_login_with_error("组织信息同步失败，请联系管理员")
     elif oidc_config.auto_create_user:
         if not email:
             return _redirect_to_login_with_error("无法获取有效邮箱，请联系管理员检查第三方登录配置")
-        # 从用户信息中获取部门信息
-        dept_name = extracted_info.get("department_name")
-        dept_desc = extracted_info.get("department_description")
-        dept = await get_or_create_oidc_department(db, dept_name, dept_desc)
+        if oidc_config.provider_type == "cnnp":
+            try:
+                cnnp_department = await OIDCOrganizationService.resolve_cnnp_department(
+                    db,
+                    entity_code=extracted_info.get("entity_code"),
+                    entity_short_name=extracted_info.get("entity_short_name"),
+                    department_code=extracted_info.get("department_code"),
+                    department_name=extracted_info.get("department_name"),
+                    default_department_name=oidc_config.default_department,
+                )
+            except (IntegrityError, ValueError):
+                logger.warning("OIDC organization synchronization failed while creating a user")
+                return _redirect_to_login_with_error("组织信息同步失败，请联系管理员")
+            dept = cnnp_department
+        else:
+            # 标准适配器保持原有的首次登录按名称创建部门语义。
+            dept_name = extracted_info.get("department_name")
+            dept_desc = extracted_info.get("department_description")
+            dept = await get_or_create_oidc_department(db, dept_name, dept_desc)
         department_id = dept.id if dept else None
         try:
             user = await create_oidc_user(db, extracted_info, issuer, email, department_id)
@@ -1150,6 +1184,16 @@ async def oidc_callback_handler(
         user = await bind_external_identity(db, user, issuer, sub, email)
     except OIDCIdentityConflict:
         return _redirect_to_login_with_error("该邮箱已绑定其他第三方身份，请联系管理员处理")
+    if cnnp_department is not None:
+        try:
+            await OIDCOrganizationService.sync_user_primary_department(
+                db,
+                user=user,
+                department=cnnp_department,
+            )
+        except ValueError:
+            logger.warning("OIDC user department membership synchronization failed")
+            return _redirect_to_login_with_error("组织成员关系同步失败，请联系管理员")
     await update_oidc_user_login(db, user, extracted_info.get("avatar"))
 
     token_data = {"sub": str(user.id)}
@@ -1159,7 +1203,7 @@ async def oidc_callback_handler(
 
     department_name = None
     if user.department_id:
-        result = await db.execute(select(Department.name).filter(Department.id == user.department_id))
+        result = await db.execute(select(Department.display_name).filter(Department.id == user.department_id))
         department_name = result.scalar_one_or_none()
 
     await resolve_user_permissions(db, user)
