@@ -45,6 +45,15 @@ async def _create_user(session, uid: str = "alice") -> User:
     return user
 
 
+async def test_oidc_claim_log_value_bounds_and_escapes_untrusted_text():
+    assert oidc_service._oidc_claim_log_value(None) == "<missing>"
+    assert oidc_service._oidc_claim_log_value("  ") == "<empty>"
+    assert oidc_service._oidc_claim_log_value("部门\n伪造日志") == repr("部门\n伪造日志")
+
+    bounded = oidc_service._oidc_claim_log_value("x" * 200)
+    assert bounded == repr("x" * 128 + "…")
+
+
 async def test_find_user_by_oidc_sub_resolves_placeholder_when_sub_contains_colon(oidc_session):
     user = await _create_user(oidc_session)
 
@@ -180,8 +189,14 @@ async def test_cnnp_callback_syncs_existing_user_primary_department(oidc_session
             "raw": userinfo,
         }
 
-    resolved_department = SimpleNamespace(id=999)
+    resolved_department = SimpleNamespace(
+        id=999,
+        entity_code="HK600001",
+        department_code="JXI-BM4605",
+        display_name="测试部门",
+    )
     sync_calls = []
+    info_logs = []
 
     async def fake_resolve(cls, db, **kwargs):
         assert kwargs["entity_code"] == "HK600001"
@@ -199,6 +214,16 @@ async def test_cnnp_callback_syncs_existing_user_primary_department(oidc_session
     monkeypatch.setattr(oidc_service.OIDCUtils, "get_userinfo", classmethod(fake_userinfo))
     monkeypatch.setattr(oidc_service.OIDCUtils, "extract_user_info", classmethod(fake_extract_user_info))
     monkeypatch.setattr(
+        oidc_service,
+        "logger",
+        SimpleNamespace(
+            debug=info_logs.append,
+            info=info_logs.append,
+            warning=info_logs.append,
+            error=info_logs.append,
+        ),
+    )
+    monkeypatch.setattr(
         oidc_service.OIDCOrganizationService,
         "resolve_cnnp_department",
         classmethod(fake_resolve),
@@ -214,6 +239,15 @@ async def test_cnnp_callback_syncs_existing_user_primary_department(oidc_session
 
     assert response.status_code == 302
     assert sync_calls == [(user.id, 999)]
+    assert any(
+        "entity_code='HK600001'" in message
+        and "entity_code_valid=True" in message
+        and "dept_code='JXI-BM4605'" in message
+        and "dept_code_valid=True" in message
+        for message in info_logs
+    )
+    assert any("department_id=999" in message and "fallback_default=False" in message for message in info_logs)
+    assert any("CNNP primary department synchronized" in message for message in info_logs)
 
 
 async def test_oidc_callback_rejects_disabled_user_instead_of_restoring(oidc_session, monkeypatch):

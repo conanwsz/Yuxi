@@ -29,7 +29,11 @@ from yuxi.services.oidc_provider import (
     get_oidc_provider,
     normalize_provider_type,
 )
-from yuxi.services.oidc_organization_service import OIDCOrganizationService
+from yuxi.services.oidc_organization_service import (
+    OIDCOrganizationService,
+    department_code_chain,
+    normalize_entity_code,
+)
 from yuxi.services.operation_log_service import log_operation
 from yuxi.services.permission_service import resolve_user_permissions
 from yuxi.storage.postgres.models_business import (
@@ -650,6 +654,17 @@ def normalize_oidc_email(value: Any) -> str | None:
     return email
 
 
+def _oidc_claim_log_value(value: Any) -> str:
+    """把组织 Claim 转为可控长度、不可注入换行的日志文本。"""
+    if not isinstance(value, str):
+        return "<missing>"
+    normalized = value.strip()
+    if not normalized:
+        return "<empty>"
+    bounded = normalized[:128] + ("…" if len(normalized) > 128 else "")
+    return repr(bounded)
+
+
 def extract_employee_uid_from_email(email: str) -> str | None:
     """从 OIDC 邮箱中提取符合本地 UID 约束的员工编号。"""
     normalized_email = normalize_oidc_email(email)
@@ -1071,6 +1086,18 @@ async def oidc_callback_handler(
         return _redirect_to_login_with_error("无法获取用户标识，请返回登录页重试")
 
     issuer = id_token_claims["iss"]
+    if oidc_config.provider_type == "cnnp":
+        entity_code = extracted_info.get("entity_code")
+        department_code = extracted_info.get("department_code")
+        logger.info(
+            "CNNP organization claims mapped: "
+            f"entity_code={_oidc_claim_log_value(entity_code)}, "
+            f"entity_code_valid={normalize_entity_code(entity_code) is not None}, "
+            f"entity_short_name={_oidc_claim_log_value(extracted_info.get('entity_short_name'))}, "
+            f"dept_code={_oidc_claim_log_value(department_code)}, "
+            f"dept_code_valid={department_code_chain(department_code) is not None}, "
+            f"dept_name={_oidc_claim_log_value(extracted_info.get('department_name'))}"
+        )
     email = normalize_oidc_email(extracted_info.get("email")) or normalize_oidc_email(id_token_claims.get("email"))
     extracted_info["email"] = email
     if extracted_info.get("avatar") is None:
@@ -1177,6 +1204,16 @@ async def oidc_callback_handler(
     else:
         return _redirect_to_login_with_error("用户未注册，请联系管理员开通账号")
 
+    if cnnp_department is not None:
+        logger.info(
+            "CNNP organization resolved: "
+            f"department_id={cnnp_department.id}, "
+            f"entity_code={_oidc_claim_log_value(cnnp_department.entity_code)}, "
+            f"dept_code={_oidc_claim_log_value(cnnp_department.department_code)}, "
+            f"display_name={_oidc_claim_log_value(cnnp_department.display_name)}, "
+            f"fallback_default={cnnp_department.entity_code is None and cnnp_department.department_code is None}"
+        )
+
     if user.is_deleted:
         return _redirect_to_login_with_error("该账户已注销")
 
@@ -1191,6 +1228,7 @@ async def oidc_callback_handler(
                 user=user,
                 department=cnnp_department,
             )
+            logger.info(f"CNNP primary department synchronized: user_id={user.id}, department_id={cnnp_department.id}")
         except ValueError:
             logger.warning("OIDC user department membership synchronization failed")
             return _redirect_to_login_with_error("组织成员关系同步失败，请联系管理员")
