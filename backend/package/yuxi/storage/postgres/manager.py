@@ -1082,6 +1082,7 @@ class PostgresManager(metaclass=SingletonMeta):
                 weighted_tokens BIGINT NOT NULL DEFAULT 0,
                 event_count INTEGER NOT NULL DEFAULT 0,
                 estimated_event_count INTEGER NOT NULL DEFAULT 0,
+                reset_at TIMESTAMP,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 CONSTRAINT uq_token_quota_weekly_usage_user_week UNIQUE (user_id, week_start),
@@ -1097,6 +1098,18 @@ class PostgresManager(metaclass=SingletonMeta):
             "ALTER TABLE IF EXISTS token_quota_weekly_usage ADD COLUMN IF NOT EXISTS uid_snapshot VARCHAR(64)",
             "UPDATE token_quota_weekly_usage SET uid_snapshot = 'unknown' WHERE uid_snapshot IS NULL",
             "ALTER TABLE IF EXISTS token_quota_weekly_usage ALTER COLUMN uid_snapshot SET NOT NULL",
+            "ALTER TABLE IF EXISTS token_quota_weekly_usage ADD COLUMN IF NOT EXISTS reset_at TIMESTAMP",
+            (
+                "DO $$ BEGIN "
+                "IF EXISTS (SELECT 1 FROM information_schema.columns "
+                "WHERE table_name = 'token_quota_weekly_usage' "
+                "AND column_name = 'reset_at' "
+                "AND data_type = 'timestamp with time zone') THEN "
+                "ALTER TABLE token_quota_weekly_usage "
+                "ALTER COLUMN reset_at TYPE TIMESTAMP WITHOUT TIME ZONE "
+                "USING reset_at AT TIME ZONE 'UTC'; "
+                "END IF; END $$"
+            ),
             (
                 "ALTER TABLE IF EXISTS token_quota_weekly_usage "
                 "ADD COLUMN IF NOT EXISTS prompt_tokens BIGINT NOT NULL DEFAULT 0"

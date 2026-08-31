@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator, Callable, Iterable, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 from uuid import UUID
@@ -16,7 +16,7 @@ from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.outputs import ChatGeneration, LLMResult
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from yuxi import config as app_config
@@ -40,6 +40,15 @@ _BILLING_CONTEXT: ContextVar[BillingContext | None] = ContextVar("yuxi_token_bil
 
 class TokenQuotaExceededError(RuntimeError):
     """Raised when the caller has exhausted the current weekly token quota."""
+
+
+def _format_persisted_utc(value: datetime | None) -> str | None:
+    """将数据库中的 naive UTC 时间格式化为带 Z 后缀的 ISO 时间。"""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 @dataclass(frozen=True)
@@ -236,10 +245,12 @@ async def _get_or_create_weekly_usage(
     quota_limit: int | None,
 ) -> TokenQuotaWeeklyUsage:
     result = await db.execute(
-        select(TokenQuotaWeeklyUsage).where(
+        select(TokenQuotaWeeklyUsage)
+        .where(
             TokenQuotaWeeklyUsage.user_id == user.id,
             TokenQuotaWeeklyUsage.week_start == week_start,
         )
+        .with_for_update()
     )
     weekly = result.scalar_one_or_none()
     if weekly is not None:
@@ -258,10 +269,12 @@ async def _get_or_create_weekly_usage(
             await db.flush()
     except IntegrityError:
         result = await db.execute(
-            select(TokenQuotaWeeklyUsage).where(
+            select(TokenQuotaWeeklyUsage)
+            .where(
                 TokenQuotaWeeklyUsage.user_id == user.id,
                 TokenQuotaWeeklyUsage.week_start == week_start,
             )
+            .with_for_update()
         )
         weekly = result.scalar_one()
     return weekly
@@ -312,6 +325,7 @@ async def status(
             (week_start + timedelta(days=6)).isoformat(),
         ),
         "tracking_since": weekly.created_at.isoformat() if weekly else None,
+        "last_reset_at": _format_persisted_utc(weekly.reset_at) if weekly else None,
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
         "total_tokens": total_tokens,
@@ -374,12 +388,19 @@ async def _collect_model_breakdown(
 ) -> list[dict[str, Any]]:
     """按模型汇总用户本周加权 token 消耗。"""
     week_start = _week_start_for(now or utc_now())
-    result = await db.execute(
-        select(TokenQuotaLedger).where(
-            TokenQuotaLedger.user_id == user.id,
-            TokenQuotaLedger.week_start == week_start,
+    reset_at = await db.scalar(
+        select(TokenQuotaWeeklyUsage.reset_at).where(
+            TokenQuotaWeeklyUsage.user_id == user.id,
+            TokenQuotaWeeklyUsage.week_start == week_start,
         )
     )
+    ledger_query = select(TokenQuotaLedger).where(
+        TokenQuotaLedger.user_id == user.id,
+        TokenQuotaLedger.week_start == week_start,
+    )
+    if reset_at is not None:
+        ledger_query = ledger_query.where(TokenQuotaLedger.created_at >= reset_at)
+    result = await db.execute(ledger_query)
     aggregate: dict[str, dict[str, Any]] = {}
     for entry in result.scalars():
         bucket = aggregate.setdefault(
@@ -423,6 +444,130 @@ async def get_user_token_quota_payload_with_breakdown(
     return await get_user_token_quota_payload(db, user, now=now, model_breakdown=breakdown)
 
 
+async def reset_weekly_usage(
+    db: AsyncSession,
+    user_or_id: User | int,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """清零用户当前自然周的有效用量，并保留重置前的消费明细。"""
+    user = await _get_user(db, user_or_id)
+    if user is None:
+        raise ValueError("用户不存在，无法重置 token 配额")
+
+    await reset_weekly_usage_for_users(db, [user.id], now=now)
+    return await status(db, user, now=now)
+
+
+async def reset_weekly_usage_for_users(
+    db: AsyncSession,
+    user_ids: Iterable[int],
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """批量清零指定用户当前自然周的有效用量，返回统一的重置摘要。"""
+    normalized_user_ids = sorted({int(user_id) for user_id in user_ids})
+    week_reference = now or utc_now()
+    week_start = _week_start_for(week_reference)
+    reset_time = ensure_utc(week_reference).replace(tzinfo=None)
+    if not normalized_user_ids:
+        return {"target_count": 0, "reset_count": 0, "reset_at": _format_persisted_utc(reset_time)}
+
+    user_result = await db.execute(select(User).where(User.id.in_(normalized_user_ids)))
+    users_by_id = {user.id: user for user in user_result.scalars().all()}
+    if set(users_by_id) != set(normalized_user_ids):
+        raise ValueError("批量重置包含不存在的用户")
+
+    result = await db.execute(
+        select(TokenQuotaWeeklyUsage)
+        .where(
+            TokenQuotaWeeklyUsage.user_id.in_(normalized_user_ids),
+            TokenQuotaWeeklyUsage.week_start == week_start,
+        )
+        .with_for_update()
+    )
+    weekly_rows = {row.user_id: row for row in result.scalars().all()}
+    missing_rows = []
+    for user_id in normalized_user_ids:
+        if user_id in weekly_rows:
+            continue
+        user = users_by_id[user_id]
+        quota_mode, quota_limit = _resolve_quota_mode_and_limit(user)
+        missing_rows.append(
+            TokenQuotaWeeklyUsage(
+                user_id=user.id,
+                uid_snapshot=user.uid,
+                week_start=week_start,
+                quota_mode=quota_mode,
+                quota_limit=quota_limit,
+            )
+        )
+    if missing_rows:
+        try:
+            async with db.begin_nested():
+                db.add_all(missing_rows)
+                await db.flush()
+        except IntegrityError:
+            result = await db.execute(
+                select(TokenQuotaWeeklyUsage)
+                .where(
+                    TokenQuotaWeeklyUsage.user_id.in_(normalized_user_ids),
+                    TokenQuotaWeeklyUsage.week_start == week_start,
+                )
+                .with_for_update()
+            )
+            weekly_rows = {row.user_id: row for row in result.scalars().all()}
+        else:
+            weekly_rows.update({row.user_id: row for row in missing_rows})
+
+    for user_id in normalized_user_ids:
+        if user_id in weekly_rows:
+            continue
+        user = users_by_id[user_id]
+        quota_mode, quota_limit = _resolve_quota_mode_and_limit(user)
+        weekly_rows[user_id] = await _get_or_create_weekly_usage(
+            db,
+            user=user,
+            uid_snapshot=user.uid,
+            week_start=week_start,
+            quota_mode=quota_mode,
+            quota_limit=quota_limit,
+        )
+
+    reset_count = 0
+
+    for user_id in normalized_user_ids:
+        user = users_by_id[user_id]
+        quota_mode, quota_limit = _resolve_quota_mode_and_limit(user)
+        weekly = weekly_rows[user_id]
+        if (
+            weekly.prompt_tokens
+            or weekly.completion_tokens
+            or weekly.total_tokens
+            or weekly.weighted_tokens
+            or weekly.event_count
+            or weekly.estimated_event_count
+        ):
+            reset_count += 1
+        weekly.uid_snapshot = user.uid
+        weekly.quota_mode = quota_mode
+        weekly.quota_limit = quota_limit
+        weekly.prompt_tokens = 0
+        weekly.completion_tokens = 0
+        weekly.total_tokens = 0
+        weekly.weighted_tokens = 0
+        weekly.event_count = 0
+        weekly.estimated_event_count = 0
+        weekly.reset_at = reset_time
+
+    await db.flush()
+    return {
+        "target_count": len(normalized_user_ids),
+        "reset_count": reset_count,
+        "reset_at": _format_persisted_utc(reset_time),
+    }
+
+
 async def batch_get_user_token_quota_statuses(
     db: AsyncSession,
     users: list[User],
@@ -447,9 +592,21 @@ async def batch_get_user_token_quota_statuses(
             weekly_rows[row.user_id] = row
 
         ledger_result = await db.execute(
-            select(TokenQuotaLedger).where(
+            select(TokenQuotaLedger)
+            .outerjoin(
+                TokenQuotaWeeklyUsage,
+                and_(
+                    TokenQuotaWeeklyUsage.user_id == TokenQuotaLedger.user_id,
+                    TokenQuotaWeeklyUsage.week_start == TokenQuotaLedger.week_start,
+                ),
+            )
+            .where(
                 TokenQuotaLedger.user_id.in_(user_ids),
                 TokenQuotaLedger.week_start == week_start,
+                or_(
+                    TokenQuotaWeeklyUsage.reset_at.is_(None),
+                    TokenQuotaLedger.created_at >= TokenQuotaWeeklyUsage.reset_at,
+                ),
             )
         )
         for entry in ledger_result.scalars():
@@ -510,6 +667,7 @@ async def batch_get_user_token_quota_statuses(
             "week_end": (week_start + timedelta(days=6)).isoformat(),
             "reset_at": _format_reset_at(week_start),
             "tracking_since": weekly.created_at.isoformat() if weekly else None,
+            "last_reset_at": _format_persisted_utc(weekly.reset_at) if weekly else None,
             "week_label": _format_week_label(week_start.isoformat(), (week_start + timedelta(days=6)).isoformat()),
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
@@ -630,13 +788,17 @@ async def settle(
         weekly.uid_snapshot = resolved_uid_snapshot
         weekly.quota_mode = quota_mode
         weekly.quota_limit = quota_limit
-        weekly.prompt_tokens += usage_snapshot.prompt_tokens
-        weekly.completion_tokens += usage_snapshot.completion_tokens
-        weekly.total_tokens += usage_snapshot.total_tokens
-        weekly.weighted_tokens += weighted_tokens
-        weekly.event_count += 1
-        if usage_snapshot.is_estimated:
-            weekly.estimated_event_count += 1
+
+        # 重置边界按事件发生时间生效。行锁保证结算与重置不会互相覆盖；
+        # 对重置后才补记的旧事件，仅保留 Ledger，不再回灌本周有效用量。
+        if weekly.reset_at is None or created_at >= weekly.reset_at:
+            weekly.prompt_tokens += usage_snapshot.prompt_tokens
+            weekly.completion_tokens += usage_snapshot.completion_tokens
+            weekly.total_tokens += usage_snapshot.total_tokens
+            weekly.weighted_tokens += weighted_tokens
+            weekly.event_count += 1
+            if usage_snapshot.is_estimated:
+                weekly.estimated_event_count += 1
         await db.flush()
 
     return {
@@ -806,6 +968,8 @@ __all__ = [
     "get_token_billing_context",
     "get_user_token_quota_payload",
     "get_user_token_quota_status",
+    "reset_weekly_usage",
+    "reset_weekly_usage_for_users",
     "settle",
     "status",
     "token_billing_context",

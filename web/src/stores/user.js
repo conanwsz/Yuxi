@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { useAgentStore } from './agent'
+import { authApi } from '@/apis/auth_api'
 
 export const useUserStore = defineStore('user', () => {
   // 状态
@@ -248,6 +249,18 @@ export const useUserStore = defineStore('user', () => {
     }
   }
 
+  async function resetUserWeeklyTokenQuota(userId) {
+    return authApi.resetUserWeeklyTokenQuota(userId)
+  }
+
+  async function resetUsersWeeklyTokenQuota(userIds) {
+    return authApi.resetUsersWeeklyTokenQuota(userIds)
+  }
+
+  async function resetGlobalUsersWeeklyTokenQuota() {
+    return authApi.resetGlobalUsersWeeklyTokenQuota()
+  }
+
   async function getManagedDepartments(userId) {
     const response = await fetch(`/api/auth/users/${userId}/managed-departments`, {
       headers: { ...getAuthHeaders() }
@@ -491,6 +504,9 @@ export const useUserStore = defineStore('user', () => {
     getUsers,
     createUser,
     updateUser,
+    resetUserWeeklyTokenQuota,
+    resetUsersWeeklyTokenQuota,
+    resetGlobalUsersWeeklyTokenQuota,
     getManagedDepartments,
     updateManagedDepartments,
     disableUser,

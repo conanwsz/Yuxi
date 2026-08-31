@@ -17,6 +17,8 @@ from yuxi.services.token_quota_service import (
     assert_quota_available,
     batch_get_user_token_quota_statuses,
     get_user_token_quota_payload_with_breakdown,
+    reset_weekly_usage,
+    reset_weekly_usage_for_users,
     settle,
     status,
     token_billing_context,
@@ -25,6 +27,8 @@ from yuxi.storage.postgres.models_business import (
     Base,
     Department,
     DepartmentClosure,
+    TokenQuotaLedger,
+    TokenQuotaWeeklyUsage,
     User,
     UserDepartmentMembership,
 )
@@ -215,6 +219,192 @@ async def test_status_after_settle_aggregates_token_usage(quota_session, monkeyp
         assert quota["event_count"] == 2
         assert quota["estimated_event_count"] == 1
         assert quota["remaining_tokens"] == 10000 - 420
+
+
+async def test_reset_weekly_usage_starts_new_effective_usage_without_deleting_ledger(quota_session, monkeypatch):
+    from sqlalchemy import func, select
+    from yuxi.models.providers import cache as cache_module
+
+    monkeypatch.setattr(cache_module.model_cache, "get_model_info", lambda spec: None)
+
+    async with quota_session() as db:
+        user = await _build_user(
+            db,
+            department_id=1,
+            uid="reset-user",
+            username="reset-user",
+            token_quota_mode="custom",
+            weekly_token_quota=1000,
+        )
+        await settle(
+            db,
+            model_spec="provider:gpt-4",
+            event_id="evt-before-reset",
+            user_id=user.id,
+            uid_snapshot=user.uid,
+            usage={"prompt_tokens": 60, "completion_tokens": 40, "total_tokens": 100},
+            occurred_at=datetime(2026, 7, 22, 1, 0, tzinfo=UTC),
+        )
+
+        reset_status = await reset_weekly_usage(
+            db,
+            user,
+            now=datetime(2026, 7, 22, 2, 0, tzinfo=UTC),
+        )
+        await db.commit()
+
+        assert reset_status["used_tokens"] == 0
+        assert reset_status["remaining_tokens"] == 1000
+        assert reset_status["event_count"] == 0
+        assert reset_status["last_reset_at"] is not None
+        ledger_count = await db.scalar(select(func.count()).select_from(TokenQuotaLedger))
+        assert ledger_count == 1
+
+        reset_payload = await get_user_token_quota_payload_with_breakdown(
+            db,
+            user,
+            now=datetime(2026, 7, 22, 2, 30, tzinfo=UTC),
+        )
+        assert reset_payload["token_quota"]["by_model"] == []
+
+        await settle(
+            db,
+            model_spec="provider:claude",
+            event_id="evt-after-reset",
+            user_id=user.id,
+            uid_snapshot=user.uid,
+            usage={"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
+            occurred_at=datetime(2026, 7, 22, 3, 0, tzinfo=UTC),
+        )
+        await db.commit()
+
+        quota = await status(db, user, now=datetime(2026, 7, 22, 3, 30, tzinfo=UTC))
+        assert quota["used_tokens"] == 30
+        assert quota["event_count"] == 1
+        payload = await get_user_token_quota_payload_with_breakdown(
+            db,
+            user,
+            now=datetime(2026, 7, 22, 3, 30, tzinfo=UTC),
+        )
+        assert [item["model"] for item in payload["token_quota"]["by_model"]] == ["provider:claude"]
+
+
+async def test_reset_weekly_usage_does_not_restore_late_historical_event(quota_session, monkeypatch):
+    from sqlalchemy import func, select
+    from yuxi.models.providers import cache as cache_module
+
+    monkeypatch.setattr(cache_module.model_cache, "get_model_info", lambda spec: None)
+
+    async with quota_session() as db:
+        user = await _build_user(
+            db,
+            department_id=1,
+            uid="late-event-user",
+            username="late-event-user",
+            token_quota_mode="custom",
+            weekly_token_quota=1000,
+        )
+        await reset_weekly_usage(
+            db,
+            user,
+            now=datetime(2026, 7, 22, 4, 0, tzinfo=UTC),
+        )
+
+        await settle(
+            db,
+            model_spec="provider:gpt-4",
+            event_id="evt-late-before-reset",
+            user_id=user.id,
+            uid_snapshot=user.uid,
+            usage={"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20},
+            occurred_at=datetime(2026, 7, 22, 2, 0, tzinfo=UTC),
+        )
+        await db.commit()
+
+        quota = await status(db, user, now=datetime(2026, 7, 22, 4, 30, tzinfo=UTC))
+        payload = await get_user_token_quota_payload_with_breakdown(
+            db,
+            user,
+            now=datetime(2026, 7, 22, 4, 30, tzinfo=UTC),
+        )
+        ledger_count = await db.scalar(select(func.count()).select_from(TokenQuotaLedger))
+
+        assert ledger_count == 1
+        assert quota["used_tokens"] == 0
+        assert quota["event_count"] == 0
+        assert payload["token_quota"]["by_model"] == []
+
+
+async def test_reset_weekly_usage_for_users_uses_one_reset_boundary(quota_session, monkeypatch):
+    from sqlalchemy import func, select
+    from yuxi.models.providers import cache as cache_module
+
+    monkeypatch.setattr(cache_module.model_cache, "get_model_info", lambda spec: None)
+
+    async with quota_session() as db:
+        user_a = await _build_user(
+            db,
+            department_id=1,
+            uid="batch-a",
+            username="batch-a",
+            token_quota_mode="custom",
+            weekly_token_quota=1000,
+        )
+        user_b = await _build_user(
+            db,
+            department_id=1,
+            uid="batch-b",
+            username="batch-b",
+            token_quota_mode="custom",
+            weekly_token_quota=2000,
+        )
+        await settle(
+            db,
+            model_spec="provider:gpt-4",
+            event_id=f"evt-{user_a.uid}",
+            user_id=user_a.id,
+            uid_snapshot=user_a.uid,
+            usage={"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
+            occurred_at=datetime(2026, 7, 22, 1, 0, tzinfo=UTC),
+        )
+
+        summary = await reset_weekly_usage_for_users(
+            db,
+            [user_b.id, user_a.id, user_a.id],
+            now=datetime(2026, 7, 22, 2, 0, tzinfo=UTC),
+        )
+        await db.commit()
+
+        assert summary == {
+            "target_count": 2,
+            "reset_count": 1,
+            "reset_at": "2026-07-22T02:00:00Z",
+        }
+        rows = list(
+            (
+                await db.execute(
+                    select(TokenQuotaWeeklyUsage)
+                    .where(TokenQuotaWeeklyUsage.user_id.in_([user_a.id, user_b.id]))
+                    .order_by(TokenQuotaWeeklyUsage.user_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert [row.weighted_tokens for row in rows] == [0, 0]
+        assert rows[0].reset_at == rows[1].reset_at == datetime(2026, 7, 22, 2, 0)
+        assert rows[0].quota_limit == 1000
+        assert rows[1].quota_limit == 2000
+
+        user_a_status = await status(db, user_a, now=datetime(2026, 7, 22, 2, 5, tzinfo=UTC))
+        user_b_status = await status(db, user_b, now=datetime(2026, 7, 22, 2, 5, tzinfo=UTC))
+        assert user_a_status["last_reset_at"] == "2026-07-22T02:00:00Z"
+        assert user_b_status["last_reset_at"] == "2026-07-22T02:00:00Z"
+        assert user_a_status["used_tokens"] == 0
+        assert user_b_status["used_tokens"] == 0
+
+        ledger_count = await db.scalar(select(func.count()).select_from(TokenQuotaLedger))
+        assert ledger_count == 1
 
 
 async def test_get_user_token_quota_payload_preserves_remaining(quota_session):
