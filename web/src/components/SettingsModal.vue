@@ -23,7 +23,7 @@
             class="sider-item"
             :class="{ activesec: activeTab === 'account' }"
             @click="activeTab = 'account'"
-            v-if="userStore.isLoggedIn"
+            v-if="canAccessTab('account')"
           >
             <CircleUser class="icon" :size="18" />
             <span>账户设置</span>
@@ -32,7 +32,7 @@
             class="sider-item"
             :class="{ activesec: activeTab === 'apiKeys' }"
             @click="activeTab = 'apiKeys'"
-            v-if="userStore.hasPermission('apikey.manage')"
+            v-if="canAccessTab('apiKeys')"
           >
             <Key class="icon" :size="18" />
             <span>API Keys</span>
@@ -41,7 +41,7 @@
             class="sider-item"
             :class="{ activesec: activeTab === 'base' }"
             @click="activeTab = 'base'"
-            v-if="userStore.hasPermission('system.config.update')"
+            v-if="canAccessTab('base')"
           >
             <Settings class="icon" :size="18" />
             <span>基本设置</span>
@@ -50,7 +50,7 @@
             class="sider-item"
             :class="{ activesec: activeTab === 'ocr' }"
             @click="activeTab = 'ocr'"
-            v-if="userStore.isAdmin"
+            v-if="canAccessTab('ocr')"
           >
             <ScanText class="icon" :size="18" />
             <span>OCR 配置</span>
@@ -59,7 +59,7 @@
             class="sider-item"
             :class="{ activesec: activeTab === 'user' }"
             @click="activeTab = 'user'"
-            v-if="userStore.hasPermission('users.read')"
+            v-if="canAccessTab('user')"
           >
             <User class="icon" :size="18" />
             <span>用户管理</span>
@@ -68,7 +68,7 @@
             class="sider-item"
             :class="{ activesec: activeTab === 'department' }"
             @click="activeTab = 'department'"
-            v-if="userStore.hasPermission('departments.read')"
+            v-if="canAccessTab('department')"
           >
             <Users class="icon" :size="18" />
             <span>部门管理</span>
@@ -77,7 +77,7 @@
             class="sider-item"
             :class="{ activesec: activeTab === 'permission' }"
             @click="activeTab = 'permission'"
-            v-if="userStore.isSuperAdmin"
+            v-if="canAccessTab('permission')"
           >
             <ShieldCheck class="icon" :size="18" />
             <span>权限管理</span>
@@ -86,7 +86,7 @@
             class="sider-item"
             :class="{ activesec: activeTab === 'agentEnv' }"
             @click="activeTab = 'agentEnv'"
-            v-if="userStore.isLoggedIn"
+            v-if="canAccessTab('agentEnv')"
           >
             <SquareTerminal class="icon" :size="18" />
             <span>环境变量</span>
@@ -133,7 +133,7 @@
           class="nav-item"
           :class="{ active: activeTab === 'account' }"
           @click="activeTab = 'account'"
-          v-if="userStore.isLoggedIn"
+          v-if="canAccessTab('account')"
         >
           账户设置
         </div>
@@ -141,7 +141,7 @@
           class="nav-item"
           :class="{ active: activeTab === 'apiKeys' }"
           @click="activeTab = 'apiKeys'"
-          v-if="userStore.isLoggedIn"
+          v-if="canAccessTab('apiKeys')"
         >
           API Keys
         </div>
@@ -149,7 +149,7 @@
           class="nav-item"
           :class="{ active: activeTab === 'agentEnv' }"
           @click="activeTab = 'agentEnv'"
-          v-if="userStore.isLoggedIn"
+          v-if="canAccessTab('agentEnv')"
         >
           沙盒环境变量
         </div>
@@ -157,7 +157,7 @@
           class="nav-item"
           :class="{ active: activeTab === 'base' }"
           @click="activeTab = 'base'"
-          v-if="userStore.hasPermission('system.config.update')"
+          v-if="canAccessTab('base')"
         >
           基本设置
         </div>
@@ -165,7 +165,7 @@
           class="nav-item"
           :class="{ active: activeTab === 'ocr' }"
           @click="activeTab = 'ocr'"
-          v-if="userStore.isAdmin"
+          v-if="canAccessTab('ocr')"
         >
           OCR 配置
         </div>
@@ -173,7 +173,7 @@
           class="nav-item"
           :class="{ active: activeTab === 'user' }"
           @click="activeTab = 'user'"
-          v-if="userStore.hasPermission('users.read')"
+          v-if="canAccessTab('user')"
         >
           用户管理
         </div>
@@ -181,7 +181,7 @@
           class="nav-item"
           :class="{ active: activeTab === 'department' }"
           @click="activeTab = 'department'"
-          v-if="userStore.hasPermission('departments.read')"
+          v-if="canAccessTab('department')"
         >
           部门管理
         </div>
@@ -189,7 +189,7 @@
           class="nav-item"
           :class="{ active: activeTab === 'permission' }"
           @click="activeTab = 'permission'"
-          v-if="userStore.isSuperAdmin"
+          v-if="canAccessTab('permission')"
         >
           权限管理
         </div>
@@ -198,7 +198,7 @@
       <!-- 内容区域 -->
       <div class="settings-content-wrapper">
         <div class="settings-content">
-          <div v-show="activeTab === 'account'" v-if="userStore.isLoggedIn">
+          <div v-show="activeTab === 'account'" v-if="canAccessTab('account')">
             <div class="account-settings-stack">
               <AccountSettingsComponent />
               <div class="settings-inline-card token-quota-card">
@@ -279,34 +279,31 @@
             </div>
           </div>
 
-          <div v-if="activeTab === 'apiKeys' && userStore.isLoggedIn">
+          <div v-if="activeTab === 'apiKeys' && canAccessTab('apiKeys')">
             <ApiKeyManagementComponent />
           </div>
 
-          <div v-if="activeTab === 'agentEnv' && userStore.isLoggedIn">
+          <div v-if="activeTab === 'agentEnv' && canAccessTab('agentEnv')">
             <AgentEnvSettingsCard />
           </div>
 
-          <div v-show="activeTab === 'base'" v-if="userStore.hasPermission('system.config.update')">
+          <div v-show="activeTab === 'base'" v-if="canAccessTab('base')">
             <BasicSettingsSection />
           </div>
 
-          <div v-show="activeTab === 'ocr'" v-if="userStore.isAdmin">
+          <div v-show="activeTab === 'ocr'" v-if="canAccessTab('ocr')">
             <OCRSettingsSection />
           </div>
 
-          <div v-show="activeTab === 'user'" v-if="userStore.isAdmin">
+          <div v-show="activeTab === 'user'" v-if="canAccessTab('user')">
             <UserManagementComponent />
           </div>
 
-          <div
-            v-show="activeTab === 'department'"
-            v-if="userStore.hasPermission('departments.read')"
-          >
+          <div v-show="activeTab === 'department'" v-if="canAccessTab('department')">
             <DepartmentManagementComponent />
           </div>
 
-          <div v-show="activeTab === 'permission'" v-if="userStore.isSuperAdmin">
+          <div v-show="activeTab === 'permission'" v-if="canAccessTab('permission')">
             <PermissionManagementComponent />
           </div>
         </div>
@@ -319,6 +316,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { userApi } from '@/apis/user_api'
 import { useUserStore } from '@/stores/user'
+import { getAvailableSettingsTabs } from '@/utils/settingsTabs'
 import {
   CircleUser,
   ExternalLink,
@@ -401,13 +399,9 @@ const quotaProgressColor = computed(() => {
   return 'var(--main-500)'
 })
 
-const availableTabs = computed(() => {
-  const tabs = []
-  if (userStore.isLoggedIn) tabs.push('account', 'apiKeys', 'agentEnv')
-  if (userStore.isAdmin) tabs.push('base', 'ocr', 'user')
-  if (userStore.isSuperAdmin) tabs.push('department')
-  return tabs
-})
+const availableTabs = computed(() => getAvailableSettingsTabs(userStore))
+
+const canAccessTab = (tab) => availableTabs.value.includes(tab)
 
 const getQuotaPayload = (response) => {
   const payload = response?.data && typeof response.data === 'object' ? response.data : response

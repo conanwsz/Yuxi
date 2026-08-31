@@ -8,7 +8,7 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_business import (
@@ -130,6 +130,21 @@ class UserResponse(BaseModel):
     created_at: str
     last_login: str | None = None
     is_disabled: bool = False
+
+
+class TokenQuotaBatchResetRequest(BaseModel):
+    """批量重置用户额度请求。"""
+
+    user_ids: list[Annotated[int, Field(gt=0)]] = Field(min_length=1, max_length=1000)
+
+
+class TokenQuotaResetSummary(BaseModel):
+    """批量或全局额度重置结果。"""
+
+    scope: Literal["selected", "managed", "global"]
+    target_count: int
+    reset_count: int
+    reset_at: str
 
 
 class UserAccessOption(BaseModel):
@@ -276,6 +291,18 @@ async def _batch_get_user_token_quota_statuses(db: AsyncSession, users: list[Use
     from yuxi.services.token_quota_service import batch_get_user_token_quota_statuses
 
     return await batch_get_user_token_quota_statuses(db, users)
+
+
+async def _reset_user_weekly_token_quota(db: AsyncSession, user: User) -> dict[str, Any]:
+    from yuxi.services.token_quota_service import reset_weekly_usage
+
+    return await reset_weekly_usage(db, user)
+
+
+async def _reset_users_weekly_token_quota(db: AsyncSession, users: list[User]) -> dict[str, Any]:
+    from yuxi.services.token_quota_service import reset_weekly_usage_for_users
+
+    return await reset_weekly_usage_for_users(db, [user.id for user in users])
 
 
 async def get_user_token_quota_payload(
@@ -857,6 +884,58 @@ async def _ensure_user_in_current_department(db: AsyncSession, current_user: Use
         )
 
 
+async def _load_batch_quota_reset_targets(
+    db: AsyncSession,
+    current_user: User,
+    user_ids: list[int],
+) -> list[User]:
+    """加载并校验批量额度重置目标，任一目标无效时整批拒绝。"""
+    normalized_user_ids = sorted(set(user_ids))
+    result = await db.execute(select(User).where(User.id.in_(normalized_user_ids)))
+    users_by_id = {user.id: user for user in result.scalars().all()}
+    if set(users_by_id) != set(normalized_user_ids):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="批量重置包含不存在的用户")
+    if any(user.is_deleted for user in users_by_id.values()):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="批量重置不支持已禁用用户")
+
+    if current_user.role != "superadmin":
+        managed_department_ids = set(getattr(current_user, "managed_department_ids", set()))
+        manageable_result = await db.execute(
+            select(UserDepartmentMembership.user_id)
+            .join(Department, Department.id == UserDepartmentMembership.department_id)
+            .where(
+                UserDepartmentMembership.user_id.in_(normalized_user_ids),
+                UserDepartmentMembership.department_id.in_(managed_department_ids),
+                UserDepartmentMembership.status == "active",
+                Department.status == "active",
+            )
+            .distinct()
+        )
+        manageable_user_ids = {int(user_id) for user_id in manageable_result.scalars().all()}
+        if manageable_user_ids != set(normalized_user_ids):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="批量重置包含管理范围外的用户")
+
+    return [users_by_id[user_id] for user_id in normalized_user_ids]
+
+
+async def _load_global_quota_reset_targets(db: AsyncSession, current_user: User) -> list[User]:
+    """按操作者的组织管理范围加载全局额度重置目标。"""
+    query = select(User).where(User.is_deleted == 0)
+    if current_user.role != "superadmin":
+        managed_department_ids = set(getattr(current_user, "managed_department_ids", set()))
+        query = (
+            query.join(UserDepartmentMembership, UserDepartmentMembership.user_id == User.id)
+            .join(Department, Department.id == UserDepartmentMembership.department_id)
+            .where(
+                UserDepartmentMembership.department_id.in_(managed_department_ids),
+                UserDepartmentMembership.status == "active",
+                Department.status == "active",
+            )
+            .distinct()
+        )
+    return list((await db.execute(query.order_by(User.id.asc()))).scalars().all())
+
+
 @auth.get("/users/access-options", response_model=list[UserAccessOption])
 async def read_user_access_options(
     skip: int = 0,
@@ -903,6 +982,76 @@ async def read_user(
         )
     await _ensure_user_in_current_department(db, current_user, user)
     return await _serialize_user(db, user)
+
+
+@auth.post("/users/{user_id}/token-quota/reset", response_model=UserResponse)
+async def reset_user_weekly_token_quota(
+    user_id: int,
+    request: Request,
+    current_user: User = Depends(require_permission("users.quota.manage")),
+    db: AsyncSession = Depends(get_db),
+):
+    """重置指定用户当前自然周的已用额度，额度配置本身保持不变。"""
+    target = await db.get(User, user_id)
+    if target is None or target.is_deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
+    await _ensure_user_in_current_department(db, current_user, target)
+
+    token_quota = await _reset_user_weekly_token_quota(db, target)
+    await log_operation(
+        db,
+        current_user.id,
+        "重置用户周额度",
+        f"重置用户 {target.uid} 当前自然周的已用 Token 额度",
+        request,
+    )
+    return await _serialize_user(db, target, token_quota=token_quota)
+
+
+@auth.post("/users/token-quota/reset-batch", response_model=TokenQuotaResetSummary)
+async def reset_selected_users_weekly_token_quota(
+    payload: TokenQuotaBatchResetRequest,
+    request: Request,
+    current_user: User = Depends(require_permission("users.quota.manage")),
+    db: AsyncSession = Depends(get_db),
+):
+    """重置所选启用用户当前自然周的已用额度。"""
+    targets = await _load_batch_quota_reset_targets(db, current_user, payload.user_ids)
+    summary = await _reset_users_weekly_token_quota(db, targets)
+    summary["scope"] = "selected"
+    target_ids = [user.id for user in targets]
+    omitted_count = max(0, len(target_ids) - 50)
+    target_preview = f"{target_ids[:50]}" + (f"，另有 {omitted_count} 人" if omitted_count else "")
+    await log_operation(
+        db,
+        current_user.id,
+        "批量重置用户周额度",
+        f"范围: selected; 目标用户: {summary['target_count']}; 实际清零: {summary['reset_count']}; "
+        f"重置时间: {summary['reset_at']}; 用户ID: {target_preview}",
+        request,
+    )
+    return summary
+
+
+@auth.post("/users/token-quota/reset-global", response_model=TokenQuotaResetSummary)
+async def reset_global_users_weekly_token_quota(
+    request: Request,
+    current_user: User = Depends(require_permission("users.quota.reset.global")),
+    db: AsyncSession = Depends(get_db),
+):
+    """重置全平台或当前管理范围内全部启用用户的本周已用额度。"""
+    targets = await _load_global_quota_reset_targets(db, current_user)
+    summary = await _reset_users_weekly_token_quota(db, targets)
+    summary["scope"] = "global" if current_user.role == "superadmin" else "managed"
+    await log_operation(
+        db,
+        current_user.id,
+        "全局重置用户周额度",
+        f"范围: {summary['scope']}; 目标用户: {summary['target_count']}; 实际清零: {summary['reset_count']}; "
+        f"重置时间: {summary['reset_at']}",
+        request,
+    )
+    return summary
 
 
 @auth.get("/users/{user_id}/managed-departments")

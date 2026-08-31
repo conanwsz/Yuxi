@@ -91,11 +91,26 @@ async function approveCLIAuthSession(userCode) {
   return apiPost(`/api/auth/cli/sessions/${encoded}/approve`, {})
 }
 
+async function resetUserWeeklyTokenQuota(userId) {
+  return apiPost(`/api/auth/users/${encodeURIComponent(userId)}/token-quota/reset`, {})
+}
+
+async function resetUsersWeeklyTokenQuota(userIds) {
+  return apiPost('/api/auth/users/token-quota/reset-batch', { user_ids: userIds })
+}
+
+async function resetGlobalUsersWeeklyTokenQuota() {
+  return apiPost('/api/auth/users/token-quota/reset-global', {})
+}
+
 export const authApi = {
   getOIDCConfig,
   getOIDCLoginUrl,
   getUserAccessOptions,
   exchangeOIDCCode,
   getCLIAuthSession,
-  approveCLIAuthSession
+  approveCLIAuthSession,
+  resetUserWeeklyTokenQuota,
+  resetUsersWeeklyTokenQuota,
+  resetGlobalUsersWeeklyTokenQuota
 }

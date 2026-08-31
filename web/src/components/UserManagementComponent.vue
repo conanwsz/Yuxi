@@ -41,16 +41,38 @@
         <template #prefix><Search :size="16" /></template>
       </a-input>
       <div class="filter-actions">
-        <a-select v-model:value="userManagement.departmentFilter" class="filter-select">
-          <a-select-option value="">全部部门</a-select-option>
-          <a-select-option
-            v-for="dept in departmentFilterOptions"
-            :key="dept.value"
-            :value="dept.value"
-          >
-            {{ dept.label }}
-          </a-select-option>
-        </a-select>
+        <div v-if="hasDepartmentFilterPermission" class="department-filter-group">
+          <a-tree-select
+            v-model:value="userManagement.departmentFilters"
+            class="department-filter-tree"
+            :tree-data="departmentTreeData"
+            multiple
+            tree-checkable
+            tree-check-strictly
+            allow-clear
+            show-search
+            tree-default-expand-all
+            max-tag-count="responsive"
+            placeholder="请选择部门（可多选）"
+            :filter-tree-node="filterDepartmentTreeNode"
+          />
+          <div class="department-scope-switch" role="group" aria-label="部门筛选范围">
+            <a-button
+              size="small"
+              :type="userManagement.includeDepartmentDescendants ? 'primary' : 'default'"
+              @click="userManagement.includeDepartmentDescendants = true"
+            >
+              包含下级
+            </a-button>
+            <a-button
+              size="small"
+              :type="!userManagement.includeDepartmentDescendants ? 'primary' : 'default'"
+              @click="userManagement.includeDepartmentDescendants = false"
+            >
+              仅直属
+            </a-button>
+          </div>
+        </div>
         <a-select v-model:value="userManagement.roleFilter" class="filter-select">
           <a-select-option value="">全部权限</a-select-option>
           <a-select-option v-for="role in roleOptions" :key="role.key" :value="role.key">
@@ -82,6 +104,42 @@
       </div>
     </div>
 
+    <div
+      v-if="canBatchReset || canResetQuotaGlobally"
+      class="batch-action-bar"
+      :class="{ 'batch-action-bar-active': selectedUserCount > 0 }"
+    >
+      <div class="batch-action-summary">
+        <span v-if="selectedUserCount > 0">已选 {{ selectedUserCount }} 名启用用户</span>
+        <span v-else-if="canBatchReset">可按筛选结果跨分页选择用户后批量重置本周额度</span>
+        <span v-else>全局重置会覆盖当前权限范围内的全部启用用户</span>
+      </div>
+      <div class="batch-action-buttons">
+        <a-button v-if="selectedUserCount > 0" size="small" @click="clearSelectedUsers">
+          清空选择
+        </a-button>
+        <a-button
+          v-if="canBatchReset"
+          type="primary"
+          size="small"
+          :disabled="selectedUserCount === 0"
+          :loading="userManagement.batchResettingQuota"
+          @click="confirmResetSelectedUsers"
+        >
+          重置所选用户额度
+        </a-button>
+        <a-button
+          v-if="canResetQuotaGlobally"
+          danger
+          size="small"
+          :loading="userManagement.globalResettingQuota"
+          @click="openGlobalResetModal"
+        >
+          全局重置额度
+        </a-button>
+      </div>
+    </div>
+
     <!-- 主内容区域 -->
     <div class="content-section">
       <a-spin :spinning="userManagement.loading">
@@ -98,12 +156,14 @@
           <div v-else-if="userManagement.viewMode === 'list'" class="user-table-wrapper">
             <a-table
               :columns="userTableColumns"
-              :data-source="paginatedUsers"
-              :pagination="false"
+              :data-source="filteredUsers"
+              :pagination="userTablePagination"
+              :row-selection="tableRowSelection"
               :row-class-name="(user) => (user.is_disabled ? 'disabled-user-row' : '')"
               row-key="id"
               size="middle"
               :scroll="{ x: 1190 }"
+              @change="handleUserTableChange"
             >
               <template #bodyCell="{ column, record: user }">
                 <template v-if="column.key === 'actions'">
@@ -239,153 +299,171 @@
               </template>
             </a-table>
           </div>
-          <div v-else class="user-cards-grid">
-            <InfoCard
-              v-for="user in paginatedUsers"
-              :key="user.id"
-              :title="user.username"
-              :subtitle="`ID: ${user.uid || '-'}`"
-              class="user-card"
-              :class="{ 'user-card-disabled': user.is_disabled }"
-            >
-              <template #icon>
-                <FallbackAvatar
-                  :src="user.avatar"
-                  :default-src="getUserDefaultAvatarSrc(user)"
-                  :name="user.username"
-                  :seed="user.uid || user.username"
-                  kind="user"
-                  :size="40"
-                  shape="circle"
-                  :alt="user.username"
-                  class="avatar-img"
+          <div v-else>
+            <div class="user-cards-grid">
+              <div
+                v-for="user in paginatedUsers"
+                :key="user.id"
+                class="user-card-shell"
+                :class="{ 'user-card-shell-disabled': user.is_disabled }"
+              >
+                <a-checkbox
+                  v-if="canBatchReset"
+                  class="user-card-checkbox"
+                  :checked="isUserSelected(user.id)"
+                  :disabled="!canSelectUser(user)"
+                  @change="toggleUserSelection(user, $event.target.checked)"
                 />
-              </template>
-
-              <template #status>
-                <div class="role-dept-badge">
-                  <span class="role-icon-wrapper" :class="getRoleClass(user.role)">
-                    <UserLock v-if="user.role === 'superadmin'" :size="14" />
-                    <UserStar v-else-if="user.role === 'admin'" :size="14" />
-                    <User v-else :size="14" />
-                  </span>
-                  <span class="dept-text">
-                    {{ user.role_name || roleName(user.role) }}
-                    <template v-if="user.department_path"> · {{ user.department_path }}</template>
-                    <template v-else-if="user.department_name">
-                      · {{ user.department_name }}</template
-                    >
-                    <template v-if="user.is_disabled"> · 已禁用</template>
-                  </span>
-                </div>
-              </template>
-
-              <template #card-more-action-corner>
-                <a-menu>
-                  <a-menu-item
-                    v-if="userStore.hasPermission('users.update') && !user.is_disabled"
-                    key="edit"
-                    @click.stop="showEditUserModal(user)"
-                  >
-                    <span class="lucide-menu-item">
-                      <SquarePen :size="14" />
-                      <span>编辑用户</span>
-                    </span>
-                  </a-menu-item>
-                  <a-menu-item
-                    v-if="userStore.hasPermission('users.enable') && user.is_disabled"
-                    key="activate"
-                    :disabled="isUserLifecycleActionDisabled(user)"
-                    @click.stop="confirmActivateUser(user)"
-                  >
-                    <span class="lucide-menu-item">
-                      <UserCheck :size="14" />
-                      <span>激活用户</span>
-                    </span>
-                  </a-menu-item>
-                  <a-menu-item
-                    v-if="userStore.hasPermission('users.disable') && !user.is_disabled"
-                    key="disable"
-                    :disabled="isUserLifecycleActionDisabled(user)"
-                    @click.stop="confirmDisableUser(user)"
-                  >
-                    <span class="lucide-menu-item">
-                      <UserX :size="14" />
-                      <span>禁用用户</span>
-                    </span>
-                  </a-menu-item>
-                  <a-menu-item
-                    v-if="userStore.hasPermission('users.delete')"
-                    key="delete"
-                    :disabled="isUserLifecycleActionDisabled(user)"
-                    :danger="!isUserLifecycleActionDisabled(user)"
-                    @click.stop="confirmDeleteUser(user)"
-                  >
-                    <span class="lucide-menu-item">
-                      <Trash2 :size="14" />
-                      <span>删除用户</span>
-                    </span>
-                  </a-menu-item>
-                </a-menu>
-              </template>
-
-              <template #info>
-                <div class="card-content">
-                  <div class="info-item">
-                    <span class="info-label">兼职部门:</span>
-                    <span class="info-value part-time-text">
-                      {{ partTimeLabel(user) }}
-                    </span>
-                  </div>
-                  <div class="info-item">
-                    <span class="info-label">Token 周额度:</span>
-                    <span class="info-value quota-text">{{ formatWeeklyQuotaPrimary(user) }}</span>
-                  </div>
-                  <div
-                    v-if="
-                      getUserTokenQuotaMode(user) !== 'unlimited' &&
-                      getUserEffectiveWeeklyQuota(user)
-                    "
-                    class="info-item quota-progress-item"
-                  >
-                    <a-progress
-                      class="quota-progress-bar"
-                      :percent="weeklyQuotaUsedPercent(user)"
-                      :stroke-color="weeklyQuotaProgressColor(user)"
-                      :show-info="false"
-                      :stroke-width="6"
+                <InfoCard
+                  :title="user.username"
+                  :subtitle="`ID: ${user.uid || '-'}`"
+                  class="user-card"
+                  :class="{ 'user-card-disabled': user.is_disabled }"
+                >
+                  <template #icon>
+                    <FallbackAvatar
+                      :src="user.avatar"
+                      :default-src="getUserDefaultAvatarSrc(user)"
+                      :name="user.username"
+                      :seed="user.uid || user.username"
+                      kind="user"
+                      :size="40"
+                      shape="circle"
+                      :alt="user.username"
+                      class="avatar-img"
                     />
-                    <span class="quota-progress-text">
-                      已用 {{ formatTokenCount(getUserWeeklyUsage(user)) }} /
-                      {{ formatTokenCount(getUserEffectiveWeeklyQuota(user)) }}
-                      ({{ weeklyQuotaUsedPercent(user) }}%)
-                    </span>
-                  </div>
-                  <div class="info-item">
-                    <span class="info-label">手机号:</span>
-                    <span class="info-value phone-text">{{ user.phone_number || '-' }}</span>
-                  </div>
-                  <div class="info-item">
-                    <span class="info-label">创建时间:</span>
-                    <span class="info-value time-text">{{ formatTime(user.created_at) }}</span>
-                  </div>
-                  <div class="info-item">
-                    <span class="info-label">最后登录:</span>
-                    <span class="info-value time-text">{{ formatTime(user.last_login) }}</span>
-                  </div>
-                </div>
-              </template>
-            </InfoCard>
-          </div>
-          <div v-if="filteredUsers.length > userManagement.pageSize" class="pagination-section">
-            <a-pagination
-              v-model:current="userManagement.currentPage"
-              v-model:page-size="userManagement.pageSize"
-              :total="filteredUsers.length"
-              :page-size-options="['20', '50', '100']"
-              show-size-changer
-              size="small"
-            />
+                  </template>
+
+                  <template #status>
+                    <div class="role-dept-badge">
+                      <span class="role-icon-wrapper" :class="getRoleClass(user.role)">
+                        <UserLock v-if="user.role === 'superadmin'" :size="14" />
+                        <UserStar v-else-if="user.role === 'admin'" :size="14" />
+                        <User v-else :size="14" />
+                      </span>
+                      <span class="dept-text">
+                        {{ user.role_name || roleName(user.role) }}
+                        <template v-if="user.department_path">
+                          · {{ user.department_path }}</template
+                        >
+                        <template v-else-if="user.department_name">
+                          · {{ user.department_name }}</template
+                        >
+                        <template v-if="user.is_disabled"> · 已禁用</template>
+                      </span>
+                    </div>
+                  </template>
+
+                  <template #card-more-action-corner>
+                    <a-menu>
+                      <a-menu-item
+                        v-if="userStore.hasPermission('users.update') && !user.is_disabled"
+                        key="edit"
+                        @click.stop="showEditUserModal(user)"
+                      >
+                        <span class="lucide-menu-item">
+                          <SquarePen :size="14" />
+                          <span>编辑用户</span>
+                        </span>
+                      </a-menu-item>
+                      <a-menu-item
+                        v-if="userStore.hasPermission('users.enable') && user.is_disabled"
+                        key="activate"
+                        :disabled="isUserLifecycleActionDisabled(user)"
+                        @click.stop="confirmActivateUser(user)"
+                      >
+                        <span class="lucide-menu-item">
+                          <UserCheck :size="14" />
+                          <span>激活用户</span>
+                        </span>
+                      </a-menu-item>
+                      <a-menu-item
+                        v-if="userStore.hasPermission('users.disable') && !user.is_disabled"
+                        key="disable"
+                        :disabled="isUserLifecycleActionDisabled(user)"
+                        @click.stop="confirmDisableUser(user)"
+                      >
+                        <span class="lucide-menu-item">
+                          <UserX :size="14" />
+                          <span>禁用用户</span>
+                        </span>
+                      </a-menu-item>
+                      <a-menu-item
+                        v-if="userStore.hasPermission('users.delete')"
+                        key="delete"
+                        :disabled="isUserLifecycleActionDisabled(user)"
+                        :danger="!isUserLifecycleActionDisabled(user)"
+                        @click.stop="confirmDeleteUser(user)"
+                      >
+                        <span class="lucide-menu-item">
+                          <Trash2 :size="14" />
+                          <span>删除用户</span>
+                        </span>
+                      </a-menu-item>
+                    </a-menu>
+                  </template>
+
+                  <template #info>
+                    <div class="card-content">
+                      <div class="info-item">
+                        <span class="info-label">兼职部门:</span>
+                        <span class="info-value part-time-text">
+                          {{ partTimeLabel(user) }}
+                        </span>
+                      </div>
+                      <div class="info-item">
+                        <span class="info-label">Token 周额度:</span>
+                        <span class="info-value quota-text">{{
+                          formatWeeklyQuotaPrimary(user)
+                        }}</span>
+                      </div>
+                      <div
+                        v-if="
+                          getUserTokenQuotaMode(user) !== 'unlimited' &&
+                          getUserEffectiveWeeklyQuota(user)
+                        "
+                        class="info-item quota-progress-item"
+                      >
+                        <a-progress
+                          class="quota-progress-bar"
+                          :percent="weeklyQuotaUsedPercent(user)"
+                          :stroke-color="weeklyQuotaProgressColor(user)"
+                          :show-info="false"
+                          :stroke-width="6"
+                        />
+                        <span class="quota-progress-text">
+                          已用 {{ formatTokenCount(getUserWeeklyUsage(user)) }} /
+                          {{ formatTokenCount(getUserEffectiveWeeklyQuota(user)) }}
+                          ({{ weeklyQuotaUsedPercent(user) }}%)
+                        </span>
+                      </div>
+                      <div class="info-item">
+                        <span class="info-label">手机号:</span>
+                        <span class="info-value phone-text">{{ user.phone_number || '-' }}</span>
+                      </div>
+                      <div class="info-item">
+                        <span class="info-label">创建时间:</span>
+                        <span class="info-value time-text">{{ formatTime(user.created_at) }}</span>
+                      </div>
+                      <div class="info-item">
+                        <span class="info-label">最后登录:</span>
+                        <span class="info-value time-text">{{ formatTime(user.last_login) }}</span>
+                      </div>
+                    </div>
+                  </template>
+                </InfoCard>
+              </div>
+            </div>
+            <div v-if="filteredUsers.length > userManagement.pageSize" class="pagination-section">
+              <a-pagination
+                v-model:current="userManagement.currentPage"
+                v-model:page-size="userManagement.pageSize"
+                :total="filteredUsers.length"
+                :page-size-options="['20', '50', '100']"
+                show-size-changer
+                size="small"
+              />
+            </div>
           </div>
         </div>
       </a-spin>
@@ -488,6 +566,19 @@
               :precision="0"
               placeholder="请输入 Token 数"
             />
+            <a-button
+              v-if="userManagement.editMode && userStore.hasPermission('users.quota.manage')"
+              :loading="userManagement.resettingQuota"
+              @click="confirmResetWeeklyQuota"
+            >
+              重置本周已用额度
+            </a-button>
+          </div>
+          <div
+            v-if="userManagement.editMode && userStore.hasPermission('users.quota.manage')"
+            class="help-text"
+          >
+            仅清零本周已用量，不修改额度模式和额度上限。
           </div>
         </a-form-item>
 
@@ -556,6 +647,36 @@
         </template>
       </a-form>
     </a-modal>
+
+    <a-modal
+      v-model:open="userManagement.globalResetModalVisible"
+      title="全局重置额度"
+      :confirm-loading="userManagement.globalResettingQuota"
+      :ok-button-props="{
+        danger: true,
+        disabled:
+          userManagement.globalResetConfirmText.trim() !== GLOBAL_RESET_CONFIRM_TEXT ||
+          userManagement.globalResettingQuota
+      }"
+      ok-text="确认重置"
+      cancel-text="取消"
+      @ok="handleGlobalReset"
+      @cancel="closeGlobalResetModal"
+    >
+      <div class="global-reset-modal">
+        <p class="global-reset-summary">
+          将重置{{ globalResetScopeLabel }}，共 {{ managementScopeUserCount }} 名启用用户。
+        </p>
+        <p class="global-reset-hint">
+          仅清零本周有效用量，不修改额度模式、额度上限或历史消费明细。
+        </p>
+        <a-input
+          v-model:value="userManagement.globalResetConfirmText"
+          :placeholder="`请输入“${GLOBAL_RESET_CONFIRM_TEXT}”确认`"
+        />
+      </div>
+    </a-modal>
+
   </div>
 </template>
 
@@ -582,11 +703,17 @@ import {
 import { formatDateTime } from '@/utils/time'
 import { isPasswordLongEnough, MIN_PASSWORD_LENGTH } from '@/utils/passwordValidation'
 import { generatePixelAvatar } from '@/utils/pixelAvatar'
+import {
+  buildDepartmentTreeSelectData,
+  expandDepartmentFilterIds,
+  filterUserManagementUsers
+} from '@/utils/userManagementFilters'
 import FallbackAvatar from '@/components/common/FallbackAvatar.vue'
 import InfoCard from '@/components/shared/InfoCard.vue'
 
 const userStore = useUserStore()
 const roles = ref([])
+const GLOBAL_RESET_CONFIRM_TEXT = '重置额度'
 const tokenQuotaModeOptions = [
   { value: 'inherit', label: '继承' },
   { value: 'custom', label: '自定义' },
@@ -654,13 +781,21 @@ const weeklyQuotaProgressColor = (user) => {
   return 'var(--main-500)'
 }
 
+const canBatchReset = computed(() => userStore.hasPermission('users.quota.manage'))
+const canResetQuotaGlobally = computed(() => userStore.hasPermission('users.quota.reset.global'))
+const hasDepartmentFilterPermission = computed(() => userStore.hasPermission('departments.read'))
+
 // 用户管理相关状态
 const userManagement = reactive({
   loading: false,
+  resettingQuota: false,
+  batchResettingQuota: false,
+  globalResettingQuota: false,
   refreshing: false,
   users: [],
   searchKeyword: '',
-  departmentFilter: '',
+  departmentFilters: [],
+  includeDepartmentDescendants: true,
   roleFilter: '',
   viewMode: 'list',
   currentPage: 1,
@@ -670,6 +805,9 @@ const userManagement = reactive({
   modalTitle: '添加用户',
   editMode: false,
   editUserId: null,
+  selectedUserIds: [],
+  globalResetModalVisible: false,
+  globalResetConfirmText: '',
   form: {
     username: '',
     generatedUid: '', // 自动生成的uid
@@ -707,7 +845,8 @@ const userTableColumns = [
 
 // 部门列表（仅超级管理员使用）
 const departmentManagement = reactive({
-  departments: []
+  departments: [],
+  tree: []
 })
 
 const activeDepartments = computed(() =>
@@ -728,52 +867,20 @@ const partTimeDepartmentOptions = computed(() => {
   )
 })
 
-const departmentFilterOptions = computed(() => {
-  const options = new Map()
-
-  departmentManagement.departments.forEach((dept) => {
-    options.set(String(dept.id), {
-      value: String(dept.id),
-      label: dept.path_label || dept.name
-    })
-  })
-
-  userManagement.users.forEach((user) => {
-    const departmentId = user.department_id
-    const departmentName = user.department_name
-
-    if (departmentId == null && !departmentName) return
-
-    const value = String(departmentId ?? departmentName)
-
-    if (!options.has(value)) {
-      options.set(value, {
-        value,
-        label: departmentName || `部门 ${departmentId}`
-      })
-    }
-  })
-
-  return [...options.values()]
-})
+const departmentTreeData = computed(() => buildDepartmentTreeSelectData(departmentManagement.tree))
+const effectiveDepartmentFilterIds = computed(() =>
+  expandDepartmentFilterIds(
+    userManagement.departmentFilters,
+    departmentManagement.tree,
+    userManagement.includeDepartmentDescendants
+  )
+)
 
 const filteredUsers = computed(() => {
-  const keyword = userManagement.searchKeyword.trim().toLowerCase()
-
-  return userManagement.users.filter((user) => {
-    const matchesKeyword =
-      !keyword ||
-      [user.username, user.uid].some((value) =>
-        String(value || '')
-          .toLowerCase()
-          .includes(keyword)
-      )
-    const matchesDepartment =
-      !userManagement.departmentFilter ||
-      String(user.department_id ?? user.department_name ?? '') === userManagement.departmentFilter
-    const matchesRole = !userManagement.roleFilter || user.role === userManagement.roleFilter
-
-    return matchesKeyword && matchesDepartment && matchesRole
+  return filterUserManagementUsers(userManagement.users, {
+    keyword: userManagement.searchKeyword,
+    role: userManagement.roleFilter,
+    departmentIds: effectiveDepartmentFilterIds.value
   })
 })
 
@@ -783,11 +890,64 @@ const paginatedUsers = computed(() => {
   return filteredUsers.value.slice(start, start + pageSize)
 })
 
+const selectedUsers = computed(() => {
+  const usersById = new Map(userManagement.users.map((user) => [user.id, user]))
+  return userManagement.selectedUserIds.map((userId) => usersById.get(userId)).filter(Boolean)
+})
+
+const selectedUserCount = computed(() => selectedUsers.value.length)
+
+const managementScopeUserCount = computed(
+  () => userManagement.users.filter((user) => canSelectUser(user)).length
+)
+const globalResetScopeLabel = computed(() =>
+  userStore.isSuperAdmin ? '全平台全部启用用户' : '当前可管理组织范围内的全部启用用户'
+)
+const tableRowSelection = computed(() => {
+  if (!canBatchReset.value) return undefined
+  return {
+    selectedRowKeys: userManagement.selectedUserIds,
+    preserveSelectedRowKeys: true,
+    columnWidth: 52,
+    getCheckboxProps: (record) => ({
+      disabled: !canSelectUser(record)
+    }),
+    onChange: (selectedRowKeys) => {
+      userManagement.selectedUserIds = normalizeSelectedUserIds(selectedRowKeys)
+    }
+  }
+})
+
+const userTablePagination = computed(() => ({
+  current: userManagement.currentPage,
+  pageSize: userManagement.pageSize,
+  total: filteredUsers.value.length,
+  pageSizeOptions: ['20', '50', '100'],
+  showSizeChanger: true,
+  showTotal: (total) => `共 ${total} 名用户`
+}))
+
+const handleUserTableChange = (pager) => {
+  userManagement.currentPage = pager.current
+  userManagement.pageSize = pager.pageSize
+}
+
 // 获取部门列表
 const fetchDepartments = async () => {
+  if (!hasDepartmentFilterPermission.value) {
+    departmentManagement.departments = []
+    departmentManagement.tree = []
+    userManagement.departmentFilters = []
+    return
+  }
+
   try {
-    const departments = await departmentApi.getDepartments()
+    const [departments, tree] = await Promise.all([
+      departmentApi.getDepartments(),
+      departmentApi.getDepartmentTree()
+    ])
     departmentManagement.departments = departments
+    departmentManagement.tree = Array.isArray(tree) ? tree : []
   } catch (error) {
     console.error('获取部门列表失败:', error)
   }
@@ -864,7 +1024,12 @@ watch(
 )
 
 watch(
-  () => [userManagement.searchKeyword, userManagement.departmentFilter, userManagement.roleFilter],
+  () => [
+    userManagement.searchKeyword,
+    userManagement.departmentFilters,
+    userManagement.includeDepartmentDescendants,
+    userManagement.roleFilter
+  ],
   () => {
     userManagement.currentPage = 1
   }
@@ -891,6 +1056,39 @@ const partTimeLabel = (user) => {
   return memberships.map((item) => item.path_label || item.name).join('、')
 }
 
+const normalizeSelectedUserIds = (userIds) => [
+  ...new Set(userIds.map((userId) => Number(userId)).filter((userId) => Number.isFinite(userId)))
+]
+
+const canSelectUser = (user) => !user?.is_disabled
+
+const isUserSelected = (userId) => userManagement.selectedUserIds.includes(userId)
+
+const toggleUserSelection = (user, checked) => {
+  if (!canSelectUser(user)) return
+
+  const selectedIds = new Set(userManagement.selectedUserIds)
+  if (checked) {
+    selectedIds.add(user.id)
+  } else {
+    selectedIds.delete(user.id)
+  }
+  userManagement.selectedUserIds = [...selectedIds]
+}
+
+const clearSelectedUsers = () => {
+  userManagement.selectedUserIds = []
+}
+
+const filterDepartmentTreeNode = (inputValue, treeNode) =>
+  String(treeNode.title || '')
+    .toLowerCase()
+    .includes(
+      String(inputValue || '')
+        .trim()
+        .toLowerCase()
+    )
+
 const isUserLifecycleActionDisabled = (user) =>
   user.id === userStore.userId || (userStore.userRole !== 'superadmin' && user.role !== 'user')
 
@@ -900,6 +1098,9 @@ const fetchUsers = async () => {
     userManagement.loading = true
     const users = await userStore.getUsers()
     userManagement.users = users
+    userManagement.selectedUserIds = userManagement.selectedUserIds.filter((userId) =>
+      users.some((user) => user.id === userId && canSelectUser(user))
+    )
     userManagement.error = null
   } catch (error) {
     console.error('获取用户列表失败:', error)
@@ -985,6 +1186,93 @@ const handlePrimaryDepartmentChange = () => {
   userManagement.form.partTimeDepartmentIds = userManagement.form.partTimeDepartmentIds.filter(
     (id) => allowed.has(id)
   )
+}
+
+const confirmResetWeeklyQuota = () => {
+  const target = userManagement.users.find((user) => user.id === userManagement.editUserId)
+  if (!target) {
+    message.error('未找到要重置额度的用户')
+    return
+  }
+
+  Modal.confirm({
+    title: '确认重置本周已用额度',
+    content: `确定要将用户“${target.username}”本周已用 Token 额度清零吗？额度模式和上限不会改变。`,
+    okText: '确认重置',
+    cancelText: '取消',
+    async onOk() {
+      try {
+        userManagement.resettingQuota = true
+        await userStore.resetUserWeeklyTokenQuota(target.id)
+        await fetchUsers()
+        message.success('本周已用额度已重置')
+      } catch (error) {
+        console.error('重置用户周额度失败:', error)
+        message.error(error.message || '重置失败，请稍后重试')
+      } finally {
+        userManagement.resettingQuota = false
+      }
+    }
+  })
+}
+
+const confirmResetSelectedUsers = () => {
+  if (!selectedUserCount.value) {
+    message.warning('请先选择要重置额度的启用用户')
+    return
+  }
+
+  Modal.confirm({
+    title: '确认重置所选用户额度',
+    content: `确定要重置这 ${selectedUserCount.value} 名用户本周已用 Token 额度吗？额度模式、额度上限和历史消费明细不会改变。`,
+    okText: '确认重置',
+    cancelText: '取消',
+    async onOk() {
+      try {
+        userManagement.batchResettingQuota = true
+        const summary = await userStore.resetUsersWeeklyTokenQuota(userManagement.selectedUserIds)
+        await fetchUsers()
+        clearSelectedUsers()
+        message.success(`已重置 ${summary.reset_count}/${summary.target_count} 名用户的本周额度`)
+      } catch (error) {
+        console.error('批量重置用户周额度失败:', error)
+        message.error(error.message || '批量重置失败，请稍后重试')
+      } finally {
+        userManagement.batchResettingQuota = false
+      }
+    }
+  })
+}
+
+const openGlobalResetModal = () => {
+  userManagement.globalResetConfirmText = ''
+  userManagement.globalResetModalVisible = true
+}
+
+const closeGlobalResetModal = () => {
+  userManagement.globalResetModalVisible = false
+  userManagement.globalResetConfirmText = ''
+}
+
+const handleGlobalReset = async () => {
+  if (userManagement.globalResetConfirmText.trim() !== GLOBAL_RESET_CONFIRM_TEXT) {
+    message.error(`请输入“${GLOBAL_RESET_CONFIRM_TEXT}”确认`)
+    return
+  }
+
+  try {
+    userManagement.globalResettingQuota = true
+    const summary = await userStore.resetGlobalUsersWeeklyTokenQuota()
+    await fetchUsers()
+    clearSelectedUsers()
+    closeGlobalResetModal()
+    message.success(`已重置 ${summary.reset_count}/${summary.target_count} 名用户的本周额度`)
+  } catch (error) {
+    console.error('全局重置用户周额度失败:', error)
+    message.error(error.message || '全局重置失败，请稍后重试')
+  } finally {
+    userManagement.globalResettingQuota = false
+  }
 }
 
 // 处理用户表单提交
@@ -1305,10 +1593,31 @@ onMounted(async () => {
       justify-content: flex-end;
       gap: 8px;
       margin-left: auto;
+      flex-wrap: wrap;
     }
 
     .filter-select {
       width: 150px;
+    }
+
+    .department-filter-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .department-filter-tree {
+      width: 320px;
+      max-width: 100%;
+    }
+
+    .department-scope-switch {
+      display: inline-flex;
+
+      .ant-btn + .ant-btn {
+        margin-left: -1px;
+      }
     }
 
     .view-switch {
@@ -1342,9 +1651,59 @@ onMounted(async () => {
         min-width: 0;
       }
 
+      .department-filter-group,
+      .department-filter-tree {
+        width: 100%;
+      }
+
       .view-switch {
         width: 100%;
         padding-left: 0;
+
+        .ant-btn {
+          flex: 1;
+        }
+      }
+    }
+  }
+
+  .batch-action-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 16px;
+    padding: 12px 14px;
+    border: 1px solid var(--gray-150);
+    border-radius: 10px;
+    background: var(--gray-25);
+
+    .batch-action-summary {
+      font-size: 13px;
+      color: var(--gray-700);
+    }
+
+    .batch-action-buttons {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    &.batch-action-bar-active {
+      border-color: var(--main-200);
+      background: var(--main-50);
+    }
+  }
+
+  @media (max-width: 640px) {
+    .batch-action-bar {
+      align-items: stretch;
+      flex-direction: column;
+
+      .batch-action-buttons {
+        width: 100%;
 
         .ant-btn {
           flex: 1;
@@ -1371,6 +1730,26 @@ onMounted(async () => {
         grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
         gap: 16px;
         // padding: 16px;
+
+        .user-card-shell {
+          position: relative;
+        }
+
+        .user-card-checkbox {
+          position: absolute;
+          top: 14px;
+          left: 14px;
+          z-index: 2;
+          padding: 2px;
+          border-radius: 6px;
+          background: rgba(255, 255, 255, 0.92);
+        }
+
+        .user-card-shell-disabled {
+          .user-card-checkbox {
+            background: var(--gray-50);
+          }
+        }
 
         .user-card {
           cursor: default;
@@ -1781,6 +2160,25 @@ onMounted(async () => {
         font-size: 13px;
       }
     }
+  }
+}
+
+.global-reset-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+
+  .global-reset-summary {
+    margin: 0;
+    color: var(--gray-800);
+    line-height: 1.6;
+  }
+
+  .global-reset-hint {
+    margin: 0;
+    color: var(--gray-600);
+    font-size: 13px;
+    line-height: 1.6;
   }
 }
 </style>

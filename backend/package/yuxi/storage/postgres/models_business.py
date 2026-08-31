@@ -981,6 +981,7 @@ class TokenQuotaWeeklyUsage(Base):
     weighted_tokens = Column(BigInteger, nullable=False, default=0)
     event_count = Column(Integer, nullable=False, default=0)
     estimated_event_count = Column(Integer, nullable=False, default=0)
+    reset_at = Column(DateTime, nullable=True, comment="本周额度最近一次人工重置时间")
     created_at = Column(DateTime, default=utc_now_naive, nullable=False)
     updated_at = Column(DateTime, default=utc_now_naive, onupdate=utc_now_naive, nullable=False)
 
@@ -1011,6 +1012,7 @@ class TokenQuotaWeeklyUsage(Base):
             "weighted_tokens": self.weighted_tokens,
             "event_count": self.event_count,
             "estimated_event_count": self.estimated_event_count,
+            "reset_at": format_utc_datetime(self.reset_at),
             "created_at": format_utc_datetime(self.created_at),
             "updated_at": format_utc_datetime(self.updated_at),
         }
