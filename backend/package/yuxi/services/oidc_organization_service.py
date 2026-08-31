@@ -14,7 +14,7 @@ from yuxi.storage.postgres.models_business import Department, DepartmentClosure,
 from yuxi.utils.datetime_utils import utc_now_naive
 
 
-DEPARTMENT_CODE_PATTERN = re.compile(r"^(?P<prefix>[A-Z0-9]+(?:-[A-Z0-9]+)*)-BM(?P<digits>\d+)$")
+DEPARTMENT_CODE_PATTERN = re.compile(r"^(?:(?P<prefix>[A-Z0-9]+(?:-[A-Z0-9]+)*)-)?BM(?P<digits>\d+)$")
 ENTITY_CODE_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9_-]*$")
 
 
@@ -31,7 +31,8 @@ def department_code_chain(value: Any) -> list[str] | None:
     if len(digits) < 2 or len(digits) % 2:
         return None
     prefix = match.group("prefix")
-    return [f"{prefix}-BM{digits[:length]}" for length in range(2, len(digits) + 1, 2)]
+    code_prefix = f"{prefix}-BM" if prefix else "BM"
+    return [f"{code_prefix}{digits[:length]}" for length in range(2, len(digits) + 1, 2)]
 
 
 def normalize_entity_code(value: Any) -> str | None:

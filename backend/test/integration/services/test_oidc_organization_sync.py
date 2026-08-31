@@ -128,6 +128,35 @@ async def test_resolve_cnnp_department_builds_placeholders_and_preserves_local_n
         await _close_database()
 
 
+async def test_resolve_prefixless_bm_department_code_builds_hierarchy():
+    await _ensure_database()
+    suffix = uuid.uuid4().hex[:8].upper()
+    entity_code = f"B{suffix}"
+
+    try:
+        async with pg_manager.get_async_session_context() as db:
+            leaf = await OIDCOrganizationService.resolve_cnnp_department(
+                db,
+                entity_code=entity_code,
+                entity_short_name="武汉楚能",
+                department_code="BM2203",
+                department_name="电极车间",
+                default_department_name="默认部门",
+            )
+            departments = list(
+                (await db.execute(select(Department).where(Department.entity_code == entity_code))).scalars().all()
+            )
+
+            assert {item.department_code for item in departments} == {None, "BM22", "BM2203"}
+            assert leaf.department_code == "BM2203"
+            assert leaf.oidc_name == "电极车间"
+            parent = next(item for item in departments if item.department_code == "BM22")
+            assert leaf.parent_id == parent.id
+    finally:
+        await _cleanup_entity(entity_code)
+        await _close_database()
+
+
 async def test_sync_user_primary_department_preserves_only_same_root_part_time_memberships():
     await _ensure_database()
     suffix = uuid.uuid4().hex[:8].upper()

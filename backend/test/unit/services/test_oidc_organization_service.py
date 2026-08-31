@@ -12,6 +12,11 @@ from yuxi.storage.postgres.models_business import Department
         ("JXI-BM46", ["JXI-BM46"]),
         ("jxi-bm4605", ["JXI-BM46", "JXI-BM4605"]),
         (" JXI-BM460503 ", ["JXI-BM46", "JXI-BM4605", "JXI-BM460503"]),
+        ("WH-BM2203", ["WH-BM22", "WH-BM2203"]),
+        ("cn-np-bm2203", ["CN-NP-BM22", "CN-NP-BM2203"]),
+        ("BM22", ["BM22"]),
+        ("bm2203", ["BM22", "BM2203"]),
+        (" BM220301 ", ["BM22", "BM2203", "BM220301"]),
     ],
 )
 def test_department_code_chain_builds_two_digit_hierarchy(value, expected):
@@ -20,7 +25,7 @@ def test_department_code_chain_builds_two_digit_hierarchy(value, expected):
 
 @pytest.mark.parametrize(
     "value",
-    [None, "", "JXI-BM4", "JXI-BM460", "JXI-BM46A5", "JXI_BM4605", "JXI!-BM4605"],
+    [None, "", "BM2", "BM220", "BM22A3", "JXI-BM4", "JXI-BM460", "JXI-BM46A5", "JXI_BM4605", "JXI!-BM4605"],
 )
 def test_department_code_chain_rejects_invalid_values(value):
     assert department_code_chain(value) is None

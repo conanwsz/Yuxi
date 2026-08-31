@@ -181,26 +181,26 @@ async def test_cnnp_callback_syncs_existing_user_primary_department(oidc_session
             "email": "alice@example.com",
             "name": "Alice",
             "avatar": None,
-            "entity_code": "HK600001",
-            "entity_short_name": "测试公司",
-            "department_name": "测试部门",
-            "department_code": "JXI-BM4605",
+            "entity_code": "HK900001",
+            "entity_short_name": "武汉楚能",
+            "department_name": "电极车间",
+            "department_code": "BM2203",
             "department_description": None,
             "raw": userinfo,
         }
 
     resolved_department = SimpleNamespace(
         id=999,
-        entity_code="HK600001",
-        department_code="JXI-BM4605",
-        display_name="测试部门",
+        entity_code="HK900001",
+        department_code="BM2203",
+        display_name="电极车间",
     )
     sync_calls = []
     info_logs = []
 
     async def fake_resolve(cls, db, **kwargs):
-        assert kwargs["entity_code"] == "HK600001"
-        assert kwargs["department_code"] == "JXI-BM4605"
+        assert kwargs["entity_code"] == "HK900001"
+        assert kwargs["department_code"] == "BM2203"
         return resolved_department
 
     async def fake_sync(db, *, user, department):
@@ -240,9 +240,9 @@ async def test_cnnp_callback_syncs_existing_user_primary_department(oidc_session
     assert response.status_code == 302
     assert sync_calls == [(user.id, 999)]
     assert any(
-        "entity_code='HK600001'" in message
+        "entity_code='HK900001'" in message
         and "entity_code_valid=True" in message
-        and "dept_code='JXI-BM4605'" in message
+        and "dept_code='BM2203'" in message
         and "dept_code_valid=True" in message
         for message in info_logs
     )
