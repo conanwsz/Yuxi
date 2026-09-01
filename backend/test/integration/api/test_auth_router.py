@@ -5,6 +5,8 @@ Integration tests for authentication-related API routes.
 from __future__ import annotations
 
 import uuid
+from base64 import b64decode
+import re
 
 import pytest
 
@@ -96,26 +98,89 @@ async def test_login_with_invalid_credentials(test_client):
     assert "detail" in response.json()
 
 
-async def test_user_is_locked_after_repeated_failed_logins(test_client, standard_user):
+def _captcha_offset(image_url: str) -> int:
+    """从服务端提供的验证码图片中读取横向缺口位置，模拟用户拖动。"""
+
+    encoded_svg = image_url.removeprefix("data:image/svg+xml;base64,")
+    svg = b64decode(encoded_svg).decode()
+    match = re.search(r'<g data-target="true" transform="translate\((\d+) (\d+)\)"', svg)
+    assert match, svg
+    return int(match.group(1))
+
+
+async def test_three_password_failures_require_sliding_captcha(test_client, standard_user):
     uid = standard_user["user"]["uid"]
 
-    for attempt in range(1, 5):
+    for attempt in range(1, 3):
         response = await test_client.post("/api/auth/token", data={"username": uid, "password": "wrong-password"})
         assert response.status_code == 401, response.text
         assert response.json()["detail"] == "用户名或密码错误"
 
-    locked_response = await test_client.post("/api/auth/token", data={"username": uid, "password": "wrong-password"})
-    assert locked_response.status_code == 423, locked_response.text
-    assert "X-Lock-Remaining" in locked_response.headers
-    assert "账户已被锁定" in locked_response.json()["detail"]
+    third_failure = await test_client.post("/api/auth/token", data={"username": uid, "password": "wrong-password"})
+    assert third_failure.status_code == 401, third_failure.text
+    assert third_failure.headers["X-Captcha-Required"] == "true"
+    assert "滑动验证码" in third_failure.json()["detail"]
 
-    still_locked_response = await test_client.post(
+    missing_captcha_response = await test_client.post(
         "/api/auth/token",
         data={"username": uid, "password": standard_user["password"]},
     )
-    assert still_locked_response.status_code == 423, still_locked_response.text
-    assert "X-Lock-Remaining" in still_locked_response.headers
-    assert "登录被锁定" in still_locked_response.json()["detail"]
+    assert missing_captcha_response.status_code == 401, missing_captcha_response.text
+    assert missing_captcha_response.headers["X-Captcha-Required"] == "true"
+
+    captcha_response = await test_client.post("/api/auth/login-captcha", json={"login_id": uid})
+    assert captcha_response.status_code == 200, captcha_response.text
+    captcha = captcha_response.json()
+    offset_x = _captcha_offset(captcha["image_url"])
+
+    success_response = await test_client.post(
+        "/api/auth/token",
+        data={
+            "username": uid,
+            "password": standard_user["password"],
+            "captcha_token": captcha["token"],
+            "captcha_offset": str(offset_x),
+        },
+    )
+    assert success_response.status_code == 200, success_response.text
+
+
+async def test_account_locks_after_ten_failed_sliding_captchas(test_client, standard_user):
+    uid = standard_user["user"]["uid"]
+
+    for _ in range(3):
+        response = await test_client.post("/api/auth/token", data={"username": uid, "password": "wrong-password"})
+        assert response.status_code == 401, response.text
+
+    captcha_response = await test_client.post("/api/auth/login-captcha", json={"login_id": uid})
+    assert captcha_response.status_code == 200, captcha_response.text
+    captcha_token = captcha_response.json()["token"]
+
+    for _ in range(9):
+        response = await test_client.post(
+            "/api/auth/token",
+            data={
+                "username": uid,
+                "password": standard_user["password"],
+                "captcha_token": captcha_token,
+                "captcha_offset": "0",
+            },
+        )
+        assert response.status_code == 401, response.text
+        assert "滑动验证失败" in response.json()["detail"]
+
+    locked_response = await test_client.post(
+        "/api/auth/token",
+        data={
+            "username": uid,
+            "password": standard_user["password"],
+            "captcha_token": captcha_token,
+            "captcha_offset": "0",
+        },
+    )
+    assert locked_response.status_code == 423, locked_response.text
+    assert "X-Lock-Remaining" in locked_response.headers
+    assert "账户已被锁定" in locked_response.json()["detail"]
 
 
 async def test_admin_can_login_and_fetch_profile(test_client, admin_headers):

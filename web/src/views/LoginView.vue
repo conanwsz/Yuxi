@@ -161,6 +161,33 @@
                     </a-input-password>
                   </a-form-item>
 
+                  <a-form-item v-if="captchaChallenge" label="滑动验证">
+                    <div class="login-captcha">
+                      <div class="captcha-image">
+                        <img :src="captchaChallenge.image_url" alt="请将拼图拖到缺口处" />
+                        <img
+                          :src="captchaChallenge.piece_image_url"
+                          alt="可拖动拼图"
+                          draggable="false"
+                          class="captcha-piece"
+                          :class="{ 'is-dragging': captchaDragging }"
+                          :style="{
+                            top: `${captchaChallenge.piece_start_y}px`,
+                            transform: `translateX(${captchaOffset}px)`
+                          }"
+                          @pointerdown.prevent="startCaptchaDrag"
+                          @pointermove="moveCaptchaDrag"
+                          @pointerup="endCaptchaDrag"
+                          @pointercancel="endCaptchaDrag"
+                        />
+                      </div>
+                      <p>按住拼图，拖到同形的深色缺口</p>
+                      <a-button type="link" size="small" :disabled="loading" @click="loadLoginCaptcha">
+                        换一张
+                      </a-button>
+                    </div>
+                  </a-form-item>
+
                   <a-form-item>
                     <a-button
                       type="primary"
@@ -217,7 +244,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, onUnmounted, computed } from 'vue'
+import { ref, reactive, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import { useInfoStore } from '@/stores/info'
@@ -272,6 +299,11 @@ const oidcButtonText = ref('OIDC 登录')
 const isLocked = ref(false)
 const lockRemainingTime = ref(0)
 const lockCountdown = ref(null)
+const captchaChallenge = ref(null)
+const captchaOffset = ref(0)
+const captchaDragging = ref(false)
+const captchaDragStart = { pointerX: 0, offsetX: 0 }
+const CAPTCHA_MAX_OFFSET = 244
 
 // 登录表单
 const loginForm = reactive({
@@ -290,6 +322,14 @@ const adminForm = reactive({
 const goHome = () => {
   router.push('/')
 }
+
+watch(
+  () => loginForm.loginId,
+  () => {
+    captchaChallenge.value = null
+    captchaOffset.value = 0
+  }
+)
 
 // 清理倒计时器
 const clearLockCountdown = () => {
@@ -344,6 +384,36 @@ const validateConfirmPassword = async (rule, value) => {
   }
 }
 
+const loadLoginCaptcha = async () => {
+  const challenge = await authApi.getLoginCaptcha(loginForm.loginId)
+  captchaChallenge.value = challenge
+  captchaOffset.value = 0
+}
+
+const clampCaptchaOffset = (value, maximum) => Math.min(Math.max(value, 0), maximum)
+
+const startCaptchaDrag = (event) => {
+  if (loading.value) return
+
+  event.currentTarget.setPointerCapture(event.pointerId)
+  captchaDragging.value = true
+  captchaDragStart.pointerX = event.clientX
+  captchaDragStart.offsetX = captchaOffset.value
+}
+
+const moveCaptchaDrag = (event) => {
+  if (!captchaDragging.value) return
+
+  captchaOffset.value = clampCaptchaOffset(
+    captchaDragStart.offsetX + event.clientX - captchaDragStart.pointerX,
+    CAPTCHA_MAX_OFFSET
+  )
+}
+
+const endCaptchaDrag = () => {
+  captchaDragging.value = false
+}
+
 // 处理登录
 const handleLogin = async () => {
   // 如果当前被锁定，不允许登录
@@ -359,7 +429,9 @@ const handleLogin = async () => {
 
     await userStore.login({
       loginId: loginForm.loginId,
-      password: loginForm.password
+      password: loginForm.password,
+      captchaToken: captchaChallenge.value?.token,
+      captchaOffset: captchaOffset.value
     })
 
     message.success('登录成功')
@@ -409,6 +481,13 @@ const handleLogin = async () => {
         errorMessage.value = `由于多次登录失败，账户已被锁定 ${formatTime(remainingTime)}`
       } else {
         errorMessage.value = error.message || '账户被锁定，请稍后再试'
+      }
+    } else if (error.captchaRequired) {
+      errorMessage.value = error.message || '请完成滑动验证码后重试'
+      try {
+        await loadLoginCaptcha()
+      } catch (captchaError) {
+        errorMessage.value = captchaError.message || '获取滑动验证码失败，请重新输入账号和密码'
       }
     } else {
       errorMessage.value = error.message || '登录失败，请检查用户名和密码'
@@ -738,6 +817,51 @@ onUnmounted(() => {
 
 .login-form.login-form--init :deep(.ant-form-item) {
   margin-bottom: 14px;
+}
+
+.login-captcha {
+  .captcha-image {
+    position: relative;
+    width: 280px;
+    height: 72px;
+    overflow: hidden;
+    border-radius: 8px;
+
+    img {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    .captcha-piece {
+      position: absolute;
+      left: 0;
+      width: 36px;
+      height: 36px;
+      box-shadow: 0 1px 3px var(--shadow-1);
+      cursor: grab;
+      touch-action: none;
+      user-select: none;
+      transition: transform 80ms linear;
+
+      &.is-dragging {
+        cursor: grabbing;
+        transition: none;
+      }
+    }
+  }
+
+  p {
+    margin: 8px 0 0;
+    color: var(--gray-500);
+    font-size: 12px;
+  }
+
+  :deep(.ant-btn-link) {
+    height: auto;
+    padding: 0;
+    font-size: 12px;
+  }
 }
 
 .third-party-login {

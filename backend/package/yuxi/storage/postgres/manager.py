@@ -829,6 +829,10 @@ class PostgresManager(metaclass=SingletonMeta):
             """,
             "ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS token_quota_mode VARCHAR(16) DEFAULT 'inherit'",
             "ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS weekly_token_quota BIGINT",
+            (
+                "ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS "
+                "login_captcha_failed_count INTEGER NOT NULL DEFAULT 0"
+            ),
             "UPDATE users SET token_quota_mode = 'inherit' WHERE token_quota_mode IS NULL",
             "ALTER TABLE IF EXISTS users ALTER COLUMN token_quota_mode SET NOT NULL",
             "ALTER TABLE IF EXISTS skills ADD COLUMN IF NOT EXISTS tool_dependencies JSONB DEFAULT '[]'::jsonb",

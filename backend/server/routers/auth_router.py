@@ -49,6 +49,7 @@ from yuxi.utils.datetime_utils import utc_now_naive
 from yuxi.services.permission_service import has_permission, resolve_user_permissions
 from yuxi.services.organization_scope_service import user_can_manage_department
 from yuxi.services.organization_service import OrganizationService
+from yuxi.services.login_captcha_service import create_login_captcha, verify_login_captcha
 
 # OIDC 认证相关导入
 from yuxi.services.oidc_service import (
@@ -77,6 +78,21 @@ class Token(BaseModel):
     permissions: list[str]
     department_id: int | None = None
     department_name: str | None = None
+
+
+class LoginCaptchaRequest(BaseModel):
+    """请求登录滑动验证码。"""
+
+    login_id: str = Field(min_length=1, max_length=128)
+
+
+class LoginCaptchaResponse(BaseModel):
+    """登录页面渲染滑动验证码所需的数据。"""
+
+    token: str
+    image_url: str
+    piece_image_url: str
+    piece_start_y: int
 
 
 class UserCreate(BaseModel):
@@ -336,19 +352,47 @@ async def _apply_user_token_quota_fields(
 # =============================================================================
 
 
-@auth.post("/token", response_model=Token)
-async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = Depends(get_db)):
-    # 查找用户 - 支持user_id和phone_number登录
-    login_identifier = form_data.username  # OAuth2表单中的username字段作为登录标识符
+async def _find_login_user(db: AsyncSession, login_identifier: str) -> User | None:
+    """按 UID 或手机号查找密码登录用户。"""
 
-    # 尝试通过user_id查找
     result = await db.execute(select(User).filter(User.uid == login_identifier))
     user = result.scalar_one_or_none()
+    if user is not None:
+        return user
 
-    # 如果通过user_id没找到，尝试通过phone_number查找
-    if not user:
-        result = await db.execute(select(User).filter(User.phone_number == login_identifier))
-        user = result.scalar_one_or_none()
+    result = await db.execute(select(User).filter(User.phone_number == login_identifier))
+    return result.scalar_one_or_none()
+
+
+@auth.post("/login-captcha", response_model=LoginCaptchaResponse)
+async def create_login_captcha_challenge(
+    captcha_request: LoginCaptchaRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """为已触发风险控制的账户签发滑动验证码。"""
+
+    user = await _find_login_user(db, captcha_request.login_id)
+    if user is None or user.is_deleted or not user.requires_login_captcha() or user.is_login_locked():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="当前账户无需滑动验证")
+
+    challenge = create_login_captcha(user.id)
+    return {
+        "token": challenge.token,
+        "image_url": challenge.image_url,
+        "piece_image_url": challenge.piece_image_url,
+        "piece_start_y": challenge.piece_start_y,
+    }
+
+
+@auth.post("/token", response_model=Token)
+async def login_for_access_token(
+    request: Request,
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: AsyncSession = Depends(get_db),
+):
+    # 查找用户 - 支持 user_id 和 phone_number 登录
+    login_identifier = form_data.username
+    user = await _find_login_user(db, login_identifier)
 
     # 如果用户不存在，为防止用户名枚举攻击，返回通用错误信息
     if not user:
@@ -375,6 +419,48 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
             headers={"WWW-Authenticate": "Bearer", "X-Lock-Remaining": str(remaining_time)},
         )
 
+    form = await request.form()
+    captcha_token = form.get("captcha_token")
+    captcha_offset = form.get("captcha_offset")
+    try:
+        captcha_offset = int(captcha_offset) if captcha_offset is not None else None
+    except (TypeError, ValueError):
+        captcha_offset = None
+
+    if user.requires_login_captcha():
+        if captcha_token is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="请完成滑动验证码后再登录",
+                headers={"WWW-Authenticate": "Bearer", "X-Captcha-Required": "true"},
+            )
+
+        if not verify_login_captcha(captcha_token, user.id, captcha_offset):
+            user.increment_login_captcha_failure()
+            await db.commit()
+            await log_operation(
+                db,
+                user.id,
+                "登录滑动验证失败",
+                f"滑动验证失败次数: {user.login_captcha_failed_count}",
+            )
+
+            if user.is_login_locked():
+                remaining_time = user.get_remaining_lock_time()
+                raise HTTPException(
+                    status_code=status.HTTP_423_LOCKED,
+                    detail=f"由于多次滑动验证失败，账户已被锁定 {remaining_time} 秒",
+                    headers={"WWW-Authenticate": "Bearer", "X-Lock-Remaining": str(remaining_time)},
+                )
+
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="滑动验证失败，请重试",
+                headers={"WWW-Authenticate": "Bearer", "X-Captcha-Required": "true"},
+            )
+
+        user.login_captcha_failed_count = 0
+
     # 验证密码
     if not AuthUtils.verify_password(user.password_hash, form_data.password):
         # 密码错误，增加失败次数
@@ -384,20 +470,12 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
         # 记录失败操作
         await log_operation(db, user.id if user else None, "登录失败", f"密码错误，失败次数: {user.login_failed_count}")
 
-        # 检查是否需要锁定
-        if user.is_login_locked():
-            remaining_time = user.get_remaining_lock_time()
-            raise HTTPException(
-                status_code=status.HTTP_423_LOCKED,
-                detail=f"由于多次登录失败，账户已被锁定 {remaining_time} 秒",
-                headers={"WWW-Authenticate": "Bearer", "X-Lock-Remaining": str(remaining_time)},
-            )
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="用户名或密码错误",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
+        headers = {"WWW-Authenticate": "Bearer"}
+        detail = "用户名或密码错误"
+        if user.requires_login_captcha():
+            headers["X-Captcha-Required"] = "true"
+            detail = "密码错误，请完成滑动验证码后重试"
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=detail, headers=headers)
 
     # 登录成功，重置失败计数器
     user.reset_failed_login()

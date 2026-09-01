@@ -48,6 +48,24 @@ async function getUserAccessOptions() {
 }
 
 /**
+ * 获取已触发登录风控账户的滑动验证码挑战。
+ * @param {string} loginId - UID 或手机号
+ * @returns {Promise<{token: string, image_url: string, piece_image_url: string, piece_start_y: number}>}
+ */
+async function getLoginCaptcha(loginId) {
+  const response = await fetch('/api/auth/login-captcha', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ login_id: loginId })
+  })
+  if (!response.ok) {
+    const detail = await parseErrorDetail(response, '获取滑动验证码失败')
+    throw new Error(detail)
+  }
+  return response.json()
+}
+
+/**
  * 使用一次性 code 交换 OIDC 登录结果
  * @param {string} code - 一次性登录 code
  * @returns {Promise<{
@@ -106,6 +124,7 @@ async function resetGlobalUsersWeeklyTokenQuota() {
 export const authApi = {
   getOIDCConfig,
   getOIDCLoginUrl,
+  getLoginCaptcha,
   getUserAccessOptions,
   exchangeOIDCCode,
   getCLIAuthSession,

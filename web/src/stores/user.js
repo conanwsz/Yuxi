@@ -43,6 +43,10 @@ export const useUserStore = defineStore('user', () => {
       // 支持uid或phone_number登录
       formData.append('username', credentials.loginId) // 使用loginId作为通用登录标识
       formData.append('password', credentials.password)
+      if (credentials.captchaToken) {
+        formData.append('captcha_token', credentials.captchaToken)
+        formData.append('captcha_offset', String(credentials.captchaOffset))
+      }
 
       const response = await fetch('/api/auth/token', {
         method: 'POST',
@@ -52,15 +56,11 @@ export const useUserStore = defineStore('user', () => {
       if (!response.ok) {
         const error = await response.json()
 
-        // 如果是423锁定状态码，抛出包含状态码的错误
-        if (response.status === 423) {
-          const lockError = new Error(error.detail || '账户被锁定')
-          lockError.status = 423
-          lockError.headers = response.headers
-          throw lockError
-        }
-
-        throw new Error(error.detail || '登录失败')
+        const loginError = new Error(error.detail || '登录失败')
+        loginError.status = response.status
+        loginError.headers = response.headers
+        loginError.captchaRequired = response.headers.get('X-Captcha-Required') === 'true'
+        throw loginError
       }
 
       const data = await response.json()

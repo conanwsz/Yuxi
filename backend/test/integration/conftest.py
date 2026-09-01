@@ -6,9 +6,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import uuid
+from base64 import b64decode
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
@@ -59,6 +61,40 @@ def _require_admin_credentials() -> tuple[str, str]:
     return ADMIN_LOGIN, ADMIN_PASSWORD
 
 
+def _captcha_target_offset(image_url: str) -> int:
+    """读取服务端验证码图片中的横向缺口位置，供集成测试完成登录。"""
+
+    svg = b64decode(image_url.removeprefix("data:image/svg+xml;base64,")).decode()
+    match = re.search(r'<g data-target="true" transform="translate\((\d+) (\d+)\)"', svg)
+    if match is None:
+        raise RuntimeError("Login captcha image did not contain a target position")
+    return int(match.group(1))
+
+
+async def _request_admin_token(client: httpx.AsyncClient, username: str, password: str) -> httpx.Response:
+    """使用配置的管理员凭据登录，必要时完成当前实例的滑动验证。"""
+
+    response = await client.post("/api/auth/token", data={"username": username, "password": password})
+    if response.headers.get("X-Captcha-Required") != "true":
+        return response
+
+    captcha_response = await client.post("/api/auth/login-captcha", json={"login_id": username})
+    if captcha_response.status_code != 200:
+        return captcha_response
+
+    captcha = captcha_response.json()
+    offset_x = _captcha_target_offset(captcha["image_url"])
+    return await client.post(
+        "/api/auth/token",
+        data={
+            "username": username,
+            "password": password,
+            "captcha_token": captcha["token"],
+            "captcha_offset": str(offset_x),
+        },
+    )
+
+
 @pytest_asyncio.fixture(scope="function")
 async def test_client() -> AsyncGenerator[httpx.AsyncClient, None]:
     async with httpx.AsyncClient(base_url=API_BASE_URL, timeout=HTTP_TIMEOUT, follow_redirects=True) as client:
@@ -79,10 +115,7 @@ async def admin_token() -> str:
         timeout=HTTP_TIMEOUT,
         follow_redirects=True,
     ) as bootstrap_client:
-        response = await bootstrap_client.post(
-            "/api/auth/token",
-            data={"username": username, "password": password},
-        )
+        response = await _request_admin_token(bootstrap_client, username, password)
 
         if response.status_code == 401:
             first_run_response = await bootstrap_client.get("/api/auth/check-first-run")
@@ -143,10 +176,7 @@ def cleanup_test_knowledge_resources():
                 timeout=HTTP_TIMEOUT,
                 follow_redirects=True,
             ) as bootstrap_client:
-                response = await bootstrap_client.post(
-                    "/api/auth/token",
-                    data={"username": ADMIN_LOGIN, "password": ADMIN_PASSWORD},
-                )
+                response = await _request_admin_token(bootstrap_client, ADMIN_LOGIN, ADMIN_PASSWORD)
                 if response.status_code != 200:
                     raise RuntimeError(
                         f"Test resource cleanup login failed (status={response.status_code}): {response.text}"

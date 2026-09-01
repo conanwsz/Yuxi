@@ -45,7 +45,8 @@ def _format_naive_utc(value: datetime | None) -> str | None:
     return value.isoformat() + "Z"
 
 
-MAX_LOGIN_FAILED_ATTEMPTS = 5
+LOGIN_CAPTCHA_REQUIRED_AFTER_FAILURES = 3
+MAX_LOGIN_CAPTCHA_FAILED_ATTEMPTS = 10
 LOGIN_LOCK_DURATION_SECONDS = 300
 AGENT_RUN_TERMINAL_STATUSES = ("completed", "failed", "cancelled", "interrupted")
 
@@ -168,7 +169,8 @@ class User(Base):
     weekly_token_quota = Column(BigInteger, nullable=True)
 
     # 登录失败限制相关字段
-    login_failed_count = Column(Integer, nullable=False, default=0)  # 登录失败次数
+    login_failed_count = Column(Integer, nullable=False, default=0)  # 密码登录失败次数
+    login_captcha_failed_count = Column(Integer, nullable=False, default=0)  # 滑动验证码失败次数
     last_failed_login = Column(DateTime, nullable=True)  # 最后一次登录失败时间
     login_locked_until = Column(DateTime, nullable=True)  # 锁定到什么时候
 
@@ -217,6 +219,7 @@ class User(Base):
             "created_at": format_utc_datetime(self.created_at),
             "last_login": format_utc_datetime(self.last_login),
             "login_failed_count": self.login_failed_count,
+            "login_captcha_failed_count": self.login_captcha_failed_count,
             "last_failed_login": format_utc_datetime(self.last_failed_login),
             "login_locked_until": format_utc_datetime(self.login_locked_until),
             "is_deleted": self.is_deleted,
@@ -240,15 +243,25 @@ class User(Base):
         return max(0, remaining)
 
     def increment_failed_login(self):
-        """增加登录失败计数，并在达到阈值后锁定登录"""
+        """增加密码失败计数，达到阈值后要求滑动验证。"""
         self.login_failed_count += 1
         self.last_failed_login = utc_now_naive()
-        if self.login_failed_count >= MAX_LOGIN_FAILED_ATTEMPTS:
+
+    def requires_login_captcha(self) -> bool:
+        """判断下一次密码登录是否必须先完成滑动验证。"""
+        return self.login_failed_count >= LOGIN_CAPTCHA_REQUIRED_AFTER_FAILURES
+
+    def increment_login_captcha_failure(self):
+        """记录滑动验证失败，并在第十次失败后锁定账户。"""
+        self.login_captcha_failed_count += 1
+        self.last_failed_login = utc_now_naive()
+        if self.login_captcha_failed_count >= MAX_LOGIN_CAPTCHA_FAILED_ATTEMPTS:
             self.login_locked_until = self.last_failed_login + timedelta(seconds=LOGIN_LOCK_DURATION_SECONDS)
 
     def reset_failed_login(self):
         """重置登录失败相关字段"""
         self.login_failed_count = 0
+        self.login_captcha_failed_count = 0
         self.last_failed_login = None
         self.login_locked_until = None
 
