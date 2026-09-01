@@ -25,9 +25,7 @@ async def test_role_crud_assignment_and_in_use_delete_conflict(test_client, admi
     catalog_response = await test_client.get("/api/roles/permissions", headers=admin_headers)
     assert catalog_response.status_code == 200, catalog_response.text
     catalog_keys = {
-        permission["key"]
-        for group in catalog_response.json()["groups"]
-        for permission in group["permissions"]
+        permission["key"] for group in catalog_response.json()["groups"] for permission in group["permissions"]
     }
     assert {"users.read", "knowledge.read", "knowledge.documents.manage"} <= catalog_keys
 
@@ -83,13 +81,55 @@ async def test_role_api_rejects_unknown_permission_and_protects_system_roles(tes
     )
     assert invalid_response.status_code == 422, invalid_response.text
 
-    update_response = await test_client.put(
-        "/api/roles/superadmin", headers=admin_headers, json={"permissions": []}
-    )
+    update_response = await test_client.put("/api/roles/superadmin", headers=admin_headers, json={"permissions": []})
     assert update_response.status_code == 403, update_response.text
 
     delete_response = await test_client.delete("/api/roles/admin", headers=admin_headers)
     assert delete_response.status_code == 403, delete_response.text
+
+
+async def test_role_api_allows_superadmin_rename_and_blocks_duplicate_name(test_client, admin_headers):
+    """超级管理员角色仅允许修改名称/描述；权限与数据资源仍锁定。"""
+    await _require_superadmin(test_client, admin_headers)
+
+    rename_suffix = uuid.uuid4().hex[:8]
+    new_name = f"超级管理员 {rename_suffix}"
+
+    rename_response = await test_client.put("/api/roles/superadmin", headers=admin_headers, json={"name": new_name})
+    assert rename_response.status_code == 200, rename_response.text
+    assert rename_response.json()["role"]["name"] == new_name
+
+    try:
+        # 名称不能与现有角色重名
+        conflict_response = await test_client.put(
+            "/api/roles/superadmin", headers=admin_headers, json={"name": "管理员"}
+        )
+        assert conflict_response.status_code == 409, conflict_response.text
+
+        # 仍禁止修改权限矩阵
+        permission_blocked = await test_client.put(
+            "/api/roles/superadmin", headers=admin_headers, json={"permissions": []}
+        )
+        assert permission_blocked.status_code == 403, permission_blocked.text
+    finally:
+        restore_response = await test_client.put(
+            "/api/roles/superadmin", headers=admin_headers, json={"name": "超级管理员"}
+        )
+        assert restore_response.status_code == 200, restore_response.text
+
+
+async def test_role_api_allows_system_role_rename(test_client, admin_headers):
+    """系统角色（除超级管理员外）的名称也允许修改。"""
+    await _require_superadmin(test_client, admin_headers)
+    suffix = uuid.uuid4().hex[:8]
+    new_admin_name = f"管理员 {suffix}"
+
+    rename_response = await test_client.put("/api/roles/admin", headers=admin_headers, json={"name": new_admin_name})
+    assert rename_response.status_code == 200, rename_response.text
+    assert rename_response.json()["role"]["name"] == new_admin_name
+
+    restore_response = await test_client.put("/api/roles/admin", headers=admin_headers, json={"name": "管理员"})
+    assert restore_response.status_code == 200, restore_response.text
 
 
 async def test_role_resource_access_catalog_and_crud(test_client, admin_headers):
@@ -203,15 +243,11 @@ async def test_jwt_and_api_key_resolve_updated_role_permissions_on_every_request
         user = create_user.json()
         user_id = user["id"]
 
-        login = await test_client.post(
-            "/api/auth/token", data={"username": user["uid"], "password": password}
-        )
+        login = await test_client.post("/api/auth/token", data={"username": user["uid"], "password": password})
         assert login.status_code == 200, login.text
         jwt_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
 
-        create_key = await test_client.post(
-            "/api/user/apikey/", headers=jwt_headers, json={"name": "role-live-test"}
-        )
+        create_key = await test_client.post("/api/user/apikey/", headers=jwt_headers, json={"name": "role-live-test"})
         assert create_key.status_code == 200, create_key.text
         api_key_id = create_key.json()["api_key"]["id"]
         api_key_headers = {"Authorization": f"Bearer {create_key.json()['secret']}"}

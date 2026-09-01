@@ -39,7 +39,7 @@
               </a-button>
               <a-button
                 type="primary"
-                :disabled="!selectedRole.editable"
+                :disabled="!canSave"
                 :loading="saving"
                 @click="saveRole"
               >
@@ -58,11 +58,7 @@
           <div class="role-fields">
             <a-form layout="vertical">
               <a-form-item label="角色名称">
-                <a-input
-                  v-model:value="draftName"
-                  :disabled="selectedRole.is_system"
-                  maxlength="100"
-                />
+                <a-input v-model:value="draftName" maxlength="100" />
               </a-form-item>
               <a-form-item label="描述">
                 <a-textarea v-model:value="draftDescription" maxlength="255" />
@@ -324,6 +320,12 @@ const createForm = reactive({ key: '', name: '', description: '' })
 const resourceSearch = reactive({ models: '', tools: '', mcp_servers: '' })
 
 const visibleRoles = computed(() => roles.value.filter((role) => role.key !== 'superadmin'))
+const canSave = computed(() => {
+  const role = selectedRole.value
+  if (!role) return false
+  // 业务角色按后端 editable 控制；超级管理员只能改名称/描述，权限矩阵仍只读
+  return role.editable || role.key === 'superadmin'
+})
 const resourceGroups = Object.entries(RESOURCE_GROUP_CONFIG).map(([key, config]) => ({
   key,
   ...config
@@ -533,7 +535,7 @@ const buildResourceAccessPayload = () => {
 }
 
 const validateDraft = () => {
-  if (!selectedRole.value?.is_system && !draftName.value.trim()) return '角色名称不能为空'
+  if (!draftName.value.trim()) return '角色名称不能为空'
   if (
     draftResourceAccess.value.models.mode === 'selected' &&
     missingModelDefaultTypes.value.length
@@ -544,7 +546,7 @@ const validateDraft = () => {
 }
 
 const saveRole = async () => {
-  if (!selectedRole.value?.editable) return
+  if (!canSave.value) return
   const validationError = validateDraft()
   if (validationError) {
     message.error(validationError)
@@ -553,11 +555,11 @@ const saveRole = async () => {
   saving.value = true
   try {
     const payload = {
+      name: draftName.value.trim(),
       permissions: draftPermissions.value,
       description: draftDescription.value.trim() || null,
       resource_access: buildResourceAccessPayload()
     }
-    if (!selectedRole.value.is_system) payload.name = draftName.value.trim()
     await roleApi.updateRole(selectedRole.value.key, payload)
     message.success('角色权限已保存')
     await loadData(selectedRole.value.key)

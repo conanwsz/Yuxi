@@ -54,16 +54,12 @@ async def list_permissions(_current_user: User = Depends(get_superadmin_user)):
 
 
 @roles.get("/resources")
-async def list_role_resources(
-    _current_user: User = Depends(get_superadmin_user), db: AsyncSession = Depends(get_db)
-):
+async def list_role_resources(_current_user: User = Depends(get_superadmin_user), db: AsyncSession = Depends(get_db)):
     return await build_resource_catalog(db)
 
 
 @roles.get("")
-async def list_roles(
-    _current_user: User = Depends(get_superadmin_user), db: AsyncSession = Depends(get_db)
-):
+async def list_roles(_current_user: User = Depends(get_superadmin_user), db: AsyncSession = Depends(get_db)):
     repo = RoleRepository(db)
     return {"roles": [await _serialize_role(repo, role) for role in await repo.list_all()]}
 
@@ -125,13 +121,15 @@ async def update_role(
     role = await repo.get(role_key)
     if not role:
         raise HTTPException(status_code=404, detail="角色不存在")
-    if role.key == "superadmin":
+    # 超级管理员仅允许修改名称/描述，权限与数据资源仍锁定，避免误改破坏全局鉴权
+    is_superadmin = role.key == "superadmin"
+    if is_superadmin and (payload.permissions is not None or payload.resource_access is not None):
         raise HTTPException(status_code=403, detail="超级管理员权限不可修改")
 
     before = sorted(role.permissions or [])
     before_resource_access = role.to_dict()["resource_access"]
     updates = {}
-    if payload.name is not None and not role.is_system:
+    if payload.name is not None:
         name = payload.name.strip()
         if not name:
             raise HTTPException(status_code=422, detail="角色名称不能为空")
