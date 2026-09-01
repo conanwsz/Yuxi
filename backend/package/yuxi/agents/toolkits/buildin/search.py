@@ -534,8 +534,7 @@ def search_tool_metadata(_backend: str = "") -> dict[str, Any]:
     if "doubao" in backend_names:
         guide_lines.append("豆包搜索使用 DOUBAO_SEARCH_API_KEY。")
     guide_lines.append(
-        "配置: YUXI_SEARCH_BACKEND=doubao,tavily,duckduckgo / "
-        "TAVILY_API_KEYS=key1,key2 / YUXI_SEARCH_KEY_COOLDOWN=60。"
+        "配置: YUXI_SEARCH_BACKEND=doubao,tavily,duckduckgo / TAVILY_API_KEYS=key1,key2 / YUXI_SEARCH_KEY_COOLDOWN=60。"
     )
 
     return {

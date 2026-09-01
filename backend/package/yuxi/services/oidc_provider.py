@@ -10,7 +10,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-
 type OIDCFieldValue = str | Sequence[str] | None
 MAX_CALLBACK_FIELD_LENGTH = 4096
 

@@ -9,7 +9,6 @@ import secrets
 import time
 from dataclasses import dataclass
 
-
 LOGIN_CAPTCHA_TTL_SECONDS = 300
 LOGIN_CAPTCHA_OFFSET_TOLERANCE = 6
 LOGIN_CAPTCHA_MIN_OFFSET = 28

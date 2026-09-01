@@ -18,9 +18,7 @@ const props = defineProps({
 
 const emit = defineEmits(['update:modelValue'])
 
-const canSetGlobal = computed(() =>
-  (props.options.allowed_access_levels || []).includes('global')
-)
+const canSetGlobal = computed(() => (props.options.allowed_access_levels || []).includes('global'))
 const canSelectDepartments = computed(() =>
   (props.options.allowed_access_levels || []).includes('department')
 )
@@ -29,9 +27,7 @@ const departmentOptions = computed(() =>
 )
 const userOptions = computed(() =>
   (props.options.users || []).map((item) => ({
-    label: item.department_name
-      ? `${item.username}（${item.department_name}）`
-      : item.username,
+    label: item.department_name ? `${item.username}（${item.department_name}）` : item.username,
     value: item.uid
   }))
 )
@@ -93,7 +89,10 @@ const updateValue = (updates) => {
     <div v-if="hasLockedAssignment" class="locked-assignment-notice">
       <LockKeyhole :size="15" />
       <span>
-        另有 {{ lockedDepartmentCount }} 个部门、{{ lockedUserCount }} 个员工不在你的管理范围内，保存时会原样保留。
+        另有 {{ lockedDepartmentCount }} 个部门、{{
+          lockedUserCount
+        }}
+        个员工不在你的管理范围内，保存时会原样保留。
       </span>
     </div>
   </div>

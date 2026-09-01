@@ -520,7 +520,6 @@ defineExpose({
               :locked-user-count="lockedUserCount"
             />
           </div>
-
         </section>
 
         <section

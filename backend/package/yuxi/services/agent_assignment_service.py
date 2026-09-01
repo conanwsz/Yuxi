@@ -6,7 +6,6 @@ from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-
 from yuxi.permissions import normalize_permission_config
 from yuxi.services.permission_service import has_permission
 from yuxi.storage.postgres.models_business import Department, User, UserDepartmentMembership

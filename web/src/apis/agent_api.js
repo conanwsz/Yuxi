@@ -71,8 +71,7 @@ export const agentApi = {
 
   getAgentAssignment: (agentId) => apiGet(`/api/agent/${agentId}/assignment`),
 
-  updateAgentAssignment: (agentId, payload) =>
-    apiPut(`/api/agent/${agentId}/assignment`, payload),
+  updateAgentAssignment: (agentId, payload) => apiPut(`/api/agent/${agentId}/assignment`, payload),
 
   /**
    * 获取智能体历史消息

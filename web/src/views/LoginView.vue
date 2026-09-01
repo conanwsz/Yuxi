@@ -182,7 +182,12 @@
                         />
                       </div>
                       <p>按住拼图，拖到同形的深色缺口</p>
-                      <a-button type="link" size="small" :disabled="loading" @click="loadLoginCaptcha">
+                      <a-button
+                        type="link"
+                        size="small"
+                        :disabled="loading"
+                        @click="loadLoginCaptcha"
+                      >
                         换一张
                       </a-button>
                     </div>

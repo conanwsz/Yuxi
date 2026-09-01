@@ -14,13 +14,13 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
-    func,
     Index,
     Integer,
     Numeric,
     String,
     Text,
     UniqueConstraint,
+    func,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB

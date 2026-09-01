@@ -25,8 +25,8 @@ from yuxi import config as sys_config
 from yuxi.agents.mcp.service import get_enabled_mcp_server_slugs
 from yuxi.agents.skills.repository import SkillRepository
 from yuxi.permissions import ResourcePermission, normalize_permission_config, resolve_skill_permission
-from yuxi.services.permission_service import has_permission
 from yuxi.services.organization_scope_service import share_config_allows_user
+from yuxi.services.permission_service import has_permission
 from yuxi.services.resource_access_runtime_service import (
     assert_mcp_slugs_allowed,
     assert_tool_slugs_allowed,

@@ -22,17 +22,17 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from yuxi.repositories.role_repository import RoleRepository
+from yuxi.services.oidc_organization_service import (
+    OIDCOrganizationService,
+    department_code_chain,
+    normalize_entity_code,
+)
 from yuxi.services.oidc_provider import (
     OIDCCallbackData,
     OIDCHTTPRequest,
     OIDCTokenSet,
     get_oidc_provider,
     normalize_provider_type,
-)
-from yuxi.services.oidc_organization_service import (
-    OIDCOrganizationService,
-    department_code_chain,
-    normalize_entity_code,
 )
 from yuxi.services.operation_log_service import log_operation
 from yuxi.services.permission_service import resolve_user_permissions

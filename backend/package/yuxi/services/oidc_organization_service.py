@@ -8,11 +8,9 @@ from typing import Any
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-
 from yuxi.services.organization_service import OrganizationService
 from yuxi.storage.postgres.models_business import Department, DepartmentClosure, User, UserDepartmentMembership
 from yuxi.utils.datetime_utils import utc_now_naive
-
 
 DEPARTMENT_CODE_PATTERN = re.compile(r"^(?:(?P<prefix>[A-Z0-9]+(?:-[A-Z0-9]+)*)-)?BM(?P<digits>\d+)$")
 ENTITY_CODE_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9_-]*$")

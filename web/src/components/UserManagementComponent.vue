@@ -676,7 +676,6 @@
         />
       </div>
     </a-modal>
-
   </div>
 </template>
 
