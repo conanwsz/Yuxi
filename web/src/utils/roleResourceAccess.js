@@ -51,6 +51,14 @@ export const createAllResourceAccess = () => ({
 export const cloneResourceAccess = (resourceAccess) =>
   JSON.parse(JSON.stringify(normalizeResourceAccess(resourceAccess)))
 
+/**
+ * 复制角色的功能权限和数据权限，并断开与原角色的引用。
+ */
+export const cloneRolePermissionConfig = (role) => ({
+  permissions: Array.isArray(role?.permissions) ? [...role.permissions] : [],
+  resource_access: cloneResourceAccess(role?.resource_access)
+})
+
 export function normalizeResourceAccess(resourceAccess, fallback = createAllResourceAccess()) {
   const normalizedFallback = fallback?.models ? fallback : createAllResourceAccess()
   return {

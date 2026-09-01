@@ -2,7 +2,12 @@
   <div class="permission-management">
     <div class="permission-header">
       <div class="section-title">权限管理</div>
-      <a-button type="primary" @click="openCreate">新建角色</a-button>
+      <div class="permission-header-actions">
+        <a-checkbox v-model:checked="copyPermissions" :disabled="!selectedRole">
+          复制权限
+        </a-checkbox>
+        <a-button type="primary" @click="openCreate">新建角色</a-button>
+      </div>
     </div>
 
     <a-spin :spinning="loading">
@@ -37,12 +42,7 @@
               >
                 删除角色
               </a-button>
-              <a-button
-                type="primary"
-                :disabled="!canSave"
-                :loading="saving"
-                @click="saveRole"
-              >
+              <a-button type="primary" :disabled="!canSave" :loading="saving" @click="saveRole">
                 保存权限
               </a-button>
             </div>
@@ -288,6 +288,7 @@ import {
   RESOURCE_GROUP_CONFIG,
   RESOURCE_MODE_OPTIONS,
   cloneResourceAccess,
+  cloneRolePermissionConfig,
   createAllResourceAccess,
   createEmptyResourceAccess,
   normalizeResourceAccess,
@@ -316,6 +317,7 @@ const draftResourceAccess = ref(createAllResourceAccess())
 const draftName = ref('')
 const draftDescription = ref('')
 const createVisible = ref(false)
+const copyPermissions = ref(false)
 const createForm = reactive({ key: '', name: '', description: '' })
 const resourceSearch = reactive({ models: '', tools: '', mcp_servers: '' })
 
@@ -582,12 +584,17 @@ const createRole = async () => {
   }
   saving.value = true
   try {
+    const permissionConfig = copyPermissions.value
+      ? cloneRolePermissionConfig(selectedRole.value)
+      : {
+          permissions: [],
+          resource_access: createEmptyResourceAccess()
+        }
     const result = await roleApi.createRole({
       key: createForm.key.trim(),
       name: createForm.name.trim(),
       description: createForm.description.trim() || null,
-      permissions: [],
-      resource_access: createEmptyResourceAccess()
+      ...permissionConfig
     })
     createVisible.value = false
     message.success('角色已创建')
@@ -625,6 +632,12 @@ onMounted(() => loadData())
     align-items: center;
     justify-content: space-between;
     gap: 16px;
+  }
+
+  .permission-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
   }
 
   .section-title,
