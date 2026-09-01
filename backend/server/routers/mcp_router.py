@@ -81,6 +81,35 @@ async def get_server_or_404(db: AsyncSession, slug: str):
     return server
 
 
+def serialize_mcp_server_for_readonly(server):
+    """返回普通用户查看 MCP 时所需的安全展示字段。"""
+    return {
+        "slug": str(getattr(server, "slug", "")),
+        "name": getattr(server, "name", ""),
+        "description": getattr(server, "description", None),
+        "icon": getattr(server, "icon", None),
+        "enabled": bool(getattr(server, "enabled", True)),
+        "tags": getattr(server, "tags", None) or [],
+    }
+
+
+async def get_readable_server_or_403(db: AsyncSession, current_user: User, slug: str):
+    """校验 MCP 数据权限后返回当前用户可查看的服务器。"""
+    await hydrate_user_resource_access(db, current_user)
+    server = await get_server_or_404(db, slug)
+    if has_permission(current_user, "mcp.manage"):
+        return server
+
+    allowed = {
+        str(item.slug)
+        for item in filter_mcp_servers_for_user(current_user, [server])
+        if item.enabled
+    }
+    if slug not in allowed:
+        raise HTTPException(status_code=403, detail="当前角色无权访问该 MCP 服务")
+    return server
+
+
 # =============================================================================
 # === MCP 服务器 CRUD ===
 # =============================================================================
@@ -101,15 +130,7 @@ async def get_mcp_servers(
         servers = filter_mcp_servers_for_user(current_user, servers)
         data = []
         for s in servers:
-            data.append(
-                {
-                    "name": getattr(s, "name", ""),
-                    "description": getattr(s, "description", None),
-                    "icon": getattr(s, "icon", None),
-                    "enabled": bool(getattr(s, "enabled", True)),
-                    "tags": getattr(s, "tags", None) or [],
-                }
-            )
+            data.append(serialize_mcp_server_for_readonly(s))
         return {"success": True, "data": data}
     except Exception as e:
         logger.error(f"Failed to get MCP servers: {e}")
@@ -168,13 +189,13 @@ async def get_mcp_server_route(
 ):
     """获取单个 MCP 服务器配置"""
     try:
-        await hydrate_user_resource_access(db, current_user)
-        server = await get_server_or_404(db, slug)
-        if not has_permission(current_user, "mcp.manage"):
-            allowed = {item.slug for item in filter_mcp_servers_for_user(current_user, [server]) if item.enabled}
-            if slug not in allowed:
-                raise HTTPException(status_code=403, detail="当前角色无权访问该 MCP 服务")
-        return {"success": True, "data": server.to_dict()}
+        server = await get_readable_server_or_403(db, current_user, slug)
+        data = (
+            server.to_dict()
+            if has_permission(current_user, "mcp.manage")
+            else serialize_mcp_server_for_readonly(server)
+        )
+        return {"success": True, "data": data}
     except HTTPException:
         raise
     except Exception as e:
@@ -317,7 +338,7 @@ async def get_mcp_server_tools(
 ):
     """获取 MCP 服务器的工具列表"""
     try:
-        server = await get_server_or_404(db, slug)
+        server = await get_readable_server_or_403(db, current_user, slug)
         disabled_tools = server.disabled_tools or []
 
         try:
