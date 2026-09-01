@@ -34,6 +34,30 @@ def _bind_oidc_identity(user: dict) -> None:
         )
 
 
+def _set_department_oidc_codes(
+    user: dict,
+    *,
+    entity_code: str | None = None,
+    department_code: str | None = None,
+) -> None:
+    with psycopg.connect(_postgres_url()) as conn, conn.cursor() as cursor:
+        cursor.execute(
+            """
+            UPDATE departments
+            SET entity_code = %s,
+                department_code = %s
+            WHERE id = (
+                SELECT department_id
+                FROM users
+                WHERE id = %s
+            )
+            """,
+            (entity_code, department_code, user["id"]),
+        )
+        if cursor.rowcount == 0:
+            raise RuntimeError(f"user {user['uid']} has no department to tag")
+
+
 async def test_agent_env_requires_auth(test_client):
     response = await test_client.get(AGENT_ENV_PATH)
     assert response.status_code == 401
@@ -135,3 +159,93 @@ async def test_oidc_uid_env_cannot_be_overridden_or_deleted(test_client, standar
         stored = cursor.fetchone()
     assert stored is not None
     assert stored[0] == {"YUXI_USER_VALUE": "saved"}
+
+
+async def test_oidc_cnnp_exposes_entity_and_dept_code_env(test_client, standard_user):
+    """OIDC 用户部门带 CNNP 编码时，entity_code / dept_code 与 uid 一起以 readonly 暴露。"""
+
+    user = standard_user["user"]
+    _bind_oidc_identity(user)
+    _set_department_oidc_codes(user, entity_code="YUXI", department_code="BM000102")
+
+    response = await test_client.get(AGENT_ENV_PATH, headers=standard_user["headers"])
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["env"] == {
+        "uid": user["uid"],
+        "entity_code": "YUXI",
+        "dept_code": "BM000102",
+    }
+    assert set(body["readonly_keys"]) == {"uid", "entity_code", "dept_code"}
+
+
+async def test_oidc_cnnp_organization_env_cannot_be_overridden(test_client, standard_user):
+    """OIDC 用户 PUT 试图覆盖 entity_code / dept_code 必须被拒绝，数据库内不残留伪造值。"""
+
+    user = standard_user["user"]
+    _bind_oidc_identity(user)
+    _set_department_oidc_codes(user, entity_code="YUXI", department_code="BM000102")
+
+    for payload in (
+        {"entity_code": "spoofed-entity"},
+        {"dept_code": "BM999999"},
+        {"entity_code": "YUXI", "dept_code": "spoofed"},
+    ):
+        response = await test_client.put(AGENT_ENV_PATH, json={"env": payload}, headers=standard_user["headers"])
+        assert response.status_code == 400, (payload, response.text)
+
+    with psycopg.connect(_postgres_url()) as conn, conn.cursor() as cursor:
+        cursor.execute("SELECT env FROM agent_envs WHERE uid = %s", (user["uid"],))
+        assert cursor.fetchone() is None
+
+
+async def test_oidc_user_persisting_custom_env_keeps_system_fields(test_client, standard_user):
+    """OIDC 用户保存用户自定义键后，GET 与沙箱侧仍能读到 entity_code / dept_code。"""
+
+    user = standard_user["user"]
+    _bind_oidc_identity(user)
+    _set_department_oidc_codes(user, entity_code="YUXI", department_code="BM000102")
+
+    save_response = await test_client.put(
+        AGENT_ENV_PATH,
+        json={"env": {"YUXI_USER_VALUE": "kept"}},
+        headers=standard_user["headers"],
+    )
+    assert save_response.status_code == 200, save_response.text
+    body = save_response.json()
+    assert body["env"] == {
+        "YUXI_USER_VALUE": "kept",
+        "uid": user["uid"],
+        "entity_code": "YUXI",
+        "dept_code": "BM000102",
+    }
+    assert set(body["readonly_keys"]) == {"uid", "entity_code", "dept_code"}
+
+    get_response = await test_client.get(AGENT_ENV_PATH, headers=standard_user["headers"])
+    assert get_response.status_code == 200, get_response.text
+    assert get_response.json()["env"] == body["env"]
+
+    # 沙箱侧从 DB 加载时也补齐这两个系统字段
+    assert load_user_agent_env(user["uid"]) == body["env"]
+
+    with psycopg.connect(_postgres_url()) as conn, conn.cursor() as cursor:
+        cursor.execute("SELECT env FROM agent_envs WHERE uid = %s", (user["uid"],))
+        stored = cursor.fetchone()
+    assert stored is not None
+    # 持久化只存用户写下的部分；系统字段在加载时再注入。
+    assert stored[0] == {"YUXI_USER_VALUE": "kept"}
+
+
+async def test_oidc_user_without_organization_codes_gets_only_uid(test_client, standard_user):
+    """部门没有 CNNP 编码时，OIDC 用户仍只暴露 uid，避免暴露空字段。"""
+
+    user = standard_user["user"]
+    _bind_oidc_identity(user)
+
+    response = await test_client.get(AGENT_ENV_PATH, headers=standard_user["headers"])
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["env"] == {"uid": user["uid"]}
+    assert body["readonly_keys"] == ["uid"]

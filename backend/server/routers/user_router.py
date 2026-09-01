@@ -16,7 +16,7 @@ from yuxi.services.token_quota_service import (
     get_user_token_quota_payload_with_breakdown,
 )
 from yuxi.storage.minio import upload_image_to_minio
-from yuxi.storage.postgres.models_business import APIKey, AgentEnv, ExternalIdentity, User
+from yuxi.storage.postgres.models_business import APIKey, AgentEnv, Department, ExternalIdentity, User
 from yuxi.utils.auth_utils import AuthUtils
 from yuxi.utils.datetime_utils import coerce_any_to_utc_datetime, format_utc_datetime, utc_now_naive
 
@@ -160,20 +160,49 @@ async def is_oidc_user(db: AsyncSession, user: User) -> bool:
     return result.scalar_one_or_none() is not None
 
 
+# OIDC 用户不可修改的系统级环境变量键集合；其他键允许用户自由调整。
+OIDC_READONLY_ENV_KEYS: tuple[str, ...] = ("uid", "entity_code", "dept_code")
+
+
+async def load_oidc_readonly_env(db: AsyncSession, user: User) -> dict[str, str]:
+    """收集 OIDC 用户的系统维护环境变量。
+
+    - uid：始终等于本地 User.uid。
+    - entity_code / dept_code：取自 OIDC 用户当前部门，仅在部门表上有值时注入。
+    """
+
+    readonly: dict[str, str] = {"uid": str(user.uid)}
+    if user.department_id is not None:
+        result = await db.execute(
+            select(Department.entity_code, Department.department_code).where(Department.id == user.department_id)
+        )
+        row = result.first()
+        if row is not None:
+            entity_code, department_code = row
+            if entity_code:
+                readonly["entity_code"] = entity_code
+            if department_code:
+                readonly["dept_code"] = department_code
+    return readonly
+
+
 def build_agent_env_response(
     env: dict[str, str],
     *,
     user: User,
     oidc_user: bool,
     updated_at: str | None = None,
+    oidc_readonly_env: dict[str, str] | None = None,
 ) -> AgentEnvResponse:
-    """合成用户可见环境变量，OIDC uid 始终以用户身份记录为准。"""
+    """合成用户可见环境变量，OIDC 系统字段始终以权威来源为准。"""
 
     visible_env = dict(env)
     readonly_keys: list[str] = []
     if oidc_user:
-        visible_env["uid"] = str(user.uid)
-        readonly_keys.append("uid")
+        readonly_source = oidc_readonly_env if oidc_readonly_env is not None else {"uid": str(user.uid)}
+        readonly_keys = list(readonly_source.keys())
+        for key, value in readonly_source.items():
+            visible_env[key] = value
     return AgentEnvResponse(env=visible_env, readonly_keys=readonly_keys, updated_at=updated_at)
 
 
@@ -314,12 +343,21 @@ async def get_agent_env(
     result = await db.execute(select(AgentEnv).filter(AgentEnv.uid == current_user.uid))
     agent_env = result.scalar_one_or_none()
     oidc_user = await is_oidc_user(db, current_user)
+    oidc_readonly_env = (
+        await load_oidc_readonly_env(db, current_user) if oidc_user else None
+    )
     if agent_env is None:
-        return build_agent_env_response({}, user=current_user, oidc_user=oidc_user)
+        return build_agent_env_response(
+            {},
+            user=current_user,
+            oidc_user=oidc_user,
+            oidc_readonly_env=oidc_readonly_env,
+        )
     return build_agent_env_response(
         agent_env.env or {},
         user=current_user,
         oidc_user=oidc_user,
+        oidc_readonly_env=oidc_readonly_env,
         updated_at=format_utc_datetime(agent_env.updated_at),
     )
 
@@ -332,10 +370,27 @@ async def update_agent_env(
 ):
     env = validate_agent_env(data.env)
     oidc_user = await is_oidc_user(db, current_user)
+    oidc_readonly_env = (
+        await load_oidc_readonly_env(db, current_user) if oidc_user else None
+    )
     if oidc_user:
-        requested_uid = env.pop("uid", None)
-        if requested_uid is not None and requested_uid != str(current_user.uid):
-            raise HTTPException(status_code=400, detail="OIDC 用户环境变量 uid 由系统维护，不能修改")
+        for key in OIDC_READONLY_ENV_KEYS:
+            if key not in env:
+                continue
+            requested = env[key]
+            expected = (oidc_readonly_env or {}).get(key)
+            if expected is None:
+                # 用户当前没有这个系统级字段，提交里出现就视为非法覆盖
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"OIDC 用户环境变量 {key} 由系统维护，不能修改",
+                )
+            if requested != expected:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"OIDC 用户环境变量 {key} 由系统维护，不能修改",
+                )
+            env.pop(key, None)
 
     result = await db.execute(select(AgentEnv).filter(AgentEnv.uid == current_user.uid))
     current_agent_env = result.scalar_one_or_none()
@@ -344,6 +399,7 @@ async def update_agent_env(
             current_agent_env.env or {},
             user=current_user,
             oidc_user=oidc_user,
+            oidc_readonly_env=oidc_readonly_env,
             updated_at=format_utc_datetime(current_agent_env.updated_at),
         )
 
@@ -364,5 +420,6 @@ async def update_agent_env(
         env,
         user=current_user,
         oidc_user=oidc_user,
+        oidc_readonly_env=oidc_readonly_env,
         updated_at=format_utc_datetime(now),
     )

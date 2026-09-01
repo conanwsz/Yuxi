@@ -40,12 +40,27 @@ def normalize_env(env: dict | None) -> dict[str, str]:
     return {str(key): "" if value is None else str(value) for key, value in env.items() if str(key)}
 
 
-def merge_user_agent_env(uid: str, env: dict | None, *, is_oidc: bool) -> dict[str, str]:
-    """合成沙盒环境变量，并强制 OIDC uid 与系统用户身份保持一致。"""
+def merge_user_agent_env(
+    uid: str,
+    env: dict | None,
+    *,
+    is_oidc: bool,
+    entity_code: str | None = None,
+    department_code: str | None = None,
+) -> dict[str, str]:
+    """合成沙盒环境变量，并强制 OIDC uid 与系统用户身份保持一致。
+
+    OIDC 用户在沙箱侧也会补齐 ``entity_code`` / ``dept_code``，使其与后端 API 暴露的环境
+    变量一致，确保 Agent 运行时的环境变量视图与前端 ``/api/user/agent-env`` 完全对齐。
+    """
 
     merged = normalize_env(env)
     if is_oidc:
         merged["uid"] = str(uid)
+        if entity_code:
+            merged["entity_code"] = entity_code
+        if department_code:
+            merged["dept_code"] = department_code
     return merged
 
 
@@ -72,11 +87,15 @@ def load_user_agent_env(uid: str) -> dict[str, str]:
                                FROM external_identities
                                JOIN users ON users.id = external_identities.user_id
                                WHERE users.uid = %s AND users.is_deleted = 0
-                           ) AS is_oidc
+                           ) AS is_oidc,
+                           departments.entity_code,
+                           departments.department_code
                     FROM (VALUES (1)) AS seed(value)
                     LEFT JOIN agent_envs ON agent_envs.uid = %s
+                    LEFT JOIN users ON users.uid = %s AND users.is_deleted = 0
+                    LEFT JOIN departments ON departments.id = users.department_id
                     """,
-                    (uid, uid),
+                    (uid, uid, uid),
                 )
                 row = cursor.fetchone()
     except Exception as exc:
@@ -85,13 +104,19 @@ def load_user_agent_env(uid: str) -> dict[str, str]:
     if not row:
         return merge_user_agent_env(uid, {}, is_oidc=False)
 
-    value, is_oidc = row
+    value, is_oidc, entity_code, department_code = row
     if isinstance(value, str):
         try:
             value = json.loads(value)
         except json.JSONDecodeError as exc:
             raise RuntimeError(f"stored agent env for uid {uid} is not valid JSON") from exc
-    return merge_user_agent_env(uid, value, is_oidc=bool(is_oidc))
+    return merge_user_agent_env(
+        uid,
+        value,
+        is_oidc=bool(is_oidc),
+        entity_code=entity_code,
+        department_code=department_code,
+    )
 
 
 @dataclass(slots=True)
