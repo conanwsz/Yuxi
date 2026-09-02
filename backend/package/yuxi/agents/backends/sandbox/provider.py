@@ -41,11 +41,13 @@ def normalize_env(env: dict | None) -> dict[str, str]:
 
 
 def merge_user_agent_env(uid: str, env: dict | None, *, is_oidc: bool) -> dict[str, str]:
-    """合成沙盒环境变量，并强制 OIDC uid 与系统用户身份保持一致。"""
+    """合成沙盒环境变量，并强制 OIDC emp_no 与系统用户身份保持一致。"""
 
     merged = normalize_env(env)
     if is_oidc:
-        merged["uid"] = str(uid)
+        # 升级期兼容：清掉历史 OIDC 注入的 `uid` 键，避免与新 `emp_no` 并存。
+        merged.pop("uid", None)
+        merged["emp_no"] = str(uid)
     return merged
 
 

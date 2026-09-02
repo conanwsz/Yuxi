@@ -20,7 +20,7 @@
 
     <div class="env-tip">
       保存后仅对新建沙盒生效，已运行沙盒不会热更新。
-      <span v-if="readonlyEnvKeys.includes('uid')">OIDC 用户的 uid 由系统提供，不可修改。</span>
+      <span v-if="readonlyEnvKeys.includes('emp_no')">OIDC 用户的 emp_no 由系统提供，不可修改。</span>
     </div>
 
     <a-spin :spinning="loading">

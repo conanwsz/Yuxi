@@ -98,24 +98,24 @@ async def test_agent_env_is_user_scoped(test_client, standard_user, admin_header
     assert user_response.json()["env"] == user_payload["env"]
 
 
-async def test_existing_oidc_user_gets_readonly_uid_env(test_client, standard_user):
+async def test_existing_oidc_user_gets_readonly_emp_no_env(test_client, standard_user):
     user = standard_user["user"]
     _bind_oidc_identity(user)
 
     response = await test_client.get(AGENT_ENV_PATH, headers=standard_user["headers"])
 
     assert response.status_code == 200, response.text
-    assert response.json()["env"]["uid"] == user["uid"]
-    assert response.json()["readonly_keys"] == ["uid"]
+    assert response.json()["env"]["emp_no"] == user["uid"]
+    assert response.json()["readonly_keys"] == ["emp_no"]
 
 
-async def test_oidc_uid_env_cannot_be_overridden_or_deleted(test_client, standard_user):
+async def test_oidc_emp_no_env_cannot_be_overridden_or_deleted(test_client, standard_user):
     user = standard_user["user"]
     _bind_oidc_identity(user)
 
     override_response = await test_client.put(
         AGENT_ENV_PATH,
-        json={"env": {"uid": "spoofed"}},
+        json={"env": {"emp_no": "spoofed"}},
         headers=standard_user["headers"],
     )
     assert override_response.status_code == 400, override_response.text
@@ -126,12 +126,51 @@ async def test_oidc_uid_env_cannot_be_overridden_or_deleted(test_client, standar
         headers=standard_user["headers"],
     )
     assert save_response.status_code == 200, save_response.text
-    assert save_response.json()["env"] == {"YUXI_USER_VALUE": "saved", "uid": user["uid"]}
-    assert save_response.json()["readonly_keys"] == ["uid"]
-    assert load_user_agent_env(user["uid"]) == {"YUXI_USER_VALUE": "saved", "uid": user["uid"]}
+    assert save_response.json()["env"] == {"YUXI_USER_VALUE": "saved", "emp_no": user["uid"]}
+    assert save_response.json()["readonly_keys"] == ["emp_no"]
+    assert load_user_agent_env(user["uid"]) == {
+        "YUXI_USER_VALUE": "saved",
+        "emp_no": user["uid"],
+    }
 
     with psycopg.connect(_postgres_url()) as conn, conn.cursor() as cursor:
         cursor.execute("SELECT env FROM agent_envs WHERE uid = %s", (user["uid"],))
         stored = cursor.fetchone()
     assert stored is not None
     assert stored[0] == {"YUXI_USER_VALUE": "saved"}
+
+
+async def test_oidc_user_save_strips_legacy_uid_key(test_client, standard_user):
+    """升级期兼容：OIDC 用户历史上若存了 `uid` 键，下次保存会被清掉。"""
+
+    user = standard_user["user"]
+    _bind_oidc_identity(user)
+
+    # 手工塞一个 OIDC 用户历史上留下的 `uid` 键，模拟老数据。
+    with psycopg.connect(_postgres_url()) as conn, conn.cursor() as cursor:
+        cursor.execute(
+            """
+            INSERT INTO agent_envs (uid, env, updated_at)
+            VALUES (%s, %s::jsonb, NOW())
+            ON CONFLICT (uid) DO UPDATE SET env = EXCLUDED.env, updated_at = NOW()
+            """,
+            (user["uid"], '{"uid": "stale", "KEEP": "1"}'),
+        )
+        conn.commit()
+
+    response = await test_client.put(
+        AGENT_ENV_PATH,
+        json={"env": {"KEEP": "1"}},
+        headers=standard_user["headers"],
+    )
+    assert response.status_code == 200, response.text
+    saved = response.json()["env"]
+    assert saved == {"KEEP": "1", "emp_no": user["uid"]}
+    assert "uid" not in saved
+    assert response.json()["readonly_keys"] == ["emp_no"]
+
+    with psycopg.connect(_postgres_url()) as conn, conn.cursor() as cursor:
+        cursor.execute("SELECT env FROM agent_envs WHERE uid = %s", (user["uid"],))
+        stored = cursor.fetchone()
+    assert stored is not None
+    assert stored[0] == {"KEEP": "1"}

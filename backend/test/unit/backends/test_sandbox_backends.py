@@ -343,14 +343,21 @@ def test_sandbox_id_for_thread_includes_skills_scope():
     assert sandbox_id_for_thread("parent-thread", "parent-thread") == parent_only
 
 
-def test_oidc_uid_is_forced_into_sandbox_env() -> None:
+def test_oidc_emp_no_is_forced_into_sandbox_env() -> None:
     from yuxi.agents.backends.sandbox.provider import merge_user_agent_env
 
+    # OIDC 注入 emp_no 并清掉历史 uid 键；其他变量原样保留。
     assert merge_user_agent_env("employee-1", {"uid": "spoofed", "TOKEN": "value"}, is_oidc=True) == {
-        "uid": "employee-1",
+        "emp_no": "employee-1",
         "TOKEN": "value",
     }
+    # 非 OIDC 用户：uid 当作普通自定义键保留（向后兼容）。
     assert merge_user_agent_env("local-1", {"uid": "custom"}, is_oidc=False) == {"uid": "custom"}
+    # OIDC 用户即便没传历史 uid，也只会注入 emp_no。
+    assert merge_user_agent_env("employee-2", {"FOO": "bar"}, is_oidc=True) == {
+        "emp_no": "employee-2",
+        "FOO": "bar",
+    }
 
 
 def test_provider_uses_distinct_sandbox_scope_for_different_uid(monkeypatch) -> None:

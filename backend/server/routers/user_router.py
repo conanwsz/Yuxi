@@ -167,13 +167,16 @@ def build_agent_env_response(
     oidc_user: bool,
     updated_at: str | None = None,
 ) -> AgentEnvResponse:
-    """合成用户可见环境变量，OIDC uid 始终以用户身份记录为准。"""
+    """合成用户可见环境变量，OIDC emp_no 始终以用户身份记录为准。"""
 
     visible_env = dict(env)
     readonly_keys: list[str] = []
     if oidc_user:
-        visible_env["uid"] = str(user.uid)
-        readonly_keys.append("uid")
+        # 升级期兼容：清掉 OIDC 老注入的 `uid` 键，避免与新 `emp_no` 并存。
+        # 老 `uid` 一旦保留，会被当成普通自定义变量且无法覆盖。
+        visible_env.pop("uid", None)
+        visible_env["emp_no"] = str(user.uid)
+        readonly_keys.append("emp_no")
     return AgentEnvResponse(env=visible_env, readonly_keys=readonly_keys, updated_at=updated_at)
 
 
@@ -333,9 +336,11 @@ async def update_agent_env(
     env = validate_agent_env(data.env)
     oidc_user = await is_oidc_user(db, current_user)
     if oidc_user:
-        requested_uid = env.pop("uid", None)
-        if requested_uid is not None and requested_uid != str(current_user.uid):
-            raise HTTPException(status_code=400, detail="OIDC 用户环境变量 uid 由系统维护，不能修改")
+        # 升级期兼容：把历史 OIDC 注入的 `uid` 键一并清掉，下次保存会持久化掉。
+        env.pop("uid", None)
+        requested_emp_no = env.pop("emp_no", None)
+        if requested_emp_no is not None and requested_emp_no != str(current_user.uid):
+            raise HTTPException(status_code=400, detail="OIDC 用户环境变量 emp_no 由系统维护，不能修改")
 
     result = await db.execute(select(AgentEnv).filter(AgentEnv.uid == current_user.uid))
     current_agent_env = result.scalar_one_or_none()

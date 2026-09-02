@@ -288,3 +288,112 @@ async def test_get_mcp_tools_sets_handle_tool_error(monkeypatch):
     assert tools[0].handle_tool_error is True
 
     mcp_service.clear_mcp_cache()
+
+
+async def test_get_mcp_tools_refreshes_when_ttl_expires(monkeypatch):
+    """上游 MCP 服务在我们不知情的情况下增减工具时，仅靠 config_hash 失效不够；
+    TTL 到期后必须强制重拉，否则新工具（如 create_schedule）一直看不到。"""
+
+    mcp_service.clear_mcp_cache()
+
+    config = {"transport": "stdio", "command": "demo-ttl", "disabled_tools": []}
+
+    async def fake_get_enabled_mcp_server_config(server_name: str, db=None):
+        del db
+        assert server_name == "demo"
+        return config
+
+    upstream_tools: list[SimpleNamespace] = [SimpleNamespace(name="tool_old", metadata={})]
+    build_calls: list[int] = []
+
+    async def fake_get_mcp_client(server_configs):
+        del server_configs
+        build_calls.append(len(upstream_tools))
+        return _FakeClient(list(upstream_tools))
+
+    monkeypatch.setattr(mcp_service, "get_enabled_mcp_server_config", fake_get_enabled_mcp_server_config)
+    monkeypatch.setattr(mcp_service, "get_mcp_client", fake_get_mcp_client)
+    monkeypatch.setattr(mcp_service, "_mcp_tools_cache_ttl_seconds", lambda: 0.05)
+
+    # 第一次拉：上游 1 个工具。
+    tools_first = await mcp_service.get_mcp_tools("demo")
+    assert [t.name for t in tools_first] == ["tool_old"]
+
+    # 上游悄悄加了 tool_new（DB 配置未变，config_hash 不变 → 旧逻辑会一直命中缓存）。
+    upstream_tools.append(SimpleNamespace(name="tool_new", metadata={}))
+
+    # TTL 内的第二次：还是缓存的 1 个工具。
+    tools_within_ttl = await mcp_service.get_mcp_tools("demo")
+    assert [t.name for t in tools_within_ttl] == ["tool_old"]
+
+    # 等过 TTL 后再拉：应能拿到 2 个工具。
+    import asyncio
+    await asyncio.sleep(0.06)
+    tools_after_ttl = await mcp_service.get_mcp_tools("demo")
+    assert sorted(t.name for t in tools_after_ttl) == ["tool_new", "tool_old"]
+    # 第一次 + TTL 后第二次 = 2 次拉取；TTL 内的那次命中缓存，没拉。
+    assert build_calls == [1, 2]
+
+    mcp_service.clear_mcp_cache()
+
+
+async def test_get_mcp_tools_zero_ttl_disables_cache(monkeypatch):
+    """MCP_TOOLS_CACHE_TTL_SECONDS<=0 时，每次都重拉，方便排障。"""
+
+    mcp_service.clear_mcp_cache()
+
+    config = {"transport": "stdio", "command": "demo-zerottl", "disabled_tools": []}
+
+    async def fake_get_enabled_mcp_server_config(server_name: str, db=None):
+        del db
+        return config
+
+    build_calls: list[int] = []
+
+    async def fake_get_mcp_client(server_configs):
+        del server_configs
+        build_calls.append(1)
+        return _FakeClient([SimpleNamespace(name="x", metadata={})])
+
+    monkeypatch.setattr(mcp_service, "get_enabled_mcp_server_config", fake_get_enabled_mcp_server_config)
+    monkeypatch.setattr(mcp_service, "get_mcp_client", fake_get_mcp_client)
+    monkeypatch.setattr(mcp_service, "_mcp_tools_cache_ttl_seconds", lambda: 0.0)
+
+    await mcp_service.get_mcp_tools("demo")
+    await mcp_service.get_mcp_tools("demo")
+    await mcp_service.get_mcp_tools("demo")
+
+    assert build_calls == [1, 1, 1]
+
+    mcp_service.clear_mcp_cache()
+
+
+async def test_clear_mcp_server_tools_cache_also_clears_loaded_at(monkeypatch):
+    """clear_mcp_server_tools_cache 必须把 _mcp_tools_cache_loaded_at 一并清掉，
+    否则下次同 config 仍会被认成"刚加载过"立即命中一个其实已经过期的缓存。"""
+
+    mcp_service.clear_mcp_cache()
+
+    config = {"transport": "stdio", "command": "demo-clear", "disabled_tools": []}
+
+    async def fake_get_enabled_mcp_server_config(server_name: str, db=None):
+        del db
+        return config
+
+    async def fake_get_mcp_client(server_configs):
+        del server_configs
+        return _FakeClient([SimpleNamespace(name="x", metadata={})])
+
+    monkeypatch.setattr(mcp_service, "get_enabled_mcp_server_config", fake_get_enabled_mcp_server_config)
+    monkeypatch.setattr(mcp_service, "get_mcp_client", fake_get_mcp_client)
+    monkeypatch.setattr(mcp_service, "_mcp_tools_cache_ttl_seconds", lambda: 60.0)
+
+    await mcp_service.get_mcp_tools("demo")
+    cache_keys = list(mcp_service._mcp_tools_cache_loaded_at)
+    assert cache_keys, "首次加载后应记录 loaded_at"
+
+    mcp_service.clear_mcp_server_tools_cache("demo")
+    assert mcp_service._mcp_tools_cache == {}
+    assert mcp_service._mcp_tools_cache_loaded_at == {}
+
+    mcp_service.clear_mcp_cache()
