@@ -231,7 +231,7 @@
                     <label>描述</label>
                     <span>{{ server.description }}</span>
                   </div>
-                  <div class="info-item">
+                  <div v-if="server.transport" class="info-item">
                     <label>传输类型</label>
                     <span>
                       <a-tag :color="getTransportColor(server.transport)">{{
@@ -342,6 +342,7 @@
                         </div>
                         <div class="tool-actions">
                           <a-switch
+                            v-if="userStore.hasPermission('mcp.manage')"
                             :checked="tool.enabled"
                             @change="handleToggleTool(tool)"
                             :loading="toggleToolLoading === tool.name"

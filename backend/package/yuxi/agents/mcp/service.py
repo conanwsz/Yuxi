@@ -10,7 +10,9 @@ Responsibilities:
 import asyncio
 import hashlib
 import json
+import os
 import re
+import time
 from collections.abc import Callable
 from typing import Any, cast
 
@@ -30,7 +32,25 @@ _mcp_lock = asyncio.Lock()
 
 # 本地仅缓存工具对象。配置始终以数据库为准，每次按 server_slug 现查。
 # cache key 使用 server_slug:config_hash，当配置变化时会自然失效。
+# 另加 TTL：上游 MCP 服务可能在我们不知情的情况下增减工具（DB 配置不变），
+# 缓存的"工具列表"会因此陈旧，TTL 到期强制重拉。
+# 默认 5 分钟；通过 MCP_TOOLS_CACHE_TTL_SECONDS 环境变量可覆盖。
 _mcp_tools_cache: dict[str, list[Callable[..., Any]]] = {}
+_mcp_tools_cache_loaded_at: dict[str, float] = {}
+
+
+def _mcp_tools_cache_ttl_seconds() -> float:
+    raw = os.getenv("MCP_TOOLS_CACHE_TTL_SECONDS")
+    if raw is None:
+        return 300.0
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(f"Invalid MCP_TOOLS_CACHE_TTL_SECONDS={raw!r}, fallback to 300s")
+        return 300.0
+    if value <= 0:
+        return 0.0
+    return value
 
 # MCP tools statistics (for reporting enabled/disabled counts)
 _mcp_tools_stats: dict[str, dict[str, int]] = {}
@@ -234,9 +254,26 @@ async def get_mcp_tools(
 
     all_processed_tools: list[Callable[..., Any]] = []
 
+    # TTL 失效：即便 config_hash 没变，缓存条目超过 TTL 也要重拉，
+    # 以便上游 MCP 服务在不通知 Yuxi 的情况下增减工具时，Agent 能在 TTL 内看到新工具。
+    # TTL <= 0 表示完全禁用缓存，每次都重拉（排障场景）。
+    ttl_seconds = _mcp_tools_cache_ttl_seconds() if cache else 0.0
+    now = time.monotonic()
+    cache_disabled = ttl_seconds <= 0
+
     async with _mcp_lock:
-        if not force_refresh and cache and cache_key in _mcp_tools_cache:
-            all_processed_tools = _mcp_tools_cache[cache_key]
+        if (
+            not force_refresh
+            and cache
+            and not cache_disabled
+            and cache_key in _mcp_tools_cache
+        ):
+            loaded_at = _mcp_tools_cache_loaded_at.get(cache_key)
+            if loaded_at is None or (now - loaded_at) < ttl_seconds:
+                all_processed_tools = _mcp_tools_cache[cache_key]
+            else:
+                _mcp_tools_cache.pop(cache_key, None)
+                _mcp_tools_cache_loaded_at.pop(cache_key, None)
 
     if not all_processed_tools:
         try:
@@ -271,7 +308,9 @@ async def get_mcp_tools(
                     ]
                     for stale_key in stale_keys:
                         _mcp_tools_cache.pop(stale_key, None)
+                        _mcp_tools_cache_loaded_at.pop(stale_key, None)
                     _mcp_tools_cache[cache_key] = all_processed_tools
+                    _mcp_tools_cache_loaded_at[cache_key] = time.monotonic()
 
                 global_config_disabled = server_config.get("disabled_tools") or []
                 enabled_count = len([t for t in all_processed_tools if t.name not in global_config_disabled])
@@ -316,18 +355,20 @@ async def get_tools_from_all_servers() -> list[Callable[..., Any]]:
 
 def clear_mcp_cache() -> None:
     """Clear the MCP tools cache (useful for testing)."""
-    global _mcp_tools_cache, _mcp_tools_stats
+    global _mcp_tools_cache, _mcp_tools_cache_loaded_at, _mcp_tools_stats
     _mcp_tools_cache = {}
+    _mcp_tools_cache_loaded_at = {}
     _mcp_tools_stats = {}
 
 
 def clear_mcp_server_tools_cache(server_slug: str) -> None:
     """Clear the tools cache for a specific MCP server."""
-    global _mcp_tools_cache, _mcp_tools_stats
+    global _mcp_tools_cache, _mcp_tools_cache_loaded_at, _mcp_tools_stats
     server_prefix = f"{server_slug}:"
     stale_keys = [key for key in _mcp_tools_cache if key.startswith(server_prefix)]
     for stale_key in stale_keys:
         _mcp_tools_cache.pop(stale_key, None)
+        _mcp_tools_cache_loaded_at.pop(stale_key, None)
     _mcp_tools_stats.pop(server_slug, None)
     logger.info(f"Cleared tools cache for MCP server '{server_slug}'")
 

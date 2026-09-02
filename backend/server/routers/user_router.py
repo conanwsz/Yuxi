@@ -161,17 +161,18 @@ async def is_oidc_user(db: AsyncSession, user: User) -> bool:
 
 
 # OIDC 用户不可修改的系统级环境变量键集合；其他键允许用户自由调整。
-OIDC_READONLY_ENV_KEYS: tuple[str, ...] = ("uid", "entity_code", "dept_code")
+OIDC_READONLY_ENV_KEYS: tuple[str, ...] = ("emp_no", "entity_code", "dept_code")
 
 
 async def load_oidc_readonly_env(db: AsyncSession, user: User) -> dict[str, str]:
     """收集 OIDC 用户的系统维护环境变量。
 
-    - uid：始终等于本地 User.uid。
+    - emp_no：始终等于本地 User.uid（键名在 cn_test 期间从 ``uid`` 重命名，避免与沙盒
+      内部 ``User.uid`` 主键混淆）。
     - entity_code / dept_code：取自 OIDC 用户当前部门，仅在部门表上有值时注入。
     """
 
-    readonly: dict[str, str] = {"uid": str(user.uid)}
+    readonly: dict[str, str] = {"emp_no": str(user.uid)}
     if user.department_id is not None:
         result = await db.execute(
             select(Department.entity_code, Department.department_code).where(Department.id == user.department_id)
@@ -194,12 +195,26 @@ def build_agent_env_response(
     updated_at: str | None = None,
     oidc_readonly_env: dict[str, str] | None = None,
 ) -> AgentEnvResponse:
-    """合成用户可见环境变量，OIDC 系统字段始终以权威来源为准。"""
+    """合成用户可见环境变量，OIDC 系统字段始终以权威来源为准。
+
+    OIDC 注入键从 ``uid`` 重命名为 ``emp_no``，避免与沙盒内部 ``User.uid`` 主键混淆；
+    升级期兼容：清掉 OIDC 用户保存的 env 里残留的历史 ``uid`` 键。
+    """
 
     visible_env = dict(env)
     readonly_keys: list[str] = []
     if oidc_user:
-        readonly_source = oidc_readonly_env if oidc_readonly_env is not None else {"uid": str(user.uid)}
+        # 升级期兼容：清掉 OIDC 老注入的 `uid` 键，避免与新 `emp_no` 并存。
+        # 老 `uid` 一旦保留，会被当成普通自定义变量且无法覆盖。
+        visible_env.pop("uid", None)
+        readonly_source = (
+            oidc_readonly_env
+            if oidc_readonly_env is not None
+            else {"emp_no": str(user.uid)}
+        )
+        # load_oidc_readonly_env 返回值里的 `uid` 也要按新键名归一化。
+        if "uid" in readonly_source:
+            readonly_source = {**readonly_source, "emp_no": readonly_source.pop("uid")}
         readonly_keys = list(readonly_source.keys())
         for key, value in readonly_source.items():
             visible_env[key] = value
@@ -374,6 +389,8 @@ async def update_agent_env(
         await load_oidc_readonly_env(db, current_user) if oidc_user else None
     )
     if oidc_user:
+        # 升级期兼容：把历史 OIDC 注入的 `uid` 键一并清掉，下次保存会持久化掉。
+        env.pop("uid", None)
         for key in OIDC_READONLY_ENV_KEYS:
             if key not in env:
                 continue

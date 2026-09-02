@@ -48,7 +48,7 @@ def merge_user_agent_env(
     entity_code: str | None = None,
     department_code: str | None = None,
 ) -> dict[str, str]:
-    """合成沙盒环境变量，并强制 OIDC uid 与系统用户身份保持一致。
+    """合成沙盒环境变量，并强制 OIDC emp_no / entity_code / dept_code 与系统用户身份保持一致。
 
     OIDC 用户在沙箱侧也会补齐 ``entity_code`` / ``dept_code``，使其与后端 API 暴露的环境
     变量一致，确保 Agent 运行时的环境变量视图与前端 ``/api/user/agent-env`` 完全对齐。
@@ -56,7 +56,9 @@ def merge_user_agent_env(
 
     merged = normalize_env(env)
     if is_oidc:
-        merged["uid"] = str(uid)
+        # 升级期兼容：清掉历史 OIDC 注入的 `uid` 键，避免与新 `emp_no` 并存。
+        merged.pop("uid", None)
+        merged["emp_no"] = str(uid)
         if entity_code:
             merged["entity_code"] = entity_code
         if department_code:

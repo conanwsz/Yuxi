@@ -8,7 +8,7 @@ from server.utils.auth_middleware import get_admin_user, get_db, get_required_us
 from yuxi.storage.postgres.models_business import User
 
 
-def _build_app(*, allow_admin: bool = True) -> FastAPI:
+def _build_app(*, allow_admin: bool = True, mcp_server_mode: str = "all") -> FastAPI:
     app = FastAPI()
     app.include_router(mcp, prefix="/api")
 
@@ -37,7 +37,7 @@ def _build_app(*, allow_admin: bool = True) -> FastAPI:
         user.resource_access = {
             "models": {"mode": "all", "allowed": [], "defaults": {}},
             "tools": {"mode": "all", "allowed": []},
-            "mcp_servers": {"mode": "all", "allowed": []},
+            "mcp_servers": {"mode": mcp_server_mode, "allowed": []},
         }
         return user
 
@@ -157,9 +157,80 @@ def test_get_mcp_servers_normal_user_is_stripped(monkeypatch):
     assert "env" not in data_user
     assert "headers" not in data_user
     assert "transport" not in data_user  # NOTE: 进一步验证连 transport 等配置层元数据也一并过滤
+    assert data_user["slug"] == "test-mcp"
     assert data_user["name"] == "test-mcp"
     assert data_user["description"] == "test mcp description"
     assert data_user["enabled"] is True
+
+
+def test_get_mcp_server_normal_user_returns_safe_detail(monkeypatch):
+    class DummyServer:
+        slug = "test-mcp"
+        name = "测试 MCP"
+        description = "test mcp description"
+        icon = "🔌"
+        enabled = True
+        tags = ["test"]
+        transport = "stdio"
+        command = "python"
+        env = {"API_KEY": "secret"}
+        headers = {"Authorization": "Bearer secret"}
+
+        def to_dict(self):
+            return {
+                "slug": self.slug,
+                "name": self.name,
+                "description": self.description,
+                "icon": self.icon,
+                "enabled": self.enabled,
+                "tags": self.tags,
+                "transport": self.transport,
+                "command": self.command,
+                "env": self.env,
+                "headers": self.headers,
+            }
+
+    async def fake_get_mcp_server(db, slug):
+        del db
+        return DummyServer() if slug == "test-mcp" else None
+
+    monkeypatch.setattr("server.routers.mcp_router.get_mcp_server", fake_get_mcp_server)
+
+    client = TestClient(_build_app(allow_admin=False))
+    resp = client.get("/api/system/mcp-servers/test-mcp")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"] == {
+        "slug": "test-mcp",
+        "name": "测试 MCP",
+        "description": "test mcp description",
+        "icon": "🔌",
+        "enabled": True,
+        "tags": ["test"],
+    }
+
+
+def test_get_mcp_server_tools_normal_user_cannot_bypass_resource_scope(monkeypatch):
+    class DummyServer:
+        slug = "test-mcp"
+        enabled = True
+
+    async def fake_get_mcp_server(db, slug):
+        del db
+        return DummyServer() if slug == "test-mcp" else None
+
+    async def fake_get_all_mcp_tools(slug, *, raise_on_error=False):
+        del slug, raise_on_error
+        return []
+
+    monkeypatch.setattr("server.routers.mcp_router.get_mcp_server", fake_get_mcp_server)
+    monkeypatch.setattr("server.routers.mcp_router.get_all_mcp_tools", fake_get_all_mcp_tools)
+
+    client = TestClient(_build_app(allow_admin=False, mcp_server_mode="none"))
+    resp = client.get("/api/system/mcp-servers/test-mcp/tools")
+
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["detail"] == "当前角色无权访问该 MCP 服务"
 
 
 def test_create_mcp_server_rejects_extra_config_fields():
