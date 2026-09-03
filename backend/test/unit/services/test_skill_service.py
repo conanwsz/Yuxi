@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import shutil
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -1740,6 +1741,31 @@ async def test_personal_skills_are_isolated_by_uid(
     assert user_b.items[0].description == "from b"
     assert user_a.items[0].source_dir != user_b.items[0].source_dir
     assert svc._personal_skill_cache_key("user-a") != svc._personal_skill_cache_key("user-b")
+
+
+@pytest.mark.asyncio
+async def test_personal_skill_cache_without_skill_md_is_invalidated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """工作区目录被删除后，五分钟快照不得再把提示词指向个人 Skill 路径。"""
+    redis = _FakeRedis()
+    root = tmp_path / "workspace-skills"
+    _write_personal_skill(root, "demo", "first")
+
+    async def fake_get_redis():
+        return redis
+
+    monkeypatch.setattr(svc, "get_async_redis_client", fake_get_redis)
+    monkeypatch.setattr(svc, "get_personal_skills_root_dir", lambda _uid: root)
+
+    cached_source = (await svc.list_personal_skills("user-1")).items[0].source_dir
+    shutil.rmtree(cached_source)
+
+    snapshot = await svc.list_personal_skills("user-1")
+
+    assert snapshot.items == []
+    assert snapshot.from_cache is False
 
 
 @pytest.mark.asyncio
