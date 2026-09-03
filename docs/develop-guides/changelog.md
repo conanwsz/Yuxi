@@ -8,9 +8,13 @@
 
 - 登录风控调整为连续 3 次密码失败后必须完成滑动验证码；密码失败不再直接锁定，验证码累计失败第 10 次才锁定账户 5 分钟。服务端随机生成色板、轮廓与一个同形干扰缺口，前端改为同一水平线上的横向直接拖拽拼图。
 
+- 修复 Skill 提示词路径误导：目录说明只列出当前可见 Skill 实际使用的共享或个人路径，不再把工作区标为 higher priority；共享 Skill 直接读 `/home/gem/skills/<slug>/SKILL.md`，避免先访问不存在的 `workspace/agents/skills`。
 - **OIDC 沙盒身份变量 `uid` 重命名为 `emp_no`**：保留 `entity_code` / `dept_code` 三键结构，仅把 `OIDC_READONLY_ENV_KEYS` 与 `load_oidc_readonly_env` / `build_agent_env_response` / 沙盒 `merge_user_agent_env` 里的 `uid` 键名改为 `emp_no`，避免与沙盒内部 `User.uid` 主键混淆。OIDC 用户 PUT 时先 `pop` 掉历史 `uid` 键并校验 `emp_no` 等系统字段不可被覆盖。键名变更不影响 `User.uid` 主键与 LangGraph `uid` context。
 - **Agent 系统提示收紧敏感信息边界**：禁止执行 `printenv` / `env` / `/proc/self/environ` 等枚举命令并禁止任何形式的批量回显（原文、表格、分类、脱敏摘要）；身份问题仅允许回复当前用户的 OIDC `emp_no`；JWT/Token/Key/Cookie/DB 连接串/内部端口/路径/日志一律不外泄，用户要求时统一回复"该信息属于系统内部配置，不提供"。
 - **MCP 工具缓存加 TTL**：cache key 仍以 `server_slug:config_hash` 为准，hash 只覆盖 DB 侧 `disabled_tools`，无法感知上游 MCP 服务自身增减工具。补一个默认 5 分钟的 TTL（`MCP_TOOLS_CACHE_TTL_SECONDS` 可覆盖，`<=0` 禁用缓存），TTL 到期强制重拉；新增 `clear_mcp_server_tools_cache` 同步清理 `_mcp_tools_cache_loaded_at`，避免过期条目假命中。修复楚能办公 MCP 新增 `create_schedule` 等工具后 agent 一直看不到的问题。
+- 修复公开图片上传的存储型 XSS 风险：头像与用户图片不再信任客户端 MIME 或文件名后缀，服务端校验真实图片内容且仅接受 PNG、JPEG、WebP、GIF，对象名使用识别出的固定安全后缀，拒绝伪装成图片的 SVG。
+- 修复知识库图片公开访问风险：解析产生的知识库图片从 `public` bucket 移到私有 `kb-images` bucket，新增带知识库读权限校验的后端代理接口按需读取；Markdown 预览对代理图片携带鉴权头加载为 blob URL，未登录或无权限用户无法匿名访问图片，头像/Agent 图标等公开资源不受影响。
+- 登录新增 IP 级失败限速：`/auth/token` 按「IP+账号」与「IP 全局」在 Redis 滑动窗口内累计失败（10 分钟内 10/30 次，跨 worker 与重启有效），超限返回 429 与 `Retry-After`，与滑动验证码风控叠加；登录成功清除对应 IP+账号失败记录。
 - 修复拥有 MCP 查看权限的普通用户打开 MCP 详情时路由携带 `undefined` 的问题：脱敏列表保留稳定 `slug`，详情与工具读取按 `mcp.read` 放行并继续校验 MCP 数据权限；普通用户响应不再包含连接、命令、环境变量和请求头等敏感配置。
 - 权限管理中新建角色支持勾选“复制权限”，按当前选中角色同时复制功能权限与数据权限；未勾选时继续创建无权限角色。
 
@@ -45,7 +49,10 @@
 - 同步上游主线到 preview：吸收 Agent 请求队列、知识库读模型/缓存、个人 Skill、文件二进制预览、安全沙箱与 CLI 更新；保留 OIDC、组织权限、额度、调度、多搜索源、模型授权及失败消息恢复，并恢复“超级楚楚”名称、Logo 与版权，兼容旧共享配置和部门索引升级。
 
 - 收窄知识库状态边界：Manager 统一返回 `KnowledgeBaseSummary/Detail`，Router 仅转换 HTTP 响应；Repository 在行锁内合并统计，executor 使用 frozen `KnowledgeBaseConfig`。模型权限校验同步读取类型字段，修复检索测试与 RAG 评估将详情对象误作字典而返回 500。
-
+- 优化知识库文档列表性能：根目录虚拟目录分组改用部分索引（`idx_kf_kb_parent_segment` 按路径首段聚合），平铺文件筛选与排序用 `idx_kf_kb_parent_flat` 支撑，避免大知识库全表扫描与 46MB 磁盘排序溢出；文件统计聚合结果增加 10 秒 Redis 短缓存，列表、统计、子目录计数与创建人查询并行执行，前端自动刷新轮询间隔同步调整为 10 秒。36 万文件知识库列表接口耗时由约 1.3s 降至约 300ms。
+- 修复 MCP 管理接口可通过 stdio 启动任意本地进程的问题：用户配置仅允许 SSE/Streamable HTTP，运行时拒绝加载历史用户 stdio 记录，系统内置 stdio 的连接参数改为仅由代码维护；前端移除用户 stdio 配置入口，文档补充内置 stdio 的代码添加与验证方式。
+- 工作区新增只读历史对话文件入口 `agents/chats/{thread_id}`，网页以 `YYYY-MM-DD-title` 显示并按日期标题倒序浏览各 thread 的非空 uploads 与 outputs；空目录、无文件对话及 `large_tool_results`、`conversation_history` 等内部中间产物不展示。该目录由 API 虚拟映射，不创建符号链接或复制文件，也不进入当前会话 viewer 与 sandbox 挂载，避免 Agent 读取其他会话历史。面包屑中该目录固定显示为"历史对话"与目录列表一致，多选过滤改用只读路径集合避免逐项查找。
+- 收窄知识库状态边界：读取模型统一收口至 `read_models.py`；创建、列表、详情与更新由 Manager 统一返回 `KnowledgeBaseSummary/Detail`，Router 只转换 HTTP 响应；Manager 协调查询配置、主记录与聚合统计，Repository 在行锁内合并统计投影；executor 接收 frozen `KnowledgeBaseConfig`，负责类型资源、文档操作与类型专属一致性检测，不再写知识库主记录。
 - 修复 Agent worker 知识库运行配置不一致：`get_kb_config` 从 Redis 读取最小 Config 快照，未命中时在 KB 级分布式锁内回源 PostgreSQL，Redis 连接故障时只读请求直接回源且不回填；更新与删除先可靠失效缓存再提交数据库，避免旧请求回填过期配置。查询参数在数据库行锁内合并，并发保存不再互相覆盖。
 
 - 修复 Agent 流式消息重复：worker 的 `loading` 增量仅经批量 `items` 事件写入，不再同时写入单条 `chunk` 事件，避免生成中每段文本显示两次、完成后才恢复正常。
@@ -57,9 +64,7 @@
 - 统一 Agent、Skill 与知识库共享权限：配置拆分读取/管理范围并统一解析 `none/read/manage`；启动时将旧 `share_config` 幂等迁移为 v2 且只回填只读范围、不追溯授予管理权，运行时代码仅接受 v2；创建者与超管保留管理权。非管理员创建或编辑 Agent 时共享范围与 Skill 一致收敛为仅个人可见，避免越权扩大到部门或全局；共享 Skill 仅管理员可安装，普通用户固定安装到个人工作区。知识库路由统一按 READ/MANAGE ACL 校验，配置弹窗按基础信息、权限、检索分栏，非检索保存不再覆盖检索参数，编辑表单不再残留已移除的“自动生成问题”开关；用户编辑不允许修改角色身份。同步修复 Agent/Skill `share_config` 列实际类型为 `json` 而非预期 `jsonb` 导致迁移语句报错、后端无法启动的问题。
 
 - 收敛消息型 AgentRun 提交：Web Chat 与 Agent Call/Eval 共用 `run_submission_service.submit_run_command`，Call/Eval 拆为独立 Router；Request/Run 固化 `source/channel/external_id/origin_metadata` 来源快照，Eval 评估上下文继续透传到 worker 与 Langfuse，保留现有接口与响应兼容性，Resume、Subagent 生命周期不变。
-
-- 新增个人工作区 Skill：安装确认可选择个人或共享位置；个人 Skill 保存到 `workspace/agents/skills` 且不入库，元数据按用户缓存 5 分钟并在安装、删除、手动刷新后立即更新；Card List 与 Agent 运行时统一按个人版本覆盖同名共享版本，卡片与聊天技能选择列表共用 slug 到 Lucide 图标映射；Agent 直接读取工作区真实路径，不再复制到线程 `/home/gem/skills` 投影；共享 Skill 投影统一以来源映射为单一数据源。
-
+- 新增个人工作区 Skill：安装确认可选择个人或共享位置；个人 Skill 保存到 `workspace/agents/skills` 且不入库，元数据按用户缓存 5 分钟，命中快照仍须校验磁盘 `SKILL.md` 存在否则作废重扫（防止残留条目把提示词指向已删路径致首次读取 404），安装、删除、手动刷新后立即更新；Card List 与 Agent 运行时统一按个人版本覆盖同名共享版本，卡片与聊天技能选择列表共用 slug 到 Lucide 图标映射；Agent 直接读取工作区真实路径，不再复制到线程 `/home/gem/skills` 投影；共享 Skill 投影统一以来源映射为单一数据源。
 - 统一后端真实路径根目录校验：Skill、工作区和沙盒复用 `ensure_within_root`，保持原有越界拒绝语义并减少重复安全判断。
 
 - 统一前端单元测试目录为 `web/test/unit`，测试脚本仅收集该目录；测试规范同步说明主应用与独立 CLI 包的目录约定，避免同一子项目混用 `test` 和 `tests`。

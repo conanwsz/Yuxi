@@ -1012,15 +1012,21 @@ async def _read_personal_skill_cache(
         if payload.get("schema_version") != 1:
             raise ValueError("个人 Skill 缓存版本不匹配")
         items = [_resolved_personal_skill(uid, root, item) for item in payload["items"]]
-        return PersonalSkillSnapshot(
-            items=items,
-            scanned_at=str(payload["scanned_at"]),
-            from_cache=True,
-        )
+        scanned_at = str(payload["scanned_at"])
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         logger.warning(f"个人 Skill 缓存无效，将重新扫描: uid={uid}, error={exc}")
         await redis.delete(cache_key)
         return None
+
+    # 快照条目必须仍能在磁盘上读到 SKILL.md：个人 Skill 不参与线程 /home/gem/skills 投影，
+    # 提示词会直接把模型指向工作区路径，残留的幽灵条目会让首次读取返回 404。
+    missing_slugs = [item.slug for item in items if not (item.source_dir / "SKILL.md").is_file()]
+    if missing_slugs:
+        logger.warning(f"个人 Skill 缓存缺少 SKILL.md，将重新扫描: uid={uid}, slugs={missing_slugs}")
+        await redis.delete(cache_key)
+        return None
+
+    return PersonalSkillSnapshot(items=items, scanned_at=scanned_at, from_cache=True)
 
 
 async def _scan_and_cache_personal_skills(

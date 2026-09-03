@@ -118,9 +118,59 @@ async def test_skills_prompt_uses_prepared_prompt_skills_at_request_level():
     assert "base" in prompt_text
     assert "Alpha" in prompt_text
     assert "Configured Only" not in prompt_text
+    assert "/home/gem/skills/alpha/SKILL.md" in prompt_text
+    assert "**Shared Skills**: `/home/gem/skills/`" in prompt_text
+    assert "workspace/agents/skills" not in prompt_text
+    assert "higher priority" not in prompt_text
     assert context.system_prompt == "context base"
     assert not hasattr(context, "_skills_prompt_injected")
     assert not hasattr(context, "_visible_skills")
+
+
+def test_skills_section_lists_only_used_skill_directories():
+    middleware = SkillsMiddleware()
+    shared_only = middleware._build_skills_section(
+        [
+            {
+                "name": "Alpha",
+                "description": "alpha desc",
+                "path": "/home/gem/skills/alpha/SKILL.md",
+            }
+        ]
+    )
+    personal_only = middleware._build_skills_section(
+        [
+            {
+                "name": "Beta",
+                "description": "beta desc",
+                "path": "/home/gem/user-data/workspace/agents/skills/beta/SKILL.md",
+            }
+        ]
+    )
+    mixed = middleware._build_skills_section(
+        [
+            {
+                "name": "Alpha",
+                "description": "alpha desc",
+                "path": "/home/gem/skills/alpha/SKILL.md",
+            },
+            {
+                "name": "Beta",
+                "description": "beta desc",
+                "path": "/home/gem/user-data/workspace/agents/skills/beta/SKILL.md",
+            },
+        ]
+    )
+
+    assert "**Shared Skills**: `/home/gem/skills/`" in shared_only
+    assert "workspace/agents/skills" not in shared_only
+    assert "**Personal Skills**: `/home/gem/user-data/workspace/agents/skills/`" in personal_only
+    assert "/home/gem/skills/" not in personal_only.split("**Available Skills:**")[0]
+    assert "**Shared Skills**: `/home/gem/skills/`" in mixed
+    assert "**Personal Skills**: `/home/gem/user-data/workspace/agents/skills/`" in mixed
+    assert "higher priority" not in shared_only
+    assert "higher priority" not in personal_only
+    assert "higher priority" not in mixed
 
 
 @pytest.mark.asyncio

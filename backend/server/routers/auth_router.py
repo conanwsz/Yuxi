@@ -34,6 +34,12 @@ from server.utils.auth_middleware import (
 from yuxi.utils.auth_utils import AuthUtils
 from yuxi.services.user_identity_service import generate_unique_uid, validate_username, is_valid_phone_number
 from yuxi.services.operation_log_service import log_operation
+from yuxi.services.login_rate_limit_service import (
+    check_login_rate_limit,
+    clear_login_failures,
+    extract_client_ip,
+    record_login_failure,
+)
 from yuxi.services.auth_service import (
     CLI_AUTH_POLL_INTERVAL_SECONDS,
     CLI_AUTH_SESSION_TTL_SECONDS,
@@ -392,10 +398,22 @@ async def login_for_access_token(
 ):
     # 查找用户 - 支持 user_id 和 phone_number 登录
     login_identifier = form_data.username
+    client_ip = extract_client_ip(request)
+
+    # IP+账号 与 IP 全局滑动窗口失败限速，与账号级滑动验证码风控叠加
+    allowed, retry_after = await check_login_rate_limit(client_ip, login_identifier)
+    if not allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="登录尝试过于频繁，请稍后再试",
+            headers={"Retry-After": str(retry_after)},
+        )
+
     user = await _find_login_user(db, login_identifier)
 
     # 如果用户不存在，为防止用户名枚举攻击，返回通用错误信息
     if not user:
+        await record_login_failure(client_ip, login_identifier)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="登录标识或密码错误",
@@ -463,7 +481,8 @@ async def login_for_access_token(
 
     # 验证密码
     if not AuthUtils.verify_password(user.password_hash, form_data.password):
-        # 密码错误，增加失败次数
+        # 密码错误，记录 IP 维度失败并增加账号失败次数
+        await record_login_failure(client_ip, login_identifier)
         user.increment_failed_login()
         await db.commit()
 
@@ -477,10 +496,11 @@ async def login_for_access_token(
             detail = "密码错误，请完成滑动验证码后重试"
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=detail, headers=headers)
 
-    # 登录成功，重置失败计数器
+    # 登录成功，重置失败计数器并清除 IP+账号维度的失败记录
     user.reset_failed_login()
     user.last_login = utc_now_naive()
     await db.commit()
+    await clear_login_failures(client_ip, login_identifier)
 
     # 生成访问令牌
     token_data = {"sub": str(user.id)}
