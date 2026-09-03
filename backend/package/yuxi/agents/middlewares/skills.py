@@ -483,12 +483,16 @@ class SkillsMiddleware(AgentMiddleware):
         return result
 
     def _format_skills_locations(self, sources: list[str]) -> str:
-        """格式化 skills 位置信息"""
+        """格式化 skills 位置信息，按共享/个人真实路径标注，不暗示目录优先级。"""
+        labels = {
+            VIRTUAL_SKILLS_PATH: "Shared",
+            VIRTUAL_PATH_WORKSPACE_SKILLS: "Personal",
+        }
         locations = []
-        for i, source_path in enumerate(sources):
-            name = PurePosixPath(source_path.rstrip("/")).name.capitalize()
-            suffix = " (higher priority)" if i == len(sources) - 1 else ""
-            locations.append(f"**{name} Skills**: `{source_path}`{suffix}")
+        for source_path in sources:
+            root = source_path.rstrip("/")
+            name = labels.get(root, PurePosixPath(root).name.capitalize())
+            locations.append(f"**{name} Skills**: `{source_path}`")
         return "\n".join(locations)
 
     def _format_skills_list(self, skills_meta: list[dict[str, str]]) -> str:
@@ -503,8 +507,17 @@ class SkillsMiddleware(AgentMiddleware):
         return "\n".join(lines)
 
     def _build_skills_section(self, skills_meta: list[dict[str, str]]) -> str:
-        """构建 skills 提示段"""
-        skills_locations = self._format_skills_locations(self.skills_sources_for_prompt)
+        """构建 skills 提示段，只展示当前可见 Skill 实际使用的目录。"""
+        sources = self.skills_sources_for_prompt
+        if skills_meta:
+            used: list[str] = []
+            for source_path in sources:
+                prefix = f"{source_path.rstrip('/')}/"
+                if any((skill.get("path") or "").startswith(prefix) for skill in skills_meta):
+                    used.append(source_path)
+            if used:
+                sources = used
+        skills_locations = self._format_skills_locations(sources)
         skills_list = self._format_skills_list(skills_meta)
         return SKILLS_SYSTEM_PROMPT.format(
             skills_locations=skills_locations,

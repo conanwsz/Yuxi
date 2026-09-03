@@ -6,6 +6,7 @@
 
 ## v0.7.2 (current)
 
+- 修复 Skill 提示词路径误导：目录说明只列出当前可见 Skill 实际使用的共享或个人路径，不再把工作区标为 higher priority；共享 Skill 直接读 `/home/gem/skills/<slug>/SKILL.md`，避免先访问不存在的 `workspace/agents/skills`。
 - **OIDC 沙盒身份变量 `uid` 重命名为 `emp_no`**：前端 Agent 环境变量面板只读键、沙盒 `merge_user_agent_env` 与 `GET/PUT /api/user/agent-env` 同步改为 `emp_no`；OIDC 用户合并前先 `pop` 掉历史 `uid` 键，下次保存自动清掉老数据。键名变更不影响 `User.uid` 主键与 LangGraph `uid` context。
 - **Agent 系统提示收紧敏感信息边界**：禁止执行 `printenv` / `env` / `/proc/self/environ` 等枚举命令并禁止任何形式的批量回显（原文、表格、分类、脱敏摘要）；身份问题仅允许回复当前用户的 OIDC `emp_no`；JWT/Token/Key/Cookie/DB 连接串/内部端口/路径/日志一律不外泄，用户要求时统一回复"该信息属于系统内部配置，不提供"。
 - **MCP 工具缓存加 TTL**：cache key 仍以 `server_slug:config_hash` 为准，hash 只覆盖 DB 侧 `disabled_tools`，无法感知上游 MCP 服务自身增减工具。补一个默认 5 分钟的 TTL（`MCP_TOOLS_CACHE_TTL_SECONDS` 可覆盖，`<=0` 禁用缓存），TTL 到期强制重拉；新增 `clear_mcp_server_tools_cache` 同步清理 `_mcp_tools_cache_loaded_at`，避免过期条目假命中。修复楚能办公 MCP 新增 `create_schedule` 等工具后 agent 一直看不到的问题。
