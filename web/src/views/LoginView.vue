@@ -765,6 +765,10 @@ onUnmounted(() => {
     height: 100%;
     object-fit: cover;
     object-position: center;
+    /* 纯装饰图，不需要鼠标交互。屏蔽 hover 可阻止浏览器识图/翻译类插件注入悬浮面板：
+       插件挂在 body 下的零高度节点会因全局 `* { position: relative }` 成为定位包含块，
+       其绝对定位面板的溢出会撑高文档并顶出滚动条。 */
+    pointer-events: none;
   }
 }
 

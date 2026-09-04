@@ -8,6 +8,8 @@
 
 - 登录风控调整为连续 3 次密码失败后必须完成滑动验证码；密码失败不再直接锁定，验证码累计失败第 10 次才锁定账户 5 分钟。服务端随机生成色板、轮廓与一个同形干扰缺口，前端改为同一水平线上的横向直接拖拽拼图。
 
+- 修复登录页鼠标悬停左侧背景图时页面变长、右侧出现可滚动滚动条：装饰性背景图补 `pointer-events: none`，阻止识图/翻译类浏览器插件注入悬浮面板——插件挂在 `body` 下的零高度节点会因全局 `* { position: relative }` 成为定位包含块，其绝对定位面板的溢出把文档高度从一屏撑到近两屏。
+
 - 修复 Skill 提示词路径误导：目录说明只列出当前可见 Skill 实际使用的共享或个人路径，不再把工作区标为 higher priority；共享 Skill 直接读 `/home/gem/skills/<slug>/SKILL.md`，避免先访问不存在的 `workspace/agents/skills`。
 - **OIDC 沙盒身份变量 `uid` 重命名为 `emp_no`**：保留 `entity_code` / `dept_code` 三键结构，仅把 `OIDC_READONLY_ENV_KEYS` 与 `load_oidc_readonly_env` / `build_agent_env_response` / 沙盒 `merge_user_agent_env` 里的 `uid` 键名改为 `emp_no`，避免与沙盒内部 `User.uid` 主键混淆。OIDC 用户 PUT 时先 `pop` 掉历史 `uid` 键并校验 `emp_no` 等系统字段不可被覆盖。键名变更不影响 `User.uid` 主键与 LangGraph `uid` context。
 - **Agent 系统提示收紧敏感信息边界**：禁止执行 `printenv` / `env` / `/proc/self/environ` 等枚举命令并禁止任何形式的批量回显（原文、表格、分类、脱敏摘要）；身份问题仅允许回复当前用户的 OIDC `emp_no`；JWT/Token/Key/Cookie/DB 连接串/内部端口/路径/日志一律不外泄，用户要求时统一回复"该信息属于系统内部配置，不提供"。
