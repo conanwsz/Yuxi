@@ -12,9 +12,16 @@ export const formatElapsedDuration = (ms, { running = false } = {}) => {
   if (!Number.isFinite(ms) || ms < 0) return ''
 
   const totalSeconds = ms / 1000
-  if (totalSeconds < 60) {
-    if (running) return `${totalSeconds.toFixed(1)}s`
+  if (running) {
+    const elapsed = Math.floor(totalSeconds)
+    if (elapsed < 60) return `${elapsed}s`
 
+    const minutes = Math.floor(elapsed / 60)
+    const seconds = elapsed % 60
+    return `${minutes}m ${padSeconds(seconds)}s`
+  }
+
+  if (totalSeconds < 60) {
     const rounded = Math.round(totalSeconds * 10) / 10
     return Number.isInteger(rounded) ? `${Math.round(rounded)}s` : `${rounded}s`
   }

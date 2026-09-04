@@ -18,7 +18,8 @@ test('parseTimestampMs 能解析 ISO 时间与毫秒时间戳', () => {
 test('formatElapsedDuration 按运行中/完成态格式化耗时', () => {
   assert.equal(formatElapsedDuration(-1), '')
   assert.equal(formatElapsedDuration(Number.NaN), '')
-  assert.equal(formatElapsedDuration(4200, { running: true }), '4.2s')
+  assert.equal(formatElapsedDuration(4200, { running: true }), '4s')
+  assert.equal(formatElapsedDuration(65000, { running: true }), '1m 05s')
   assert.equal(formatElapsedDuration(12000), '12s')
   assert.equal(formatElapsedDuration(12500), '12.5s')
   assert.equal(formatElapsedDuration(83000), '1m 23s')

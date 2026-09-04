@@ -144,7 +144,7 @@ const statusSummary = computed(() => {
   return parts.join(' · ')
 })
 
-const DURATION_TICK_MS = 100
+const DURATION_TICK_MS = 1000
 const liveStartedAt = ref(null)
 const nowMs = ref(Date.now())
 let durationTimer = null
