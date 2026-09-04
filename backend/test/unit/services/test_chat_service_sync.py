@@ -128,6 +128,9 @@ class _FakeConvRepo:
     async def get_messages_by_thread_id(self, _thread_id: str):
         return []
 
+    async def merge_tool_timings(self, _thread_id: str, _tool_timings=None):
+        return
+
     async def add_tool_call(
         self,
         *,

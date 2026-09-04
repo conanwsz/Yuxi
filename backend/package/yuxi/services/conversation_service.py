@@ -20,7 +20,7 @@ from yuxi.repositories.conversation_repository import INVOCATION_CONVERSATION_SO
 from yuxi.services.mention_search_service import invalidate_mention_cache
 from yuxi.services.ocr_service import parse_document
 from yuxi.storage.minio import StorageError, get_minio_client
-from yuxi.storage.postgres.models_business import AgentRun, User
+from yuxi.storage.postgres.models_business import AgentRun, ToolCall, User
 from yuxi.utils.datetime_utils import format_utc_datetime, utc_isoformat
 from yuxi.utils.logging_config import logger
 from yuxi.utils.paths import VIRTUAL_PATH_UPLOADS
@@ -917,6 +917,32 @@ async def delete_thread_attachment_view(
     return {"message": "附件已删除"}
 
 
+def serialize_history_tool_call(
+    tool_call: ToolCall, extra_metadata: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """将工具调用序列化为前端历史消息结构，并附带已落库的执行时间。"""
+    tool_id = tool_call.langgraph_tool_call_id or str(tool_call.id)
+    payload: dict[str, Any] = {
+        "id": tool_id,
+        "name": tool_call.tool_name,
+        "function": {"name": tool_call.tool_name},
+        "args": tool_call.tool_input or {},
+        "tool_call_result": {"content": (tool_call.tool_output or "")} if tool_call.status == "success" else None,
+        "status": tool_call.status,
+        "error_message": tool_call.error_message,
+    }
+
+    timings = extra_metadata.get("tool_timings") if isinstance(extra_metadata, dict) else None
+    timing = timings.get(tool_id) if isinstance(timings, dict) else None
+    if isinstance(timing, dict):
+        if timing.get("started_at"):
+            payload["started_at"] = timing["started_at"]
+        if timing.get("completed_at"):
+            payload["completed_at"] = timing["completed_at"]
+
+    return payload
+
+
 async def get_thread_history_view(
     *,
     thread_id: str,
@@ -1004,18 +1030,7 @@ async def get_thread_history_view(
         }
 
         if msg.tool_calls:
-            msg_dict["tool_calls"] = [
-                {
-                    "id": tc.langgraph_tool_call_id or str(tc.id),
-                    "name": tc.tool_name,
-                    "function": {"name": tc.tool_name},
-                    "args": tc.tool_input or {},
-                    "tool_call_result": {"content": (tc.tool_output or "")} if tc.status == "success" else None,
-                    "status": tc.status,
-                    "error_message": tc.error_message,
-                }
-                for tc in msg.tool_calls
-            ]
+            msg_dict["tool_calls"] = [serialize_history_tool_call(tc, extra_metadata) for tc in msg.tool_calls]
 
         history.append(msg_dict)
 

@@ -543,6 +543,49 @@ class ConversationRepository:
         logger.debug(f"Updated tool call {langgraph_tool_call_id} with output")
         return tool_call
 
+    async def merge_tool_timings(self, thread_id: str, tool_timings: dict[str, dict[str, str]] | None) -> None:
+        """把本轮记录的工具起止时间合并进已有 AI 消息，覆盖审批恢复等二次落库。"""
+        if not tool_timings:
+            return
+
+        messages = await self.get_messages_by_thread_id(thread_id)
+        changed = False
+        for message in messages:
+            if message.role != "assistant" or not message.tool_calls:
+                continue
+
+            extra_metadata = dict(message.extra_metadata or {})
+            stored = extra_metadata.get("tool_timings") if isinstance(extra_metadata.get("tool_timings"), dict) else {}
+            merged = dict(stored)
+            message_changed = False
+
+            for tool_call in message.tool_calls:
+                tool_id = tool_call.langgraph_tool_call_id
+                incoming = tool_timings.get(tool_id) if tool_id else None
+                if not isinstance(incoming, dict):
+                    continue
+
+                current = dict(merged.get(tool_id) or {})
+                if incoming.get("started_at") and not current.get("started_at"):
+                    current["started_at"] = incoming["started_at"]
+                    message_changed = True
+                if incoming.get("completed_at") and current.get("completed_at") != incoming.get("completed_at"):
+                    current["completed_at"] = incoming["completed_at"]
+                    message_changed = True
+                if current:
+                    merged[tool_id] = current
+
+            if not message_changed:
+                continue
+
+            extra_metadata["tool_timings"] = merged
+            message.extra_metadata = extra_metadata
+            flag_modified(message, "extra_metadata")
+            changed = True
+
+        if changed:
+            await self.db.commit()
+
     async def _update_message_count(self, conversation_id: int) -> None:
         from sqlalchemy import func
 

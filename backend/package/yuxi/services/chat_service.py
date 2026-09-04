@@ -41,6 +41,7 @@ from yuxi.services.langfuse_service import (
 from yuxi.services.subagent_run_service import serialize_subagent_run_state
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.storage.postgres.models_business import Agent, User
+from yuxi.utils.datetime_utils import utc_isoformat
 from yuxi.utils.guard import content_guard
 from yuxi.utils.logging_config import logger
 from yuxi.utils.question_utils import (
@@ -385,6 +386,89 @@ async def _stream_agent_events(agent, messages, *, input_context=None, **kwargs)
         yield mode, payload
 
 
+def _note_tool_timing(timings: dict[str, dict[str, str]], tool_call_id: str | None, event: str) -> None:
+    """记录单个工具调用的开始或结束时间。"""
+    tool_id = str(tool_call_id or "").strip()
+    if not tool_id or event not in {"start", "end"}:
+        return
+
+    stamp = utc_isoformat()
+    entry = timings.setdefault(tool_id, {})
+    if event == "start":
+        entry.setdefault("started_at", stamp)
+        return
+
+    entry["completed_at"] = stamp
+
+
+def _is_current_thread_event(payload: dict[str, Any], current_thread_id: str | None) -> bool:
+    event_thread_id = payload.get("thread_id")
+    if not event_thread_id or not current_thread_id:
+        return True
+    return event_thread_id == current_thread_id
+
+
+def _note_tool_timing_from_tools_event(
+    timings: dict[str, dict[str, str]],
+    payload: Any,
+    *,
+    current_thread_id: str | None,
+) -> None:
+    """从 method=tools 的 stream_event 记录工具开始/结束时间。"""
+    if not isinstance(payload, dict) or payload.get("method") != "tools":
+        return
+    if not _is_current_thread_event(payload, current_thread_id):
+        return
+
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return
+
+    event_name = data.get("event")
+    tool_call_id = data.get("tool_call_id")
+    if event_name == "tool-started":
+        _note_tool_timing(timings, tool_call_id, "start")
+    elif event_name == "tool-finished":
+        _note_tool_timing(timings, tool_call_id, "end")
+
+
+def _note_tool_timing_from_message_event(
+    timings: dict[str, dict[str, str]],
+    stream_event: Any,
+    *,
+    current_thread_id: str | None,
+) -> None:
+    """从 tool_call 流事件记录开始时间，作为 tool-started 的兜底。"""
+    if not isinstance(stream_event, dict):
+        return
+    if not _is_current_thread_event(stream_event, current_thread_id):
+        return
+    if stream_event.get("type") != "tool_call":
+        return
+    _note_tool_timing(timings, stream_event.get("tool_call_id"), "start")
+
+
+def _relevant_tool_timings(
+    tool_timings: dict[str, dict[str, str]] | None,
+    tool_ids: list[str],
+) -> dict[str, dict[str, str]]:
+    """只保留当前消息里出现过的工具耗时。"""
+    if not tool_timings or not tool_ids:
+        return {}
+    return {tool_id: tool_timings[tool_id] for tool_id in tool_ids if tool_id in tool_timings}
+
+
+def _tool_call_ids_from_data(tool_calls_data: list[Any]) -> list[str]:
+    ids: list[str] = []
+    for tool_call in tool_calls_data:
+        if not isinstance(tool_call, dict):
+            continue
+        tool_id = tool_call.get("id")
+        if tool_id:
+            ids.append(str(tool_id))
+    return ids
+
+
 async def _get_existing_message_ids(conv_repo: ConversationRepository, thread_id: str) -> set[str]:
     existing_messages = await conv_repo.get_messages_by_thread_id(thread_id)
     return {
@@ -401,6 +485,7 @@ async def _save_ai_message(
     trace_info: dict[str, Any] | None = None,
     run_id: str | None = None,
     request_id: str | None = None,
+    tool_timings: dict[str, dict[str, str]] | None = None,
 ):
     content = msg_dict.get("content", "")
     tool_calls_data = msg_dict.get("tool_calls") or []
@@ -419,6 +504,9 @@ async def _save_ai_message(
     extra_metadata = dict(msg_dict)
     if trace_info:
         extra_metadata.update(trace_info)
+    message_timings = _relevant_tool_timings(tool_timings, _tool_call_ids_from_data(tool_calls_data))
+    if message_timings:
+        extra_metadata["tool_timings"] = message_timings
 
     ai_msg = await conv_repo.add_message_by_thread_id(
         thread_id=thread_id,
@@ -512,6 +600,7 @@ async def save_messages_from_langgraph_state(
     trace_info: dict[str, Any] | None = None,
     run_id: str | None = None,
     request_id: str | None = None,
+    tool_timings: dict[str, dict[str, str]] | None = None,
 ) -> None:
     messages = await _get_langgraph_messages(agent_instance, config_dict, context=context)
     if messages is None:
@@ -550,9 +639,12 @@ async def save_messages_from_langgraph_state(
                 trace_info=trace_info,
                 run_id=run_id,
                 request_id=request_id,
+                tool_timings=tool_timings,
             )
         elif msg_type == "tool":
             await _save_tool_message(conv_repo, msg_dict)
+
+    await conv_repo.merge_tool_timings(thread_id, tool_timings)
 
     if run_id and last_ai_message:
         run_repo = AgentRunRepository(conv_repo.db)
@@ -891,6 +983,7 @@ async def stream_agent_chat(
     accumulated_content: list[str] = []
     trace_info: dict[str, Any] = {}
     last_agent_state_signature = ""
+    tool_timings: dict[str, dict[str, str]] = {}
 
     try:
         conv_repo = ConversationRepository(db)
@@ -972,6 +1065,7 @@ async def stream_agent_chat(
                 continue
 
             if mode == "stream_event":
+                _note_tool_timing_from_tools_event(tool_timings, payload, current_thread_id=thread_id)
                 yield make_chunk(
                     status="stream_event",
                     event=payload,
@@ -997,6 +1091,7 @@ async def stream_agent_chat(
             )
 
             for stream_event in stream_events:
+                _note_tool_timing_from_message_event(tool_timings, stream_event, current_thread_id=thread_id)
                 content = _stream_event_response(stream_event)
                 if not is_subagent_chunk and content:
                     trace_info = get_trace_info(langfuse_run)
@@ -1071,6 +1166,7 @@ async def stream_agent_chat(
                 trace_info=trace_info,
                 run_id=meta.get("run_id"),
                 request_id=meta.get("request_id"),
+                tool_timings=tool_timings,
             )
         except Exception as e:
             logger.exception(f"Error saving messages from LangGraph state: {e}")
@@ -1205,6 +1301,7 @@ async def stream_agent_resume(
     )
     trace_info: dict[str, Any] = {}
     last_agent_state_signature = ""
+    tool_timings: dict[str, dict[str, str]] = {}
 
     stream_source = agent.stream_resume_with_state(
         resume_command,
@@ -1228,6 +1325,7 @@ async def stream_agent_resume(
 
             if mode == "stream_event":
                 event_payload = payload if isinstance(payload, dict) else {}
+                _note_tool_timing_from_tools_event(tool_timings, event_payload, current_thread_id=thread_id)
                 yield make_resume_chunk(
                     status="stream_event",
                     event=event_payload,
@@ -1265,6 +1363,7 @@ async def stream_agent_resume(
             )
 
             for stream_event in stream_events:
+                _note_tool_timing_from_message_event(tool_timings, stream_event, current_thread_id=thread_id)
                 content = _stream_event_response(stream_event)
                 yield make_resume_chunk(
                     content=content,
@@ -1307,6 +1406,7 @@ async def stream_agent_resume(
                 trace_info=trace_info,
                 run_id=meta.get("run_id"),
                 request_id=meta.get("request_id"),
+                tool_timings=tool_timings,
             )
         except Exception as e:
             logger.exception(f"Error saving messages from LangGraph state: {e}")

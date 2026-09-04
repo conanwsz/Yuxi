@@ -22,6 +22,7 @@
         <span class="summary-status-tag" v-if="statusSummary">{{ statusSummary }}</span>
       </span>
       <span class="summary-trailing">
+        <span v-if="durationLabel" class="summary-duration">{{ durationLabel }}</span>
         <component :is="areToolCallsExpanded ? ChevronDown : ChevronRight" size="14" />
       </span>
     </button>
@@ -39,7 +40,7 @@
 </template>
 
 <script setup>
-import { computed, ref, watch, inject } from 'vue'
+import { computed, inject, onActivated, onDeactivated, onUnmounted, ref, watch } from 'vue'
 import { ChevronDown, ChevronRight, Atom } from 'lucide-vue-next'
 import { ToolCallRenderer } from '@/components/ToolCallingResult'
 import {
@@ -47,6 +48,7 @@ import {
   isSubagentToolCall,
   normalizeToolCalls
 } from '@/components/ToolCallingResult/toolRegistry'
+import { formatElapsedDuration, getToolGroupDurationMs } from '@/utils/toolCallDuration'
 
 const activeSubagentToolCallIds = inject('activeSubagentToolCallIds', null)
 
@@ -142,6 +144,61 @@ const statusSummary = computed(() => {
   return parts.join(' · ')
 })
 
+const DURATION_TICK_MS = 100
+const liveStartedAt = ref(null)
+const nowMs = ref(Date.now())
+let durationTimer = null
+
+const isGroupRunning = computed(() =>
+  normalizedToolCalls.value.some((toolCall) => toolRunState(toolCall) === 'running')
+)
+
+const shouldTick = computed(() => props.isActive && isGroupRunning.value)
+
+const stopDurationTick = () => {
+  if (!durationTimer) return
+  clearInterval(durationTimer)
+  durationTimer = null
+}
+
+const startDurationTick = () => {
+  if (durationTimer) return
+  nowMs.value = Date.now()
+  durationTimer = setInterval(() => {
+    nowMs.value = Date.now()
+  }, DURATION_TICK_MS)
+}
+
+watch(
+  shouldTick,
+  (ticking) => {
+    if (ticking) {
+      if (liveStartedAt.value == null) liveStartedAt.value = Date.now()
+      startDurationTick()
+      return
+    }
+
+    nowMs.value = Date.now()
+    stopDurationTick()
+  },
+  { immediate: true }
+)
+
+onActivated(() => {
+  if (shouldTick.value) startDurationTick()
+})
+onDeactivated(stopDurationTick)
+onUnmounted(stopDurationTick)
+
+const durationLabel = computed(() => {
+  const durationMs = getToolGroupDurationMs(normalizedToolCalls.value, {
+    now: nowMs.value,
+    liveStartedAt: liveStartedAt.value
+  })
+  if (durationMs == null) return ''
+  return formatElapsedDuration(durationMs, { running: isGroupRunning.value })
+})
+
 const toggleToolCallsExpanded = () => {
   if (!shouldCollapseToolCalls.value) return
   areToolCallsExpanded.value = !areToolCallsExpanded.value
@@ -226,8 +283,16 @@ const toggleToolCallsExpanded = () => {
     .summary-trailing {
       display: inline-flex;
       align-items: center;
+      gap: 6px;
       color: var(--gray-500);
       flex-shrink: 0;
+    }
+
+    .summary-duration {
+      color: var(--gray-500);
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
     }
   }
 
