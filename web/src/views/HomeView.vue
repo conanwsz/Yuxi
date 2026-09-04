@@ -11,7 +11,6 @@
       <a-result status="error" :title="error.title" :sub-title="error.message">
         <template #extra>
           <a-button type="primary" @click="retryLoad">重试</a-button>
-          <a-button :href="faqUrl" target="_blank" rel="noopener noreferrer">常见问题</a-button>
         </template>
       </a-result>
     </div>
@@ -54,15 +53,6 @@
                 <span>开始体验</span>
                 <ArrowRight :size="18" />
               </button>
-              <a
-                class="button-base secondary"
-                href="https://xerrors.github.io/Yuxi/"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                <BookText :size="18" />
-                <span>查看文档</span>
-              </a>
             </div>
           </div>
 
@@ -170,12 +160,11 @@ import { useUserStore } from '@/stores/user'
 import { useInfoStore } from '@/stores/info'
 import { healthApi } from '@/apis/system_api'
 import UserInfoComponent from '@/components/UserInfoComponent.vue'
-import { BookText, ArrowRight, Workflow, Library, Sparkles } from 'lucide-vue-next'
+import { ArrowRight, Workflow, Library, Sparkles } from 'lucide-vue-next'
 
 const router = useRouter()
 const userStore = useUserStore()
 const infoStore = useInfoStore()
-const faqUrl = 'https://xerrors.github.io/Yuxi/'
 
 // 加载状态
 const isLoading = ref(true)
