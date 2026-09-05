@@ -25,3 +25,29 @@ test('已下架（enabled=false）的推荐工作区技能不出现在「推荐�
   assert.match(block[0], /skill\.is_recommended_workspace === true\s*&&\s*skill\.enabled !== false/)
 })
 
+test('推荐来源用「来自推荐」表达，不再出现「覆盖推荐版本」文案', () => {
+  const start = source.indexOf('const skillCardTags = (skill) => {')
+  assert.ok(start >= 0, '缺少 skillCardTags')
+  const tagsFn = source.slice(start, source.indexOf('\n}', start))
+  assert.doesNotMatch(tagsFn, /覆盖推荐版本/)
+  // 仅当来源非推荐且与共享同名时才提示覆盖
+  assert.match(tagsFn, /覆盖共享版本/)
+  assert.match(tagsFn, /installed_from/)
+})
+
+test('个人技能卡片按 installed_from 显示来源标签（推荐/上传/远程安装/自建）', () => {
+  const start = source.indexOf('const PERSONAL_ORIGIN_LABELS')
+  assert.ok(start >= 0, '缺少 PERSONAL_ORIGIN_LABELS')
+  const fnStart = source.indexOf('const skillCardTags = (skill) => {', start)
+  assert.ok(fnStart >= 0, '缺少 skillCardTags')
+  const tagsFn = source.slice(start, source.indexOf('\n}', fnStart))
+  // 个人卡片第一标签改为来源，而不是写死「个人技能」
+  assert.match(tagsFn, /installed_from/)
+  assert.match(tagsFn, /来自推荐/)
+  assert.match(tagsFn, /来自上传/)
+  assert.match(tagsFn, /远程安装/)
+  assert.doesNotMatch(tagsFn, /来自仓库/)
+  assert.match(tagsFn, /个人自建/)
+  // 来源标签之外仍保留「个人技能」身份标签
+  assert.match(tagsFn, /个人技能/)
+})

@@ -1890,3 +1890,120 @@ def test_sync_thread_readable_skills_uses_final_source_mapping(
     (personal_dir / "SKILL.md").write_text("changed", encoding="utf-8")
     svc.sync_thread_readable_skills("thread-1", ["demo"], {"demo": personal_dir})
     assert (thread_root / "demo" / "SKILL.md").read_text(encoding="utf-8") == "changed"
+
+
+# ==================== 个人 Skill 来源（installed_from） ====================
+
+
+def _fake_redis_patch(monkeypatch: pytest.MonkeyPatch, redis: _FakeRedis) -> None:
+    async def fake_get_redis():
+        return redis
+
+    monkeypatch.setattr(svc, "get_async_redis_client", fake_get_redis)
+
+
+@pytest.mark.asyncio
+async def test_personal_skill_install_records_installed_from(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    redis = _FakeRedis()
+    root = tmp_path / "workspace-skills"
+    source = tmp_path / "src" / "demo"
+    source.mkdir(parents=True)
+    (source / "SKILL.md").write_text("---\nname: demo\ndescription: d\n---\n", encoding="utf-8")
+
+    _fake_redis_patch(monkeypatch, redis)
+    monkeypatch.setattr(svc, "get_personal_skills_root_dir", lambda _uid: root)
+
+    item = await svc.install_personal_skill_dir("user-1", source, installed_from="recommended")
+    assert item.installed_from == "recommended"
+    assert item.to_dict()["installed_from"] == "recommended"
+
+    # 缓存过期/重扫后仍能从盘上读出来源
+    refreshed = await svc.list_personal_skills("user-1", refresh=True)
+    assert refreshed.items[0].installed_from == "recommended"
+
+
+@pytest.mark.asyncio
+async def test_personal_skill_cache_preserves_installed_from(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    redis = _FakeRedis()
+    root = tmp_path / "workspace-skills"
+    source = tmp_path / "src" / "demo"
+    source.mkdir(parents=True)
+    (source / "SKILL.md").write_text("---\nname: demo\ndescription: d\n---\n", encoding="utf-8")
+
+    _fake_redis_patch(monkeypatch, redis)
+    monkeypatch.setattr(svc, "get_personal_skills_root_dir", lambda _uid: root)
+
+    await svc.install_personal_skill_dir("user-1", source, installed_from="upload")
+    cached = await svc.list_personal_skills("user-1")
+    assert cached.from_cache is True
+    assert cached.items[0].installed_from == "upload"
+
+
+@pytest.mark.asyncio
+async def test_personal_skills_without_origin_default_to_created(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    redis = _FakeRedis()
+    root = tmp_path / "workspace-skills"
+    _write_personal_skill(root, "handmade", "manually created")
+
+    _fake_redis_patch(monkeypatch, redis)
+    monkeypatch.setattr(svc, "get_personal_skills_root_dir", lambda _uid: root)
+
+    snapshot = await svc.list_personal_skills("user-1")
+    assert snapshot.items[0].installed_from == "created"
+
+
+@pytest.mark.asyncio
+async def test_confirm_personal_skill_draft_records_installed_from(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    redis = _FakeRedis()
+    personal_root = tmp_path / "personal"
+    draft_id = "22222222-2222-2222-2222-222222222222"
+    draft_dir = tmp_path / "skill_import_drafts" / draft_id
+    item_dir = draft_dir / "items" / "item-1"
+    item_dir.mkdir(parents=True)
+    (item_dir / "SKILL.md").write_text(
+        "---\nname: demo\ndescription: origin demo\n---\n# Demo\n",
+        encoding="utf-8",
+    )
+    (draft_dir / "metadata.json").write_text(
+        svc.json.dumps(
+            {
+                "created_by": "user-1",
+                "source_type": "upload",
+                "expires_at": svc.time.time() + 300,
+                "items": [
+                    {
+                        "slug": "demo",
+                        "original_name": "demo",
+                        "source_dir": "items/item-1",
+                        "success": True,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    _fake_redis_patch(monkeypatch, redis)
+    monkeypatch.setattr(svc, "get_personal_skills_root_dir", lambda _uid: personal_root)
+    monkeypatch.setattr(svc.sys_config, "save_dir", str(tmp_path))
+
+    results = await svc.confirm_personal_skill_install_draft(
+        draft_id=draft_id,
+        slugs=["demo"],
+        operator=_user("user-1", role="user"),
+    )
+
+    assert results[0]["success"] is True
+    assert results[0]["skill"]["installed_from"] == "upload"

@@ -220,6 +220,7 @@ async def _run_install_task(
                             uid,
                             result["source_dir"],
                             refresh_cache=False,
+                            installed_from="remote",
                         )
                         installed_items.append(item)
                         installed_slugs.append(item.slug)

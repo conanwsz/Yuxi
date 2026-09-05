@@ -79,11 +79,15 @@ DEFAULT_SKILL_SHARE_CONFIG = {"access_level": "user", "department_ids": [], "use
 BUILTIN_SKILL_SHARE_CONFIG = {"access_level": "global", "department_ids": [], "user_uids": []}
 SKILL_DRAFT_TTL_SECONDS = 60 * 60
 PERSONAL_SKILL_CACHE_TTL_SECONDS = 5 * 60
-PERSONAL_SKILL_CACHE_PREFIX = "yuxi:skills:personal:v1:"
+PERSONAL_SKILL_CACHE_PREFIX = "yuxi:skills:personal:v2:"
 PERSONAL_SKILL_SCAN_LOCK_PREFIX = "yuxi:skills:personal:scan-lock:v1:"
 PERSONAL_SKILL_SCAN_LOCK_TIMEOUT_SECONDS = 30
 PERSONAL_SKILL_SCAN_LOCK_WAIT_SECONDS = 10
 PERSONAL_SKILL_SOURCE_TYPE = "personal"
+PERSONAL_SKILL_ORIGIN_CREATED = "created"
+PERSONAL_SKILL_ORIGIN_RECOMMENDED = "recommended"
+PERSONAL_SKILL_ORIGINS = (PERSONAL_SKILL_ORIGIN_CREATED, PERSONAL_SKILL_ORIGIN_RECOMMENDED, "upload", "remote")
+PERSONAL_SKILL_INSTALL_ORIGIN_FILE = ".install-origin.json"
 WORKSPACE_SKILLS_RELATIVE_DIR = Path("agents") / "skills"
 _THREAD_SKILLS_LOCK = threading.Lock()
 _THREAD_SKILLS_LOCKS: dict[str, threading.Lock] = {}
@@ -109,6 +113,7 @@ class ResolvedSkill:
     overrides_shared: bool = False
     shadowed_by_personal: bool = False
     is_recommended_workspace: bool = False
+    installed_from: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         """返回可安全提供给前端的 Skill 元数据。"""
@@ -127,6 +132,7 @@ class ResolvedSkill:
             "overrides_shared": self.overrides_shared,
             "shadowed_by_personal": self.shadowed_by_personal,
             "is_recommended_workspace": bool(self.is_recommended_workspace),
+            "installed_from": self.installed_from,
         }
         if self.share_config is not None:
             data["share_config"] = self.share_config
@@ -897,11 +903,14 @@ async def install_personal_skill_dir(
     source_dir: Path | str,
     *,
     refresh_cache: bool = True,
+    installed_from: str = PERSONAL_SKILL_ORIGIN_CREATED,
 ) -> ResolvedSkill:
-    """将一个 Skill 原子安装到当前用户个人工作区。"""
+    """将一个 Skill 原子安装到当前用户个人工作区，并记录安装来源。"""
+    if installed_from not in PERSONAL_SKILL_ORIGINS:
+        raise ValueError(f"无效的个人 Skill 安装来源: {installed_from}")
     redis = await get_async_redis_client()
     async with _personal_skill_scan_lock(redis, uid):
-        item = await asyncio.to_thread(_install_personal_skill_dir_sync, uid, Path(source_dir))
+        item = await asyncio.to_thread(_install_personal_skill_dir_sync, uid, Path(source_dir), installed_from)
         if refresh_cache:
             try:
                 await _scan_and_cache_personal_skills(redis, uid)
@@ -963,7 +972,9 @@ def _resolved_shared_skill(item: Skill, *, shadowed_by_personal: bool = False) -
     )
 
 
-def _resolved_personal_skill(uid: str, root: Path, metadata: dict[str, Any]) -> ResolvedSkill:
+def _resolved_personal_skill(
+    uid: str, root: Path, metadata: dict[str, Any], *, installed_from: str = PERSONAL_SKILL_ORIGIN_CREATED
+) -> ResolvedSkill:
     """将个人目录元数据适配为不含共享语义的有效 Skill 描述。"""
     slug = str(metadata["slug"])
     if not is_valid_skill_slug(slug):
@@ -984,6 +995,7 @@ def _resolved_personal_skill(uid: str, root: Path, metadata: dict[str, Any]) -> 
         tool_dependencies=[],
         mcp_dependencies=[],
         skill_dependencies=[],
+        installed_from=installed_from,
     )
 
 
@@ -1014,7 +1026,15 @@ async def _read_personal_skill_cache(
         payload = json.loads(cached)
         if payload.get("schema_version") != 1:
             raise ValueError("个人 Skill 缓存版本不匹配")
-        items = [_resolved_personal_skill(uid, root, item) for item in payload["items"]]
+        items = [
+            _resolved_personal_skill(
+                uid,
+                root,
+                item,
+                installed_from=item.get("installed_from") or PERSONAL_SKILL_ORIGIN_CREATED,
+            )
+            for item in payload["items"]
+        ]
         scanned_at = str(payload["scanned_at"])
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         logger.warning(f"个人 Skill 缓存无效，将重新扫描: uid={uid}, error={exc}")
@@ -1042,7 +1062,15 @@ async def _scan_and_cache_personal_skills(
     payload = {
         "schema_version": 1,
         "scanned_at": scanned_at,
-        "items": [{"slug": item.slug, "name": item.name, "description": item.description} for item in items],
+        "items": [
+            {
+                "slug": item.slug,
+                "name": item.name,
+                "description": item.description,
+                "installed_from": item.installed_from,
+            }
+            for item in items
+        ],
     }
     await redis.set(
         _personal_skill_cache_key(uid),
@@ -1068,13 +1096,27 @@ def _scan_personal_skills(uid: str) -> list[ResolvedSkill]:
             metadata = _parse_skill_dir_metadata(entry)
             if metadata["slug"] != entry.name:
                 raise ValueError("目录名必须与 SKILL.md slug 一致")
-            items.append(_resolved_personal_skill(uid, root, metadata))
+            items.append(
+                _resolved_personal_skill(uid, root, metadata, installed_from=_read_personal_skill_origin(entry))
+            )
         except Exception as exc:
             logger.warning(f"跳过无法解析的个人 Skill: uid={uid}, slug={entry.name}, error={exc}")
     return items
 
 
-def _install_personal_skill_dir_sync(uid: str, source_dir: Path) -> ResolvedSkill:
+def _read_personal_skill_origin(skill_dir: Path) -> str:
+    """读取个人 Skill 的安装来源标记，缺失或非法时视为用户自建。"""
+    origin_path = skill_dir / PERSONAL_SKILL_INSTALL_ORIGIN_FILE
+    if not origin_path.is_file():
+        return PERSONAL_SKILL_ORIGIN_CREATED
+    try:
+        installed_from = json.loads(origin_path.read_text(encoding="utf-8")).get("installed_from")
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return PERSONAL_SKILL_ORIGIN_CREATED
+    return installed_from if installed_from in PERSONAL_SKILL_ORIGINS else PERSONAL_SKILL_ORIGIN_CREATED
+
+
+def _install_personal_skill_dir_sync(uid: str, source_dir: Path, installed_from: str) -> ResolvedSkill:
     """在持有用户级锁时将一个 Skill 原子复制到个人目录。"""
     root = get_personal_skills_root_dir(uid)
     source_dir = source_dir.resolve()
@@ -1093,7 +1135,11 @@ def _install_personal_skill_dir_sync(uid: str, source_dir: Path) -> ResolvedSkil
             raise ValueError("个人 Skill slug 在复制过程中发生变化")
 
     _replace_skill_target(target_dir, source_dir, validate=_validate_slug_unchanged)
-    return _resolved_personal_skill(uid, root, metadata)
+    (target_dir / PERSONAL_SKILL_INSTALL_ORIGIN_FILE).write_text(
+        json.dumps({"installed_from": installed_from}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return _resolved_personal_skill(uid, root, metadata, installed_from=installed_from)
 
 
 def _resolve_personal_skill_dir(uid: str, slug: str) -> Path:
@@ -1547,7 +1593,11 @@ async def confirm_personal_skill_install_draft(
     operator: User,
 ) -> list[dict[str, Any]]:
     """确认草稿并将选中 Skill 安装到当前用户个人工作区。"""
-    draft_dir, _data, draft_items = _load_and_select_draft_items(draft_id, slugs, operator)
+    draft_dir, draft_data, draft_items = _load_and_select_draft_items(draft_id, slugs, operator)
+    # 草稿的 source_type 即个人技能的安装来源（upload / remote），仅接受已知来源
+    draft_origin = draft_data.get("source_type")
+    if draft_origin not in PERSONAL_SKILL_ORIGINS:
+        draft_origin = PERSONAL_SKILL_ORIGIN_CREATED
 
     results: list[dict[str, Any]] = []
     for draft_item in draft_items:
@@ -1584,6 +1634,7 @@ async def confirm_personal_skill_install_draft(
                 str(operator.uid),
                 source_dir,
                 refresh_cache=False,
+                installed_from=draft_origin,
             )
             results.append(
                 {
@@ -1763,6 +1814,7 @@ async def clone_recommended_workspace_skill_to_personal(
         str(operator.uid),
         skill_dir,
         refresh_cache=True,
+        installed_from=PERSONAL_SKILL_ORIGIN_RECOMMENDED,
     )
     return resolved.to_dict()
 

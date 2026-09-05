@@ -876,11 +876,30 @@ const formatSkillSubtitle = (skill) => {
   return skill?.slug
 }
 
+// 个人技能安装来源（后端 installed_from）到展示文案的映射
+const PERSONAL_ORIGIN_LABELS = {
+  recommended: '来自推荐',
+  upload: '来自上传',
+  remote: '远程安装',
+  created: '个人自建'
+}
+
 const skillCardTags = (skill) => {
   if (skill.sourceScope === 'personal') {
+    // 遮蔽推荐工作区原件属正常用法；仅遮蔽普通共享技能时才提示覆盖
+    const shadowedSource = skill.overrides_shared
+      ? installedSkillCards.value.find(
+          (item) => item.slug === skill.slug && item.sourceScope !== 'personal'
+        )
+      : null
+    const showsOverride =
+      skill.overrides_shared &&
+      skill.installed_from !== 'recommended' &&
+      shadowedSource?.is_recommended_workspace !== true
     return [
       { name: '个人技能', color: 'gray' },
-      ...(skill.overrides_shared ? [{ name: '覆盖共享版本', color: 'orange' }] : [])
+      { name: PERSONAL_ORIGIN_LABELS[skill.installed_from] || '个人自建', color: 'blue' },
+      ...(showsOverride ? [{ name: '覆盖共享版本', color: 'orange' }] : [])
     ]
   }
   return [

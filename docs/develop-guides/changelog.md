@@ -10,6 +10,8 @@
 
 - **推荐位治理（下架/删除推荐工作区技能）**：「管理推荐」弹窗更名为「管理推荐位」并新增「推荐工作区技能」tab，`skills.recommend` 持有者可列出全部已发布技能（含他人发布与已下架），支持**下架**（`enabled=False`，运行时不再注入，「推荐」分组对所有用户即时隐藏，可一键重新上架）与**物理删除**（复用回收站链路，不可恢复）。新增 3 个 `/system/skills/recommended-workspace/*` 端点，门控为路由级 `skills.recommend` + 对象级 `is_recommended_workspace` 校验；弹窗变更后「推荐」分组即时刷新。
 
+- **个人技能来源标签**：个人 Skill 卡片第二标签改按安装来源显示「来自推荐 / 来自上传 / 远程安装 / 个人自建」。安装链路在个人技能目录写入 `.install-origin.json` 来源标记（推荐克隆=recommended，安装草稿按 draft `source_type`=upload/remote，Git 工具安装=remote，沙盒创建与历史存量=created），扫描与 Redis 快照（前缀升 v2）透传 `installed_from`。「覆盖共享版本」橙色提示仅在来源非推荐且被遮蔽对象是普通共享技能时显示，消除「共享分组并无该技能却提示覆盖共享」的误导。
+
 - **推荐技能可管理化**：智能体扩展 → 技能 tab 顶部「推荐」从硬编码常量改为后端持久化。新增 `recommended_skill_suites` / `recommended_suite_members` 两张表与 `skills.recommend` 权限（admin/superadmin 默认获得），管理员可在「管理推荐」Modal 中新建/编辑/启停/删除套件，套件成员支持上传多 skill zip 自动填充（zip 顶层不放 SKILL.md，按子目录组织）。普通用户视角与之前一致：点击套件卡片走原有远程安装流程自选安装，install 链路零修改。首次启动 seed 把原 hardcoded 的 anthropic 套件幂等落库，老用户无感升级。
 
 - 对话工具调用组标题右侧显示执行耗时：运行中按整秒递增（`4s`），完成后冻结为 `12s` / `1m 23s`。耗时随消息 `extra_metadata.tool_timings` 落库，刷新历史后仍可查看。
