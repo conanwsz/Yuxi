@@ -192,6 +192,22 @@ export const installRecommendedWorkspaceToPersonal = async (slug) => {
   )
 }
 
+// ---------- 推荐位治理（下架/重新上架/删除，需 skills.recommend） ----------
+// 管理视角：列出全部推荐工作区技能（含已下架 enabled=False）
+export const listRecommendedWorkspaceSkillsAdmin = async () => {
+  return apiAdminGet(`${BASE_URL}/recommended-workspace/admin`)
+}
+
+// 下架（enabled=false）/ 重新上架（enabled=true）
+export const setRecommendedWorkspaceSkillEnabled = async (slug, enabled) => {
+  return apiAdminPatch(`${BASE_URL}/recommended-workspace/${encodeURIComponent(slug)}/enabled`, { enabled })
+}
+
+// 物理删除推荐工作区技能（不可恢复）
+export const deleteRecommendedWorkspaceSkill = async (slug) => {
+  return apiAdminDelete(`${BASE_URL}/recommended-workspace/${encodeURIComponent(slug)}`)
+}
+
 export const skillApi = {
   listSkills,
   listSkillCards,
@@ -229,7 +245,10 @@ export const skillApi = {
   prepareSuiteUpload,
   listRecommendedWorkspace,
   confirmRecommendedWorkspaceInstall,
-  installRecommendedWorkspaceToPersonal
+  installRecommendedWorkspaceToPersonal,
+  listRecommendedWorkspaceSkillsAdmin,
+  setRecommendedWorkspaceSkillEnabled,
+  deleteRecommendedWorkspaceSkill
 }
 
 export default skillApi

@@ -9,7 +9,7 @@
     :keyboard="false"
     :closable="!formLoading"
     class="recommended-suites-manage-modal"
-    title="管理推荐技能套件"
+    title="管理推荐位"
     @cancel="handleClose"
   >
     <a-tabs v-model:activeKey="activeTab" class="manage-tabs">
@@ -60,6 +60,51 @@
           </template>
         </a-table>
         <a-empty v-if="!listLoading && adminSuites.length === 0" description="暂无推荐套件" />
+      </a-tab-pane>
+
+      <!-- 推荐工作区技能（用户发布，含已下架） -->
+      <a-tab-pane key="workspace-skills" tab="推荐工作区技能">
+        <a-table
+          :data-source="workspaceSkills"
+          :columns="workspaceSkillColumns"
+          :loading="workspaceSkillsLoading"
+          :pagination="false"
+          row-key="slug"
+          size="middle"
+        >
+          <template #bodyCell="{ column, record }">
+            <template v-if="column.key === 'enabled'">
+              <a-tag :color="record.enabled ? 'green' : 'default'">
+                {{ record.enabled ? '使用中' : '已下架' }}
+              </a-tag>
+            </template>
+            <template v-else-if="column.key === 'created_by'">
+              {{ record.created_by || '-' }}
+            </template>
+            <template v-else-if="column.key === 'actions'">
+              <a-space>
+                <a-popconfirm
+                  :title="record.enabled ? '确认下架此技能？下架后所有用户不可见，可重新上架。' : '确认重新上架此技能？'"
+                  @confirm="handleToggleSkillEnabled(record)"
+                >
+                  <a-button size="small" type="link">
+                    {{ record.enabled ? '下架' : '重新上架' }}
+                  </a-button>
+                </a-popconfirm>
+                <a-popconfirm
+                  title="确认删除该技能？技能文件与记录将一并移除，删除后不可恢复。"
+                  @confirm="handleDeleteWorkspaceSkill(record)"
+                >
+                  <a-button size="small" type="link" danger>删除</a-button>
+                </a-popconfirm>
+              </a-space>
+            </template>
+          </template>
+        </a-table>
+        <a-empty
+          v-if="!workspaceSkillsLoading && workspaceSkills.length === 0"
+          description="暂无发布到推荐工作区的技能"
+        />
       </a-tab-pane>
 
       <!-- 新建/编辑 -->
@@ -193,6 +238,8 @@ const emit = defineEmits(['update:open', 'close', 'updated'])
 const activeTab = ref('list')
 const listLoading = ref(false)
 const adminSuites = ref([])
+const workspaceSkills = ref([])
+const workspaceSkillsLoading = ref(false)
 const formLoading = ref(false)
 const zipParsing = ref(false)
 const zipError = ref('')
@@ -228,6 +275,15 @@ const memberColumns = [
   { title: '操作', key: 'actions', width: 80 }
 ]
 
+const workspaceSkillColumns = [
+  { title: '技能名称', dataIndex: 'name', key: 'name' },
+  { title: '版本', dataIndex: 'version', key: 'version', width: 90 },
+  { title: '所有者', key: 'created_by', width: 120 },
+  { title: '状态', key: 'enabled', width: 90 },
+  { title: '更新时间', dataIndex: 'updated_at', key: 'updated_at', width: 170 },
+  { title: '操作', key: 'actions', width: 170 }
+]
+
 let tmpKeyCounter = 0
 const nextTmpKey = () => `tmp-${++tmpKeyCounter}`
 
@@ -241,6 +297,19 @@ const fetchAdminList = async () => {
     adminSuites.value = []
   } finally {
     listLoading.value = false
+  }
+}
+
+const fetchWorkspaceSkills = async () => {
+  workspaceSkillsLoading.value = true
+  try {
+    const res = await skillApi.listRecommendedWorkspaceSkillsAdmin()
+    workspaceSkills.value = res?.data || []
+  } catch (error) {
+    message.error(error?.response?.data?.detail || '获取推荐工作区技能失败')
+    workspaceSkills.value = []
+  } finally {
+    workspaceSkillsLoading.value = false
   }
 }
 
@@ -414,6 +483,30 @@ const handleClose = () => {
   emit('close')
 }
 
+// 推荐位治理：下架（enabled=false）/ 重新上架（enabled=true），技能仍留在推荐列表
+const handleToggleSkillEnabled = async (skill) => {
+  try {
+    await skillApi.setRecommendedWorkspaceSkillEnabled(skill.slug, !skill.enabled)
+    message.success(skill.enabled ? '已下架' : '已重新上架')
+    await fetchWorkspaceSkills()
+    emit('updated')
+  } catch (error) {
+    message.error(error?.response?.data?.detail || '操作失败')
+  }
+}
+
+// 推荐位治理：物理删除技能本体与文件，不可恢复
+const handleDeleteWorkspaceSkill = async (skill) => {
+  try {
+    await skillApi.deleteRecommendedWorkspaceSkill(skill.slug)
+    message.success('已删除')
+    await fetchWorkspaceSkills()
+    emit('updated')
+  } catch (error) {
+    message.error(error?.response?.data?.detail || '删除失败')
+  }
+}
+
 watch(
   () => props.open,
   (val) => {
@@ -421,6 +514,7 @@ watch(
       resetForm()
       activeTab.value = 'list'
       fetchAdminList()
+      fetchWorkspaceSkills()
     }
   },
   { immediate: true }

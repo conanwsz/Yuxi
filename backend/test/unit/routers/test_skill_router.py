@@ -681,3 +681,97 @@ def test_recommended_workspace_routes_require_skills_read_or_create():
     resp = client.get("/api/skills/recommended-workspace")
     # user 有 skills.read 所以 200
     assert resp.status_code in (200, 500)  # 500 是因为没 patch list_recommended_workspace_skills
+
+
+# ---------- 推荐位治理路由（/system/skills/recommended-workspace） ----------
+
+
+def test_recommended_workspace_admin_list_requires_recommend_permission():
+    """user 角色无 skills.recommend，管理列表应 403。"""
+    client = TestClient(_build_app(role="user"))
+    resp = client.get("/api/system/skills/recommended-workspace/admin")
+    assert resp.status_code == 403
+
+
+def test_recommended_workspace_admin_list_returns_governance_fields(monkeypatch):
+    async def fake_list(_db):
+        return [
+            {
+                "slug": "skill-creator",
+                "name": "skill-creator",
+                "version": "1.0.0",
+                "created_by": "alice",
+                "enabled": True,
+                "is_recommended_workspace": True,
+                "updated_at": "2026-09-01T00:00:00",
+            }
+        ]
+
+    monkeypatch.setattr("server.routers.skill_router.list_recommended_workspace_skills_admin", fake_list)
+
+    client = TestClient(_build_app())
+    resp = client.get("/api/system/skills/recommended-workspace/admin")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["success"] is True
+    item = body["data"][0]
+    assert item["slug"] == "skill-creator"
+    assert item["enabled"] is True
+    assert item["created_by"] == "alice"
+
+
+def test_deactivate_recommended_skill_requires_recommend_permission():
+    client = TestClient(_build_app(role="user"))
+    resp = client.patch("/api/system/skills/recommended-workspace/skill-creator/enabled", json={"enabled": False})
+    assert resp.status_code == 403
+
+
+def test_deactivate_recommended_skill_flows_enabled_false_to_service(monkeypatch):
+    captured = {}
+
+    async def fake_set(_db, *, slug, enabled, operator):
+        captured["slug"] = slug
+        captured["enabled"] = enabled
+        captured["operator"] = operator.uid
+        return {"slug": slug, "enabled": enabled}
+
+    monkeypatch.setattr("server.routers.skill_router.set_recommended_workspace_skill_enabled", fake_set)
+
+    client = TestClient(_build_app())
+    resp = client.patch("/api/system/skills/recommended-workspace/skill-creator/enabled", json={"enabled": False})
+    assert resp.status_code == 200, resp.text
+    assert captured == {"slug": "skill-creator", "enabled": False, "operator": "admin"}
+    assert resp.json()["data"]["enabled"] is False
+
+
+def test_deactivate_returns_service_error_when_not_recommended(monkeypatch):
+    async def fake_set(_db, *, slug, enabled, operator):
+        raise ValueError(f"技能 '{slug}' 不在推荐工作区中")
+
+    monkeypatch.setattr("server.routers.skill_router.set_recommended_workspace_skill_enabled", fake_set)
+
+    client = TestClient(_build_app())
+    resp = client.patch("/api/system/skills/recommended-workspace/pdf/enabled", json={"enabled": False})
+    # 技能存在但状态非法（不在推荐位）→ 400；「不存在/无权」类消息才是 404
+    assert resp.status_code == 400
+    assert "不在推荐工作区" in resp.json()["detail"]
+
+
+def test_delete_recommended_skill_requires_recommend_permission():
+    client = TestClient(_build_app(role="user"))
+    resp = client.delete("/api/system/skills/recommended-workspace/skill-creator")
+    assert resp.status_code == 403
+
+
+def test_delete_recommended_skill_calls_service(monkeypatch):
+    captured = {}
+
+    async def fake_delete(_db, *, slug):
+        captured["slug"] = slug
+
+    monkeypatch.setattr("server.routers.skill_router.delete_recommended_workspace_skill", fake_delete)
+
+    client = TestClient(_build_app())
+    resp = client.delete("/api/system/skills/recommended-workspace/skill-creator")
+    assert resp.status_code == 200, resp.text
+    assert captured == {"slug": "skill-creator"}

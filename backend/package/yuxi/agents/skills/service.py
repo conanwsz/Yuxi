@@ -1767,6 +1767,43 @@ async def clone_recommended_workspace_skill_to_personal(
     return resolved.to_dict()
 
 
+async def list_recommended_workspace_skills_admin(db: AsyncSession) -> list[dict[str, Any]]:
+    """推荐位治理视角：列出全部推荐工作区 skill（含已下架 enabled=False），按 updated_at 倒序。"""
+    stmt = (
+        select(Skill).where(Skill.is_recommended_workspace.is_(True)).order_by(Skill.updated_at.desc(), Skill.id.desc())
+    )
+    result = await db.execute(stmt)
+    return [item.to_dict() for item in result.scalars().all()]
+
+
+async def set_recommended_workspace_skill_enabled(
+    db: AsyncSession, *, slug: str, enabled: bool, operator: User
+) -> dict[str, Any]:
+    """推荐位治理：下架（enabled=False）/ 重新上架（enabled=True）。
+
+    门控口径：调用方路由已校验 `skills.recommend`；这里只做对象级
+    `is_recommended_workspace` 校验，**不要求调用者是技能创建者**——区别于
+    ``update_skill_enabled`` 的 MANAGE 门控（管理员需要能治理他人发布的推荐技能）。
+    """
+    item = await get_skill_or_raise(db, slug)
+    if not bool(item.is_recommended_workspace):
+        raise ValueError(f"技能 '{slug}' 不在推荐工作区中")
+    item = await SkillRepository(db).update_enabled(item, enabled=enabled, updated_by=operator.uid)
+    return item.to_dict()
+
+
+async def delete_recommended_workspace_skill(db: AsyncSession, *, slug: str) -> None:
+    """推荐位治理：物理删除推荐工作区 skill（不可恢复，文件移入回收站）。
+
+    门控口径同 ``set_recommended_workspace_skill_enabled``：推荐位治理不要求创建者身份；
+    内置 skill 由 ``delete_skill`` 内部的 ``_ensure_non_builtin`` 兜底拒绝。
+    """
+    item = await get_skill_or_raise(db, slug)
+    if not bool(item.is_recommended_workspace):
+        raise ValueError(f"技能 '{slug}' 不在推荐工作区中")
+    await delete_skill(db, slug=slug)
+
+
 async def import_skill_dir(
     db: AsyncSession,
     *,

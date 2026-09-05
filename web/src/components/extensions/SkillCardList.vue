@@ -514,7 +514,7 @@
       v-if="userStore.hasPermission('skills.recommend')"
       :open="manageRecommendedModalOpen"
       @close="manageRecommendedModalOpen = false"
-      @updated="fetchRecommendedSuites"
+      @updated="handleRecommendedManageUpdated"
     />
 
     <RecommendedWorkspacePreviewModal
@@ -674,6 +674,12 @@ const fetchRecommendedSuites = async () => {
 
 const recommendedSuiteCards = computed(() => recommendedSuites.value)
 
+/** 「管理推荐位」弹窗里下架/删除的是技能本体（skills 表），必须同时刷新技能列表，
+ *  否则「推荐」分组要整页刷新才会消失。 */
+const handleRecommendedManageUpdated = async () => {
+  await Promise.all([fetchSkills(), fetchRecommendedSuites()])
+}
+
 const filteredInstalledSkills = computed(() => installedSkillCards.value.filter(matchesSearch))
 
 /** 包装成 SkillSuiteCard 可消费的「单成员 suite」——给「推荐」分组里用户发布的 skill 用。 */
@@ -700,7 +706,9 @@ const wrapUserPublishedSkillAsSuite = (skill) => ({
 
 const userPublishedSuites = computed(() => {
   const list = filteredInstalledSkills.value
-    .filter((skill) => skill.is_recommended_workspace === true)
+    // 已下架（enabled=false）不进「推荐」分组：下架对所有用户（含创建者）隐藏，
+    // 恢复入口只保留在「管理推荐位」弹窗
+    .filter((skill) => skill.is_recommended_workspace === true && skill.enabled !== false)
     .sort((a, b) => {
       const aTime = a.updated_at || a.updatedAt || ''
       const bTime = b.updated_at || b.updatedAt || ''

@@ -28,6 +28,7 @@ from yuxi.agents.skills.service import (
     confirm_recommended_workspace_install,
     confirm_skill_install_draft,
     create_skill_node,
+    delete_recommended_workspace_skill,
     delete_skill,
     delete_skill_node,
     delete_skills_batch,
@@ -43,6 +44,7 @@ from yuxi.agents.skills.service import (
     is_builtin_skill,
     list_accessible_skills,
     list_recommended_workspace_skills,
+    list_recommended_workspace_skills_admin,
     list_skill_cards_for_user,
     list_skills,
     list_visible_skills_for_management,
@@ -51,6 +53,7 @@ from yuxi.agents.skills.service import (
     prepare_suite_upload,
     read_personal_skill_file,
     read_skill_file,
+    set_recommended_workspace_skill_enabled,
     update_skill_dependencies,
     update_skill_enabled,
     update_skill_file,
@@ -624,6 +627,64 @@ async def export_skill_route(
     except Exception as e:
         logger.error(f"Failed to export skill '{slug}': {e}")
         raise HTTPException(status_code=500, detail="导出技能失败")
+
+
+# ---------- 推荐位治理（推荐工作区技能的下架/重新上架/删除） ----------
+#
+# 门控口径：路由级 `skills.recommend` + service 层对象级 `is_recommended_workspace` 校验。
+# 与 `delete_skill_route`（限 skills.delete + MANAGE，即创建者/超管）有意区分：
+# 推荐位是平台级治理资源，管理员需要能下架/删除**他人发布**到推荐工作区的技能。
+
+
+@skills.get("/recommended-workspace/admin")
+async def list_recommended_workspace_admin_route(
+    current_user: User = Depends(require_permission("skills.recommend")),
+    db: AsyncSession = Depends(get_db),
+):
+    """管理视角：列出全部推荐工作区技能（含已下架）。"""
+    try:
+        items = await list_recommended_workspace_skills_admin(db)
+        return {"success": True, "data": items}
+    except Exception as e:
+        logger.error(f"Failed to list recommended workspace skills (admin): {e}")
+        raise HTTPException(status_code=500, detail="获取推荐工作区技能失败")
+
+
+@skills.patch("/recommended-workspace/{slug}/enabled")
+async def patch_recommended_workspace_skill_enabled_route(
+    slug: str,
+    payload: SkillEnabledUpdateRequest,
+    current_user: User = Depends(require_permission("skills.recommend")),
+    db: AsyncSession = Depends(get_db),
+):
+    """下架（enabled=False）/ 重新上架（enabled=True）推荐工作区技能。"""
+    try:
+        data = await set_recommended_workspace_skill_enabled(
+            db, slug=slug, enabled=payload.enabled, operator=current_user
+        )
+        return {"success": True, "data": data}
+    except ValueError as e:
+        _raise_from_value_error(e)
+    except Exception as e:
+        logger.error(f"Failed to set recommended workspace skill enabled '{slug}': {e}")
+        raise HTTPException(status_code=500, detail="更新推荐技能上下架状态失败")
+
+
+@skills.delete("/recommended-workspace/{slug}")
+async def delete_recommended_workspace_skill_route(
+    slug: str,
+    current_user: User = Depends(require_permission("skills.recommend")),
+    db: AsyncSession = Depends(get_db),
+):
+    """物理删除推荐工作区技能（不可恢复）。"""
+    try:
+        await delete_recommended_workspace_skill(db, slug=slug)
+        return {"success": True}
+    except ValueError as e:
+        _raise_from_value_error(e)
+    except Exception as e:
+        logger.error(f"Failed to delete recommended workspace skill '{slug}': {e}")
+        raise HTTPException(status_code=500, detail="删除推荐工作区技能失败")
 
 
 @skills.delete("/{slug}")
