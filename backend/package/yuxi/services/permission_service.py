@@ -84,6 +84,7 @@ PERMISSION_GROUPS = [
             ("skills.delete", "删除 Skill"),
             ("skills.share", "共享 Skill"),
             ("skills.enable", "启停 Skill"),
+            ("skills.recommend", "管理推荐技能"),
         ],
     },
     {

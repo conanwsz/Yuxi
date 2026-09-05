@@ -462,6 +462,13 @@ class Skill(Base):
     content_hash = Column(String(128), nullable=True, comment="技能目录内容哈希（内置 skill 安装时计算）")
     share_config = Column(JSON_VALUE, nullable=False, comment="共享权限配置")
     enabled = Column(Boolean, nullable=False, default=True, comment="是否启用")
+    is_recommended_workspace = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+        index=True,
+        comment="是否在「推荐工作区」用户共建池中（任意用户可发布/浏览/选择性安装）",
+    )
     created_by = Column(String(64), nullable=True)
     updated_by = Column(String(64), nullable=True)
     created_at = Column(DateTime, default=utc_now_naive)
@@ -482,10 +489,92 @@ class Skill(Base):
             "content_hash": self.content_hash,
             "share_config": self.share_config or {},
             "enabled": bool(self.enabled),
+            "is_recommended_workspace": bool(self.is_recommended_workspace),
             "created_by": self.created_by,
             "updated_by": self.updated_by,
             "created_at": format_utc_datetime(self.created_at),
             "updated_at": format_utc_datetime(self.updated_at),
+        }
+
+
+class RecommendedSkillSuite(Base):
+    """管理员维护的「推荐技能套件」——一个套件关联多个 skill slug 元数据。
+
+    套件本身只存元数据：name/provider/description/source（用户安装时使用的远程仓库）。
+    真正的 skill 内容由用户在「查看并安装」时按 ``source`` 走远程安装流程按需下载。
+    """
+
+    __tablename__ = "recommended_skill_suites"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    slug = Column(String(80), nullable=False, unique=True, index=True, comment="稳定 ID（管理端手动起名）")
+    name = Column(String(128), nullable=False, comment="展示名（如 Anthropic 文档处理套件）")
+    provider = Column(String(128), nullable=False, comment="提供方（如 Anthropic）")
+    description = Column(Text, nullable=False, default="", comment="卡片描述")
+    source = Column(String(512), nullable=False, comment="用户安装时使用的 source URL")
+    sort_order = Column(Integer, nullable=False, default=0, comment="列表顺序，小者靠前")
+    enabled = Column(Boolean, nullable=False, default=True, index=True, comment="启停（停用后用户看不到）")
+    created_by = Column(String(64), nullable=True)
+    updated_by = Column(String(64), nullable=True)
+    created_at = Column(DateTime, default=utc_now_naive)
+    updated_at = Column(DateTime, default=utc_now_naive, onupdate=utc_now_naive)
+
+    members = relationship(
+        "RecommendedSuiteMember",
+        back_populates="suite",
+        cascade="all, delete-orphan",
+        order_by="RecommendedSuiteMember.sort_order",
+        passive_deletes=True,
+    )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "slug": self.slug,
+            "name": self.name,
+            "provider": self.provider,
+            "description": self.description or "",
+            "source": self.source,
+            "sort_order": self.sort_order,
+            "enabled": bool(self.enabled),
+            "created_by": self.created_by,
+            "updated_by": self.updated_by,
+            "created_at": format_utc_datetime(self.created_at),
+            "updated_at": format_utc_datetime(self.updated_at),
+            "members": [member.to_dict() for member in (self.members or [])],
+        }
+
+
+class RecommendedSuiteMember(Base):
+    """推荐套件的成员 skill 元数据。
+
+    只存 slug/name/description，不存 skill 内容；用户安装时按 suite.source 拉。
+    """
+
+    __tablename__ = "recommended_suite_members"
+    __table_args__ = (UniqueConstraint("suite_id", "slug", name="uq_recommended_suite_members_suite_slug"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    suite_id = Column(
+        Integer,
+        ForeignKey("recommended_skill_suites.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    slug = Column(String(128), nullable=False, comment="skill 目录名（须 is_valid_skill_slug）")
+    name = Column(String(128), nullable=False, comment="展示名（取自 SKILL.md frontmatter）")
+    description = Column(Text, nullable=False, default="", comment="描述（取自 SKILL.md frontmatter）")
+    sort_order = Column(Integer, nullable=False, default=0, comment="成员显示顺序")
+
+    suite = relationship("RecommendedSkillSuite", back_populates="members")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "slug": self.slug,
+            "name": self.name,
+            "description": self.description or "",
+            "sort_order": self.sort_order,
         }
 
 

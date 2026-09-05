@@ -10,8 +10,22 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.utils.auth_middleware import get_admin_user, get_db, get_required_user, require_permission
+from yuxi.agents.skills.recommended_suites import (
+    RecommendedSuiteConflictError,
+    RecommendedSuiteNotFoundError,
+    RecommendedSuiteValidationError,
+    create_recommended_suite,
+    delete_recommended_suite,
+    get_recommended_suite,
+    list_recommended_suites,
+    list_recommended_suites_admin,
+    set_recommended_suite_enabled,
+    update_recommended_suite,
+)
 from yuxi.agents.skills.service import (
+    clone_recommended_workspace_skill_to_personal,
     confirm_personal_skill_install_draft,
+    confirm_recommended_workspace_install,
     confirm_skill_install_draft,
     create_skill_node,
     delete_skill,
@@ -28,11 +42,13 @@ from yuxi.agents.skills.service import (
     init_builtin_skills,
     is_builtin_skill,
     list_accessible_skills,
+    list_recommended_workspace_skills,
     list_skill_cards_for_user,
     list_skills,
     list_visible_skills_for_management,
     prepare_remote_skill_install,
     prepare_skill_upload,
+    prepare_suite_upload,
     read_personal_skill_file,
     read_skill_file,
     update_skill_dependencies,
@@ -86,6 +102,35 @@ class RemoteSkillPrepareRequest(RemoteSkillSourceRequest):
 
 class RemoteSkillSearchRequest(BaseModel):
     query: str = Field(..., description="搜索关键字")
+
+
+class RecommendedSuiteMemberPayload(BaseModel):
+    slug: str = Field(..., description="skill 目录名（与远程仓库子目录一致）")
+    name: str = Field(..., description="展示名")
+    description: str = Field("", description="描述")
+    sort_order: int = Field(0, description="成员显示顺序")
+
+
+class RecommendedSuiteUpsertRequest(BaseModel):
+    slug: str = Field(..., description="稳定 ID（管理端手动起名）")
+    name: str = Field(..., description="展示名")
+    provider: str = Field(..., description="提供方")
+    description: str = Field("", description="卡片描述")
+    source: str = Field(
+        ..., description="用户安装时使用的 source URL（owner/repo、GitHub URL 或 ModelScope 单 skill URL）"
+    )
+    sort_order: int = Field(0, description="列表顺序")
+    enabled: bool = Field(True, description="是否启用")
+    members: list[RecommendedSuiteMemberPayload] = Field(..., description="套件成员列表，至少 1 条")
+
+
+class RecommendedSuiteEnabledRequest(BaseModel):
+    enabled: bool = Field(..., description="是否启用")
+
+
+class RecommendedWorkspaceInstallRequest(BaseModel):
+    draft_id: str = Field(..., description="已解析的 install draft_id")
+    slugs: list[str] | None = Field(None, description="需要安装的 skill slug 列表，None 表示全选")
 
 
 class SkillBatchDeleteRequest(BaseModel):
@@ -614,3 +659,223 @@ async def delete_skills_batch_route(
     except Exception as e:
         logger.error(f"Failed to delete skills batch: {e}")
         raise HTTPException(status_code=500, detail="批量删除技能失败")
+
+
+# ---------- 推荐技能套件 ----------
+
+
+@skills.get("/recommended-suites")
+async def list_recommended_suites_route(
+    current_user: User = Depends(require_permission("skills.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """用户视角：仅返回启用的套件。"""
+    try:
+        items = await list_recommended_suites(db)
+        return {"success": True, "data": items}
+    except Exception as e:
+        logger.error(f"Failed to list recommended suites: {e}")
+        raise HTTPException(status_code=500, detail="获取推荐套件失败")
+
+
+@skills.get("/recommended-suites/admin")
+async def list_recommended_suites_admin_route(
+    current_user: User = Depends(require_permission("skills.recommend")),
+    db: AsyncSession = Depends(get_db),
+):
+    """管理视角：含 disabled。"""
+    try:
+        items = await list_recommended_suites_admin(db)
+        return {"success": True, "data": items}
+    except Exception as e:
+        logger.error(f"Failed to list recommended suites (admin): {e}")
+        raise HTTPException(status_code=500, detail="获取推荐套件失败")
+
+
+@skills.get("/recommended-suites/{suite_id}")
+async def get_recommended_suite_route(
+    suite_id: int,
+    current_user: User = Depends(require_permission("skills.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """用户视角单套件详情。Disabled 套件用户不可见（返回 404）。"""
+    try:
+        item = await get_recommended_suite(db, suite_id)
+        if item is None or not item.get("enabled", True):
+            raise HTTPException(status_code=404, detail="推荐套件不存在")
+        return {"success": True, "data": item}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get recommended suite '{suite_id}': {e}")
+        raise HTTPException(status_code=500, detail="获取推荐套件失败")
+
+
+@skills.post("/recommended-suites")
+async def create_recommended_suite_route(
+    payload: RecommendedSuiteUpsertRequest,
+    current_user: User = Depends(require_permission("skills.recommend")),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        data = await create_recommended_suite(
+            db,
+            payload=payload.model_dump(),
+            operator=current_user,
+        )
+        return {"success": True, "data": data}
+    except RecommendedSuiteConflictError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except RecommendedSuiteValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to create recommended suite: {e}")
+        raise HTTPException(status_code=500, detail="创建推荐套件失败")
+
+
+@skills.put("/recommended-suites/{suite_id}")
+async def update_recommended_suite_route(
+    suite_id: int,
+    payload: RecommendedSuiteUpsertRequest,
+    current_user: User = Depends(require_permission("skills.recommend")),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        data = await update_recommended_suite(
+            db,
+            suite_id=suite_id,
+            payload=payload.model_dump(),
+            operator=current_user,
+        )
+        return {"success": True, "data": data}
+    except RecommendedSuiteNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except RecommendedSuiteConflictError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except RecommendedSuiteValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to update recommended suite '{suite_id}': {e}")
+        raise HTTPException(status_code=500, detail="更新推荐套件失败")
+
+
+@skills.patch("/recommended-suites/{suite_id}/enabled")
+async def patch_recommended_suite_enabled_route(
+    suite_id: int,
+    payload: RecommendedSuiteEnabledRequest,
+    current_user: User = Depends(require_permission("skills.recommend")),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        data = await set_recommended_suite_enabled(
+            db,
+            suite_id=suite_id,
+            enabled=payload.enabled,
+            operator=current_user,
+        )
+        return {"success": True, "data": data}
+    except RecommendedSuiteNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except RecommendedSuiteValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to set recommended suite enabled '{suite_id}': {e}")
+        raise HTTPException(status_code=500, detail="更新推荐套件失败")
+
+
+@skills.delete("/recommended-suites/{suite_id}")
+async def delete_recommended_suite_route(
+    suite_id: int,
+    current_user: User = Depends(require_permission("skills.recommend")),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        await delete_recommended_suite(db, suite_id=suite_id)
+        return {"success": True}
+    except RecommendedSuiteNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to delete recommended suite '{suite_id}': {e}")
+        raise HTTPException(status_code=500, detail="删除推荐套件失败")
+
+
+@user_skills.post("/import/suite-prepare")
+async def prepare_suite_upload_route(
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_permission("skills.recommend")),
+    db: AsyncSession = Depends(get_db),
+):
+    """解析多 skill 的 zip 压缩包，返回每个 skill 的元数据（不持久化草稿）。"""
+    try:
+        data = await prepare_suite_upload(
+            db,
+            filename=file.filename or "",
+            file_bytes=await file.read(),
+            operator=current_user,
+        )
+        return {"success": True, "data": data}
+    except ValueError as e:
+        _raise_from_value_error(e)
+    except Exception as e:
+        logger.error(f"Failed to prepare suite upload: {e}")
+        raise HTTPException(status_code=500, detail="解析套件上传失败")
+
+
+# ---------- 推荐工作区（用户共建池） ----------
+
+
+@user_skills.get("/recommended-workspace")
+async def list_recommended_workspace_route(
+    current_user: User = Depends(require_permission("skills.read")),
+    db: AsyncSession = Depends(get_db),
+):
+    """列出当前用户可访问的「推荐工作区」skill。"""
+    try:
+        items = await list_recommended_workspace_skills(db, current_user)
+        return {"success": True, "data": items}
+    except Exception as e:
+        logger.error(f"Failed to list recommended workspace: {e}")
+        raise HTTPException(status_code=500, detail="获取推荐工作区失败")
+
+
+@user_skills.post("/import/install-to-recommended-workspace")
+async def install_to_recommended_workspace_route(
+    payload: RecommendedWorkspaceInstallRequest,
+    current_user: User = Depends(require_permission("skills.create")),
+    db: AsyncSession = Depends(get_db),
+):
+    """把 draft 里的 skill 发布到「推荐」用户共建池（不开新草稿，1 步完成）。
+
+    注意：仅在 ``skills`` 表写入 ``is_recommended_workspace=True`` 记录，**不会**装到
+    publisher 的工作区。如要使用，publisher 需到「推荐」列表选装。
+    """
+    try:
+        results = await confirm_recommended_workspace_install(
+            db,
+            draft_id=payload.draft_id,
+            slugs=payload.slugs,
+            operator=current_user,
+        )
+        return {"success": True, "data": results, "summary": _summarize_results(results)}
+    except ValueError as e:
+        _raise_from_value_error(e)
+    except Exception as e:
+        logger.error(f"Failed to install to recommended workspace: {e}")
+        raise HTTPException(status_code=500, detail="装入推荐工作区失败")
+
+
+@user_skills.post("/recommended-workspace/{slug}/install-to-personal")
+async def install_recommended_workspace_to_personal_route(
+    slug: str,
+    current_user: User = Depends(require_permission("skills.create")),
+    db: AsyncSession = Depends(get_db),
+):
+    """从推荐工作区克隆一个 skill 到当前用户的个人工作区。"""
+    try:
+        data = await clone_recommended_workspace_skill_to_personal(db, slug=slug, operator=current_user)
+        return {"success": True, "data": data}
+    except ValueError as e:
+        _raise_from_value_error(e)
+    except Exception as e:
+        logger.error(f"Failed to install recommended workspace skill '{slug}' to personal: {e}")
+        raise HTTPException(status_code=500, detail="安装到个人工作区失败")

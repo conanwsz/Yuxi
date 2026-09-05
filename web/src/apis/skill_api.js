@@ -1,4 +1,14 @@
-import { apiGet, apiPost, apiPut, apiDelete, apiAdminGet, apiAdminPost } from './base'
+import {
+  apiGet,
+  apiPost,
+  apiPut,
+  apiDelete,
+  apiAdminGet,
+  apiAdminPost,
+  apiAdminPut,
+  apiAdminPatch,
+  apiAdminDelete
+} from './base'
 
 const BASE_URL = '/api/system/skills'
 const USER_BASE_URL = '/api/skills'
@@ -123,6 +133,65 @@ export const deleteSkillsBatch = async (slugs) => {
   return apiPost(`${BASE_URL}/delete-batch`, { slugs })
 }
 
+// ---------- 推荐技能套件 ----------
+// 公共视角：仅返回启用的套件（任意有 skills.read 权限的用户可访问）
+export const listRecommendedSuites = async () => {
+  return apiGet(`${BASE_URL}/recommended-suites`)
+}
+
+// 管理视角：含 disabled
+export const listRecommendedSuitesAdmin = async () => {
+  return apiAdminGet(`${BASE_URL}/recommended-suites/admin`)
+}
+
+export const getRecommendedSuite = async (id) => {
+  return apiGet(`${BASE_URL}/recommended-suites/${id}`)
+}
+
+export const createRecommendedSuite = async (payload) => {
+  return apiAdminPost(`${BASE_URL}/recommended-suites`, payload)
+}
+
+export const updateRecommendedSuite = async (id, payload) => {
+  return apiAdminPut(`${BASE_URL}/recommended-suites/${id}`, payload)
+}
+
+export const setRecommendedSuiteEnabled = async (id, enabled) => {
+  return apiAdminPatch(`${BASE_URL}/recommended-suites/${id}/enabled`, { enabled })
+}
+
+export const deleteRecommendedSuite = async (id) => {
+  return apiAdminDelete(`${BASE_URL}/recommended-suites/${id}`)
+}
+
+// 套件上传：解析多 skill 的 zip，返回每个 skill 的元数据（不持久化草稿）
+export const prepareSuiteUpload = async (file) => {
+  const formData = new FormData()
+  formData.append('file', file)
+  return apiAdminPost(`${USER_BASE_URL}/import/suite-prepare`, formData)
+}
+
+// ---------- 推荐工作区（用户共建池） ----------
+// 列出当前用户可访问的「推荐工作区」skill
+export const listRecommendedWorkspace = async () => {
+  return apiGet(`${USER_BASE_URL}/recommended-workspace`)
+}
+
+// 把 draft 里的 skill 直接装入「推荐工作区」（不开新草稿，1 步完成）
+export const confirmRecommendedWorkspaceInstall = async (draftId, slugs) => {
+  return apiPost(`${USER_BASE_URL}/import/install-to-recommended-workspace`, {
+    draft_id: draftId,
+    slugs
+  })
+}
+
+// 从推荐工作区克隆一个 skill 到当前用户的个人工作区
+export const installRecommendedWorkspaceToPersonal = async (slug) => {
+  return apiPost(
+    `${USER_BASE_URL}/recommended-workspace/${encodeURIComponent(slug)}/install-to-personal`
+  )
+}
+
 export const skillApi = {
   listSkills,
   listSkillCards,
@@ -149,7 +218,18 @@ export const skillApi = {
   exportSkill,
   deleteSkill,
   deletePersonalSkill,
-  deleteSkillsBatch
+  deleteSkillsBatch,
+  listRecommendedSuites,
+  listRecommendedSuitesAdmin,
+  getRecommendedSuite,
+  createRecommendedSuite,
+  updateRecommendedSuite,
+  setRecommendedSuiteEnabled,
+  deleteRecommendedSuite,
+  prepareSuiteUpload,
+  listRecommendedWorkspace,
+  confirmRecommendedWorkspaceInstall,
+  installRecommendedWorkspaceToPersonal
 }
 
 export default skillApi

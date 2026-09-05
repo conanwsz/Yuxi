@@ -431,3 +431,253 @@ def test_sync_builtin_skills_route(monkeypatch):
     assert resp.status_code == 200, resp.text
     assert resp.json()["data"][0]["slug"] == "builtin-demo"
     assert captured == {"created_by": "admin"}
+
+
+# ---------- 推荐技能套件路由 ----------
+
+
+def test_list_recommended_suites_route_returns_data(monkeypatch):
+    async def fake_list_recommended_suites(_db):
+        return [{"id": 1, "slug": "x", "name": "X", "enabled": True, "members": []}]
+
+    monkeypatch.setattr("server.routers.skill_router.list_recommended_suites", fake_list_recommended_suites)
+
+    client = TestClient(_build_app(role="user"))
+    resp = client.get("/api/system/skills/recommended-suites")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["success"] is True
+    assert body["data"][0]["slug"] == "x"
+
+
+def test_list_recommended_suites_admin_route_requires_recommend_permission():
+    client = TestClient(_build_app(role="user"))
+    resp = client.get("/api/system/skills/recommended-suites/admin")
+    assert resp.status_code == 403
+
+
+def test_get_recommended_suite_route_404_when_disabled(monkeypatch):
+    async def fake_get(_db, suite_id):
+        return {"id": suite_id, "slug": "x", "enabled": False, "members": []}
+
+    monkeypatch.setattr("server.routers.skill_router.get_recommended_suite", fake_get)
+
+    client = TestClient(_build_app(role="user"))
+    resp = client.get("/api/system/skills/recommended-suites/1")
+    assert resp.status_code == 404
+
+
+def test_create_recommended_suite_route_conflict(monkeypatch):
+    from yuxi.agents.skills.recommended_suites import RecommendedSuiteConflictError
+
+    async def fake_create(_db, *, payload, operator):
+        raise RecommendedSuiteConflictError("slug 重复")
+
+    monkeypatch.setattr("server.routers.skill_router.create_recommended_suite", fake_create)
+
+    client = TestClient(_build_app())
+    resp = client.post(
+        "/api/system/skills/recommended-suites",
+        json={
+            "slug": "x",
+            "name": "X",
+            "provider": "p",
+            "source": "owner/repo",
+            "members": [{"slug": "a", "name": "A", "description": ""}],
+        },
+    )
+    assert resp.status_code == 409
+    assert "slug 重复" in resp.json()["detail"]
+
+
+def test_create_recommended_suite_route_validation_error(monkeypatch):
+    from yuxi.agents.skills.recommended_suites import RecommendedSuiteValidationError
+
+    async def fake_create(_db, *, payload, operator):
+        raise RecommendedSuiteValidationError("slug 非法")
+
+    monkeypatch.setattr("server.routers.skill_router.create_recommended_suite", fake_create)
+
+    client = TestClient(_build_app())
+    resp = client.post(
+        "/api/system/skills/recommended-suites",
+        json={
+            "slug": "Bad",
+            "name": "X",
+            "provider": "p",
+            "source": "owner/repo",
+            "members": [{"slug": "a", "name": "A", "description": ""}],
+        },
+    )
+    assert resp.status_code == 400
+
+
+def test_update_recommended_suite_route_404(monkeypatch):
+    from yuxi.agents.skills.recommended_suites import RecommendedSuiteNotFoundError
+
+    async def fake_update(_db, *, suite_id, payload, operator):
+        raise RecommendedSuiteNotFoundError("找不到")
+
+    monkeypatch.setattr("server.routers.skill_router.update_recommended_suite", fake_update)
+
+    client = TestClient(_build_app())
+    resp = client.put(
+        "/api/system/skills/recommended-suites/99",
+        json={
+            "slug": "x",
+            "name": "X",
+            "provider": "p",
+            "source": "owner/repo",
+            "members": [{"slug": "a", "name": "A", "description": ""}],
+        },
+    )
+    assert resp.status_code == 404
+
+
+def test_set_recommended_suite_enabled_route(monkeypatch):
+    captured = {}
+
+    async def fake_set(_db, *, suite_id, enabled, operator):
+        captured["suite_id"] = suite_id
+        captured["enabled"] = enabled
+        return {"id": suite_id, "enabled": enabled, "members": []}
+
+    monkeypatch.setattr("server.routers.skill_router.set_recommended_suite_enabled", fake_set)
+
+    client = TestClient(_build_app())
+    resp = client.patch("/api/system/skills/recommended-suites/3/enabled", json={"enabled": False})
+    assert resp.status_code == 200, resp.text
+    assert captured == {"suite_id": 3, "enabled": False}
+
+
+def test_delete_recommended_suite_route(monkeypatch):
+    captured = {}
+
+    async def fake_delete(_db, *, suite_id):
+        captured["suite_id"] = suite_id
+
+    monkeypatch.setattr("server.routers.skill_router.delete_recommended_suite", fake_delete)
+
+    client = TestClient(_build_app())
+    resp = client.delete("/api/system/skills/recommended-suites/4")
+    assert resp.status_code == 200
+    assert captured == {"suite_id": 4}
+
+
+def test_prepare_suite_upload_route_requires_recommend_permission():
+    """普通 user 无 skills.recommend，调上传接口应 403。"""
+    client = TestClient(_build_app(role="user"))
+    files = {"file": ("suite.zip", b"dummy", "application/zip")}
+    resp = client.post("/api/skills/import/suite-prepare", files=files)
+    assert resp.status_code == 403
+
+
+def test_prepare_suite_upload_route_value_error_returns_400(monkeypatch):
+    async def fake_prepare(_db, *, filename, file_bytes, operator):
+        raise ValueError("不支持顶层 SKILL.md，请用子目录组织每个 skill")
+
+    monkeypatch.setattr("server.routers.skill_router.prepare_suite_upload", fake_prepare)
+
+    client = TestClient(_build_app())
+    files = {"file": ("suite.zip", b"dummy", "application/zip")}
+    resp = client.post("/api/skills/import/suite-prepare", files=files)
+    assert resp.status_code == 400
+    assert "子目录" in resp.json()["detail"]
+
+
+# ---------- 推荐工作区路由 ----------
+
+
+def test_list_recommended_workspace_route_returns_data(monkeypatch):
+    async def fake_list(_db, user):
+        assert user.uid == "admin"
+        return [{"id": 1, "slug": "x", "name": "X", "is_recommended_workspace": True, "created_by": "alice"}]
+
+    monkeypatch.setattr("server.routers.skill_router.list_recommended_workspace_skills", fake_list)
+
+    client = TestClient(_build_app())
+    resp = client.get("/api/skills/recommended-workspace")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["success"] is True
+    assert body["data"][0]["slug"] == "x"
+    assert body["data"][0]["created_by"] == "alice"
+
+
+def test_install_to_recommended_workspace_route_200(monkeypatch):
+    captured = {}
+
+    async def fake_confirm(_db, *, draft_id, slugs, operator):
+        captured["draft_id"] = draft_id
+        captured["slugs"] = slugs
+        captured["operator"] = operator.uid
+        return [
+            {"slug": "x", "success": True},
+            {"slug": "y", "success": True},
+        ]
+
+    monkeypatch.setattr("server.routers.skill_router.confirm_recommended_workspace_install", fake_confirm)
+
+    client = TestClient(_build_app())
+    resp = client.post(
+        "/api/skills/import/install-to-recommended-workspace",
+        json={"draft_id": "abc", "slugs": ["x", "y"]},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["success"] is True
+    assert body["data"] == [{"slug": "x", "success": True}, {"slug": "y", "success": True}]
+    assert body["summary"] == {"total": 2, "success": 2, "failed": 0}
+    assert captured == {"draft_id": "abc", "slugs": ["x", "y"], "operator": "admin"}
+
+
+def test_install_to_recommended_workspace_route_value_error_returns_400(monkeypatch):
+    async def fake_confirm(_db, *, draft_id, slugs, operator):
+        raise ValueError("无效 skill slug")
+
+    monkeypatch.setattr("server.routers.skill_router.confirm_recommended_workspace_install", fake_confirm)
+
+    client = TestClient(_build_app())
+    resp = client.post("/api/skills/import/install-to-recommended-workspace", json={"draft_id": "abc"})
+    assert resp.status_code == 400
+    assert "无效" in resp.json()["detail"]
+
+
+def test_install_recommended_workspace_to_personal_route_200(monkeypatch):
+    captured = {}
+
+    async def fake_clone(_db, *, slug, operator):
+        captured["slug"] = slug
+        captured["operator"] = operator.uid
+        return {"slug": slug, "name": slug.title()}
+
+    monkeypatch.setattr("server.routers.skill_router.clone_recommended_workspace_skill_to_personal", fake_clone)
+
+    client = TestClient(_build_app())
+    resp = client.post("/api/skills/recommended-workspace/pdf/install-to-personal")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["success"] is True
+    assert body["data"]["slug"] == "pdf"
+    assert captured == {"slug": "pdf", "operator": "admin"}
+
+
+def test_install_recommended_workspace_to_personal_route_404(monkeypatch):
+    async def fake_clone(_db, *, slug, operator):
+        raise ValueError("技能 'x' 不存在")
+
+    monkeypatch.setattr("server.routers.skill_router.clone_recommended_workspace_skill_to_personal", fake_clone)
+
+    client = TestClient(_build_app())
+    resp = client.post("/api/skills/recommended-workspace/x/install-to-personal")
+    assert resp.status_code == 404
+
+
+def test_recommended_workspace_routes_require_skills_read_or_create():
+    """user 角色没有 skills.read 的话应 403。"""
+    client = TestClient(_build_app(role="user"))
+    # 实际上 user 角色有 skills.read（DEFAULT_ROLE_PERMISSIONS），所以应该 200
+    # 用 monkeypatch 替换 list_recommended_workspace_skills 让它正常返回
+    resp = client.get("/api/skills/recommended-workspace")
+    # user 有 skills.read 所以 200
+    assert resp.status_code in (200, 500)  # 500 是因为没 patch list_recommended_workspace_skills

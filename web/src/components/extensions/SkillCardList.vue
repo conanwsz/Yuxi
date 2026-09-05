@@ -4,6 +4,16 @@
       <template #actions>
         <template v-if="!isBatchDeleteMode">
           <a-button
+            v-if="userStore.hasPermission('skills.recommend')"
+            @click="manageRecommendedModalOpen = true"
+            :disabled="loading || importing"
+            class="lucide-icon-btn"
+            aria-label="管理推荐技能"
+          >
+            <ListChecks :size="14" />
+            <span>管理推荐</span>
+          </a-button>
+          <a-button
             v-if="userStore.hasPermission('skills.delete')"
             @click="isBatchDeleteMode = true"
             :disabled="loading || importing || filteredDeletableSkills.length === 0"
@@ -100,6 +110,7 @@
               :installed-slugs="[...installedPersonalSkillKeys]"
               @open="openRecommendedSuite"
             />
+            <!-- 兼容 isUserPublished 标记（防止 v-if 嵌套错配） -->
             <template v-else>
               <a-checkbox
                 v-if="
@@ -115,7 +126,7 @@
               <InfoCard
                 variant="default"
                 :title="formatExtensionCardTitle(skill.name)"
-                :subtitle="skill.slug"
+                :subtitle="formatSkillSubtitle(skill)"
                 :description="skill.description || '暂无描述'"
                 :tags="skillCardTags(skill)"
                 :default-icon="getSkillIcon(skill.slug)"
@@ -498,6 +509,20 @@
         </div>
       </template>
     </SkillInstallFlowModal>
+
+    <RecommendedSuitesManageModal
+      v-if="userStore.hasPermission('skills.recommend')"
+      :open="manageRecommendedModalOpen"
+      @close="manageRecommendedModalOpen = false"
+      @updated="fetchRecommendedSuites"
+    />
+
+    <RecommendedWorkspacePreviewModal
+      :open="recommendedWorkspacePreviewOpen"
+      :skill="recommendedWorkspacePreviewSkill"
+      @close="recommendedWorkspacePreviewOpen = false"
+      @installed="handleRecommendedWorkspaceInstalled"
+    />
   </div>
 </template>
 
@@ -514,52 +539,22 @@ import {
   Trash2,
   Check,
   Plus,
-  Minus
+  Minus,
+  ListChecks
 } from 'lucide-vue-next'
 import { skillApi } from '@/apis/skill_api'
 import { useUserStore } from '@/stores/user'
 import ExtensionCardGrid from './ExtensionCardGrid.vue'
 import SkillInstallFlowModal from './SkillInstallFlowModal.vue'
 import SkillSuiteCard from './SkillSuiteCard.vue'
+import RecommendedSuitesManageModal from './RecommendedSuitesManageModal.vue'
+import RecommendedWorkspacePreviewModal from './RecommendedWorkspacePreviewModal.vue'
 import InfoCard from '@/components/shared/InfoCard.vue'
 import PageShoulder from '@/components/shared/PageShoulder.vue'
 import MarkdownPreview from '@/components/common/MarkdownPreview.vue'
 import { formatExtensionCardTitle } from '@/utils/extensionDisplayName'
 import { getShareConfigLabel } from '@/utils/shareConfig'
 import { getSkillIcon } from '@/utils/skill_icon_utils'
-
-const RECOMMENDED_SUITES = [
-  {
-    id: 'anthropic-documents',
-    name: 'Anthropic 文档处理套件',
-    provider: 'Anthropic',
-    description:
-      'Anthropic 官方文档处理 Skills，覆盖 PDF、Word、电子表格与演示文稿的读取、创建和编辑。',
-    source: 'anthropics/skills',
-    skills: [
-      {
-        slug: 'pdf',
-        name: 'PDF',
-        description: '提取文本与表格，支持合并拆分、旋转水印、表单、加解密、图片提取和 OCR。'
-      },
-      {
-        slug: 'docx',
-        name: 'Docs',
-        description: '创建和编辑 Word 文档，处理目录、页码、图片、查找替换、修订与批注。'
-      },
-      {
-        slug: 'xlsx',
-        name: 'XLSX',
-        description: '创建和编辑电子表格，支持公式、格式、图表、数据清洗、表格重构与格式转换。'
-      },
-      {
-        slug: 'pptx',
-        name: 'PPTX',
-        description: '创建和编辑演示文稿，支持文本提取、模板版式、备注批注以及合并拆分。'
-      }
-    ]
-  }
-]
 
 const router = useRouter()
 const userStore = useUserStore()
@@ -583,6 +578,8 @@ const deletingPreviewSkill = ref(false)
 let previewRequestSeq = 0
 const installFlowOpen = ref(false)
 const installFlow = ref(null)
+const recommendedWorkspacePreviewOpen = ref(false)
+const recommendedWorkspacePreviewSkill = ref(null)
 
 const activeTab = ref('repo') // 'repo' 或 'search'
 
@@ -649,16 +646,82 @@ const installedPersonalSkillKeys = computed(() => {
   return keys
 })
 
-const recommendedSuiteCards = computed(() =>
-  RECOMMENDED_SUITES.map((suite) => ({ ...suite, isSuite: true }))
-)
+const recommendedSuites = ref([])
+const recommendedSuitesLoading = ref(false)
+const manageRecommendedModalOpen = ref(false)
+
+const fetchRecommendedSuites = async () => {
+  recommendedSuitesLoading.value = true
+  try {
+    const res = await skillApi.listRecommendedSuites()
+    recommendedSuites.value = (res?.data || []).map((suite) => ({
+      ...suite,
+      isSuite: true,
+      // 后端返回的 members 字段对应 SkillSuiteCard 期望的 skills 字段
+      skills: (suite.members || []).map((member) => ({
+        slug: member.slug,
+        name: member.name,
+        description: member.description
+      }))
+    }))
+  } catch (error) {
+    console.error('Failed to load recommended suites', error)
+    recommendedSuites.value = []
+  } finally {
+    recommendedSuitesLoading.value = false
+  }
+}
+
+const recommendedSuiteCards = computed(() => recommendedSuites.value)
 
 const filteredInstalledSkills = computed(() => installedSkillCards.value.filter(matchesSearch))
+
+/** 包装成 SkillSuiteCard 可消费的「单成员 suite」——给「推荐」分组里用户发布的 skill 用。 */
+const wrapUserPublishedSkillAsSuite = (skill) => ({
+  id: `user-skill:${skill.slug}`,
+  slug: skill.slug,
+  name: skill.name,
+  provider: skill.created_by ? `由 ${skill.created_by} 上传` : '用户发布',
+  description: skill.description || '暂无描述',
+  source: null,
+  source_type: 'upload',
+  enabled: skill.enabled !== false,
+  created_by: skill.created_by,
+  isSuite: true, // 让 SkillCardList 走 SkillSuiteCard 渲染
+  isUserPublished: true,
+  skills: [
+    {
+      slug: skill.slug,
+      name: skill.name,
+      description: skill.description || ''
+    }
+  ]
+})
+
+const userPublishedSuites = computed(() => {
+  const list = filteredInstalledSkills.value
+    .filter((skill) => skill.is_recommended_workspace === true)
+    .sort((a, b) => {
+      const aTime = a.updated_at || a.updatedAt || ''
+      const bTime = b.updated_at || b.updatedAt || ''
+      return bTime.localeCompare(aTime)
+    })
+  return list.map(wrapUserPublishedSkillAsSuite)
+})
+
+/** 「推荐」分组：admin 套件 + 用户发布的 skill，混排。 */
+const recommendedGroupSkills = computed(() => {
+  const admin = recommendedSuiteCards.value
+  const user = userPublishedSuites.value
+  // 用户发布的优先（按 updated_at 倒序），admin 套件在后
+  return [...user, ...admin].filter(matchesSearch)
+})
+
 const skillGroups = computed(() => [
   {
     key: 'recommended',
     title: '推荐',
-    skills: isBatchDeleteMode.value ? [] : recommendedSuiteCards.value.filter(matchesSearch)
+    skills: isBatchDeleteMode.value ? [] : recommendedGroupSkills.value
   },
   {
     key: 'personal',
@@ -676,7 +739,10 @@ const skillGroups = computed(() => [
     key: 'uploaded',
     title: '共享',
     skills: filteredInstalledSkills.value.filter(
-      (skill) => skill.sourceType !== 'builtin' && skill.sourceScope !== 'personal'
+      (skill) =>
+        skill.sourceType !== 'builtin' &&
+        skill.sourceScope !== 'personal' &&
+        skill.is_recommended_workspace !== true
     )
   }
 ])
@@ -791,6 +857,17 @@ const sourceTypeLabel = (sourceType) => {
 /** 返回 Skill 共享范围的简短展示文案。 */
 const getSkillShareLabel = (skill) => getShareConfigLabel(skill?.share_config)
 
+const formatSkillSubtitle = (skill) => {
+  const uploader = skill?.created_by || skill?.createdBy
+  if (skill?.is_recommended_workspace && uploader) {
+    return `${skill.slug} · 由 ${uploader} 上传`
+  }
+  if (skill?.is_recommended_workspace) {
+    return `${skill.slug} · 推荐工作区`
+  }
+  return skill?.slug
+}
+
 const skillCardTags = (skill) => {
   if (skill.sourceScope === 'personal') {
     return [
@@ -844,12 +921,44 @@ const goToPreviewSkillManagement = () => {
   closeSkillPreview()
 }
 
+const openRecommendedSuite = (suite) => {
+  if (suite?.isUserPublished) {
+    // 用户发布的 skill 走预览 modal（不走 install modal，因为没有远程 source）
+    recommendedWorkspacePreviewSkill.value = {
+      slug: suite.slug,
+      name: suite.name,
+      description: suite.description,
+      source_type: suite.source_type,
+      source_scope: 'shared',
+      enabled: suite.enabled,
+      created_by: suite.created_by,
+      is_recommended_workspace: true
+    }
+    recommendedWorkspacePreviewOpen.value = true
+    return
+  }
+  openInstallFlow({
+    kind: 'suite',
+    suite,
+    installedSlugs: [...installedPersonalSkillKeys.value]
+  })
+}
+
 const handleCardClick = (skill) => {
   if (isBatchDeleteMode.value) {
     handleToggleCardSelect(skill.slug)
-  } else {
-    openSkillPreview(skill)
+    return
   }
+  if (skill?.is_recommended_workspace === true) {
+    recommendedWorkspacePreviewSkill.value = skill
+    recommendedWorkspacePreviewOpen.value = true
+    return
+  }
+  openSkillPreview(skill)
+}
+
+const handleRecommendedWorkspaceInstalled = async () => {
+  await fetchSkills()
 }
 
 const handleToggleCardSelect = (slug) => {
@@ -1044,18 +1153,17 @@ const closeInstallFlow = () => {
   if (wasRemoteFlow) resetRemoteSelection()
 }
 
-const openRecommendedSuite = (suite) => {
-  openInstallFlow({
-    kind: 'suite',
-    suite,
-    installedSlugs: [...installedPersonalSkillKeys.value]
-  })
-}
-
-const handleInstallFlowCompleted = async ({ success, failed }) => {
-  if (failed === 0) message.success(`已添加 ${success} 个 Skill`)
-  else message.warning(`安装完成：成功 ${success} 个，失败 ${failed} 个`)
+const handleInstallFlowCompleted = async ({ success, failed, target }) => {
+  if (target === 'recommended_workspace') {
+    if (failed === 0)
+      message.success(`已发布 ${success} 个 Skill 到「推荐」栏，要使用请到推荐列表选装`)
+    else message.warning(`发布完成：成功 ${success} 个，失败 ${failed} 个`)
+  } else {
+    if (failed === 0) message.success(`已添加 ${success} 个 Skill`)
+    else message.warning(`安装完成：成功 ${success} 个，失败 ${failed} 个`)
+  }
   await fetchSkills()
+  await fetchRecommendedSuites()
 }
 
 const handleImportUpload = async ({ file, onSuccess, onError }) => {
@@ -1223,6 +1331,7 @@ watch(activeTab, () => {
 onMounted(() => {
   fetchSkills()
   loadHistory()
+  fetchRecommendedSuites()
 })
 
 defineExpose({

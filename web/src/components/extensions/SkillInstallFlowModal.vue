@@ -140,9 +140,29 @@
                 <span class="install-target-title">共享 Skill</span>
                 <span>进入平台 Skill 库，并继续配置指定人、部门或全局范围。</span>
               </button>
+              <button
+                type="button"
+                class="install-target-option"
+                :class="{ selected: installTarget === 'recommended_workspace' }"
+                :aria-pressed="installTarget === 'recommended_workspace'"
+                @click="installTarget = 'recommended_workspace'"
+              >
+                <span class="install-target-title">推荐工作区</span>
+                <span
+                  >发布到「推荐」栏（不安装到任何工作区）；所有用户都能在「技能」tab
+                  顶部「推荐」分组看到并自行选装；如需自用，请到「推荐」列表点击安装。</span
+                >
+              </button>
             </div>
             <div v-if="installTarget === 'personal'" class="personal-install-note">
               个人 Skill 不加载工具、MCP 或其他 Skill 依赖；与共享 Skill 同名时完整覆盖共享版本。
+            </div>
+            <div
+              v-else-if="installTarget === 'recommended_workspace'"
+              class="personal-install-note"
+            >
+              装入「推荐工作区」后，任何用户都能在「技能」tab 看到并选择性安装到自己工作区；
+              共享范围自动设为全局可读，仅你本人（与管理員）能编辑或下架。
             </div>
           </div>
           <div v-if="installTarget === 'shared'" class="share-config-section">
@@ -308,9 +328,11 @@ const shareScopeLabel = computed(() => {
     { global: '全局共享', department: '部门共享', user: '指定人' }[scope.access_level] || '指定人'
   )
 })
-const installTargetLabel = computed(() =>
-  installTarget.value === 'personal' ? '个人工作区' : shareScopeLabel.value
-)
+const installTargetLabel = computed(() => {
+  if (installTarget.value === 'personal') return '个人工作区'
+  if (installTarget.value === 'recommended_workspace') return '推荐工作区'
+  return shareScopeLabel.value
+})
 const failedInstallItems = computed(() =>
   installItems.value.filter((item) => item.status === 'failed')
 )
@@ -469,7 +491,9 @@ const installDrafts = async () => {
       const result =
         installTarget.value === 'personal'
           ? await skillApi.confirmPersonalSkillInstallDraft(draft.draft_id, slugs)
-          : await skillApi.confirmSkillInstallDraft(draft.draft_id, shareConfig.value, slugs)
+          : installTarget.value === 'recommended_workspace'
+            ? await skillApi.confirmRecommendedWorkspaceInstall(draft.draft_id, slugs)
+            : await skillApi.confirmSkillInstallDraft(draft.draft_id, shareConfig.value, slugs)
       const results = result?.data || []
       applyInstallResults(results, draft.source)
       if (!results.some((item) => item.success)) {
@@ -534,7 +558,8 @@ const retryFailedItems = () => {
 const finishFlow = () => {
   emit('completed', {
     success: successfulInstallCount.value,
-    failed: failedInstallItems.value.length
+    failed: failedInstallItems.value.length,
+    target: installTarget.value
   })
   emit('close')
 }

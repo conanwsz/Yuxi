@@ -108,6 +108,7 @@ class ResolvedSkill:
     skill_dependencies: list[str]
     overrides_shared: bool = False
     shadowed_by_personal: bool = False
+    is_recommended_workspace: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         """返回可安全提供给前端的 Skill 元数据。"""
@@ -125,6 +126,7 @@ class ResolvedSkill:
             "skill_dependencies": self.skill_dependencies,
             "overrides_shared": self.overrides_shared,
             "shadowed_by_personal": self.shadowed_by_personal,
+            "is_recommended_workspace": bool(self.is_recommended_workspace),
         }
         if self.share_config is not None:
             data["share_config"] = self.share_config
@@ -957,6 +959,7 @@ def _resolved_shared_skill(item: Skill, *, shadowed_by_personal: bool = False) -
         mcp_dependencies=normalize_string_list(item.mcp_dependencies),
         skill_dependencies=normalize_string_list(item.skill_dependencies),
         shadowed_by_personal=shadowed_by_personal,
+        is_recommended_workspace=bool(getattr(item, "is_recommended_workspace", False)),
     )
 
 
@@ -1314,6 +1317,75 @@ async def prepare_skill_upload(
         raise
 
 
+async def prepare_suite_upload(
+    db: AsyncSession,
+    *,
+    filename: str,
+    file_bytes: bytes,
+    operator: User,
+) -> dict[str, Any]:
+    """解析多 skill 的 zip 压缩包，用于「推荐技能套件」上传。
+
+    格式约定：zip 顶层**不**直接放 SKILL.md；按顶层子目录组织，每个子目录 1 个 SKILL.md。
+    返回每个子目录的 skill 元数据，**不**持久化草稿——admin 在前端把 items 放进 members 字段
+    后调用 ``create_recommended_suite`` 落库。
+    """
+    _ = db  # 当前仅做 zip 解析，保留 db 句柄便于后续依赖校验
+    if not isinstance(filename, str) or not filename.lower().endswith(".zip"):
+        raise ValueError("套件上传仅支持 .zip 压缩包")
+
+    with tempfile.TemporaryDirectory(
+        prefix=".skill-suite-prepare-", dir=str(get_skills_root_dir().parent)
+    ) as temp_root:
+        extract_dir = Path(temp_root) / "extract"
+        extract_dir.mkdir(parents=True, exist_ok=True)
+        zip_path = Path(temp_root) / "suite.zip"
+        zip_path.write_bytes(file_bytes)
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            _validate_zip_paths(zf)
+            zf.extractall(extract_dir)
+
+        # 不允许顶层 SKILL.md（避免歧义）
+        top_level_skill_md = extract_dir / "SKILL.md"
+        if top_level_skill_md.exists():
+            raise ValueError("不支持顶层 SKILL.md，请用子目录组织每个 skill")
+
+        # 顶层子目录：每个子目录 1 个 SKILL.md
+        subdirs = [p for p in sorted(extract_dir.iterdir()) if p.is_dir()]
+        if not subdirs:
+            raise ValueError("ZIP 内未找到任何子目录，请用子目录组织每个 skill")
+        if len(subdirs) < 2:
+            raise ValueError("套件至少需要 2 个 skill 子目录；单 skill 请改用「上传 Skill」")
+
+        items: list[dict[str, Any]] = []
+        seen_slugs: set[str] = set()
+        for index, sub in enumerate(subdirs):
+            skill_md_files = list(sub.rglob("SKILL.md"))
+            if len(skill_md_files) == 0:
+                raise ValueError(f"子目录 {sub.name!r} 缺少 SKILL.md")
+            if len(skill_md_files) > 1:
+                raise ValueError(f"子目录 {sub.name!r} 包含多个 SKILL.md")
+            skill_dir = skill_md_files[0].parent
+            parsed = _parse_skill_dir_metadata(skill_dir)
+            slug = parsed["slug"]
+            if slug in seen_slugs:
+                raise ValueError(f"子目录 {sub.name!r} 解析出重复 slug：{slug}")
+            seen_slugs.add(slug)
+            items.append(
+                {
+                    "slug": slug,
+                    "name": parsed["name"],
+                    "description": parsed.get("description") or "",
+                    "sort_order": index,
+                }
+            )
+
+    return {
+        "items": items,
+        **_build_default_share_payload(operator),
+    }
+
+
 async def prepare_remote_skill_install(
     db: AsyncSession,
     *,
@@ -1542,6 +1614,157 @@ async def discard_skill_install_draft(*, draft_id: str, operator: User) -> None:
     if data.get("created_by") != operator.uid and not has_permission(operator, "skills.create"):
         raise ValueError("无权删除该安装草稿")
     shutil.rmtree(draft_dir, ignore_errors=True)
+
+
+# ---------- 推荐工作区（用户共建池） ----------
+
+
+def _build_recommended_workspace_share_config(operator: User) -> dict[str, Any]:
+    """构造「推荐工作区」装机时的默认 share_config：read_scope=global，manage_scope=装机人。"""
+    return {
+        "version": 2,
+        "read_scope": {"access_level": "global", "department_ids": [], "user_uids": []},
+        "manage_scope": {
+            "access_level": "user",
+            "department_ids": [],
+            "user_uids": [operator.uid],
+        },
+    }
+
+
+async def confirm_recommended_workspace_install(
+    db: AsyncSession,
+    *,
+    draft_id: str,
+    slugs: list[str] | None = None,
+    operator: User,
+) -> list[dict[str, Any]]:
+    """把 draft 里的 skill 发布到「推荐」用户共建池（不安装到任何工作区）。
+
+    行为说明：
+    - 只在 ``skills`` 表落一条 ``is_recommended_workspace=True`` 记录，供「推荐」分组展示
+    - **不会**把 skill 装到 publisher 的个人/共享工作区——publisher 自己要使用需从「推荐」列表选装
+    - read_scope 强制 global，manage_scope 限制为 publisher（admin 走 user_can_manage_skill 兜底）
+    - is_recommended_workspace=True
+    - 1 步完成，不开新草稿
+    """
+    draft_dir, data, draft_items = _load_and_select_draft_items(draft_id, slugs, operator)
+    source_type = data.get("source_type") or "upload"
+    if source_type not in {"upload", "remote"}:
+        source_type = "upload"
+
+    repo = SkillRepository(db)
+    skills_root = get_skills_root_dir()
+    target_share_config = _build_recommended_workspace_share_config(operator)
+    results: list[dict[str, Any]] = []
+
+    for draft_item in draft_items:
+        slug = str(draft_item.get("slug") or "").strip()
+        if not draft_item.get("success", True):
+            results.append({"slug": slug, "success": False, "error": draft_item.get("error", "安装失败")})
+            continue
+        if not is_valid_skill_slug(slug):
+            results.append({"slug": slug, "success": False, "error": "无效 skill slug"})
+            continue
+        if await repo.exists_slug(slug) or (skills_root / slug).exists():
+            results.append({"slug": slug, "success": False, "error": "Skill slug 已被占用，请重新解析安装"})
+            continue
+
+        source_dir = (draft_dir / str(draft_item.get("source_dir", ""))).resolve()
+        try:
+            source_dir.relative_to(draft_dir.resolve())
+        except ValueError:
+            results.append({"slug": slug, "success": False, "error": "安装草稿路径非法"})
+            continue
+
+        try:
+            parsed = _parse_skill_dir_metadata(source_dir)
+            with tempfile.TemporaryDirectory(prefix=".skill-rw-confirm-", dir=str(skills_root.parent)) as temp_root:
+                stage_dir = Path(temp_root) / "stage"
+                shutil.copytree(source_dir, stage_dir)
+                if parsed["slug"] != slug:
+                    content = (stage_dir / "SKILL.md").read_text(encoding="utf-8")
+                    (stage_dir / "SKILL.md").write_text(_rewrite_frontmatter_slug(content, slug), encoding="utf-8")
+
+                temp_target = skills_root / f".{slug}.tmp-{uuid.uuid4().hex[:8]}"
+                shutil.move(str(stage_dir), str(temp_target))
+                final_dir = skills_root / slug
+                if final_dir.exists():
+                    shutil.rmtree(temp_target, ignore_errors=True)
+                    results.append(
+                        {
+                            "slug": slug,
+                            "success": False,
+                            "error": "Skill slug 已被占用，请重新解析安装",
+                        }
+                    )
+                    continue
+                temp_target.rename(final_dir)
+
+                try:
+                    item = await repo.create(
+                        slug=slug,
+                        name=parsed["name"],
+                        description=parsed["description"],
+                        source_type=source_type,
+                        tool_dependencies=parsed["tool_dependencies"],
+                        mcp_dependencies=parsed["mcp_dependencies"],
+                        skill_dependencies=parsed["skill_dependencies"],
+                        dir_path=(Path("skills") / slug).as_posix(),
+                        share_config=target_share_config,
+                        enabled=True,
+                        created_by=operator.uid,
+                    )
+                    # 在落库后再单独置标志位（避免 SkillRepository.create 暂未支持新列）
+                    item.is_recommended_workspace = True
+                    await db.commit()
+                    await db.refresh(item)
+                    results.append({"slug": item.slug, "success": True, "skill": item.to_dict()})
+                except Exception:
+                    shutil.rmtree(final_dir, ignore_errors=True)
+                    raise
+        except Exception as e:
+            if hasattr(db, "rollback"):
+                await db.rollback()
+            results.append({"slug": slug, "success": False, "error": str(e)})
+
+    if any(item.get("success") for item in results):
+        shutil.rmtree(draft_dir, ignore_errors=True)
+    return results
+
+
+async def list_recommended_workspace_skills(db: AsyncSession, user: User) -> list[dict[str, Any]]:
+    """列出当前用户可访问的「推荐工作区」skill（按 updated_at 倒序）。"""
+    from sqlalchemy import select
+
+    stmt = (
+        select(Skill).where(Skill.is_recommended_workspace.is_(True)).order_by(Skill.updated_at.desc(), Skill.id.desc())
+    )
+    result = await db.execute(stmt)
+    items = [item for item in result.scalars().all() if user_can_access_skill(user, item, require_enabled=True)]
+    return [item.to_dict() for item in items]
+
+
+async def clone_recommended_workspace_skill_to_personal(
+    db: AsyncSession, *, slug: str, operator: User
+) -> dict[str, Any]:
+    """把推荐工作区里的 skill 克隆到当前用户个人工作区（不污染原 skill）。"""
+    item = await get_skill_or_raise(db, slug)
+    if not bool(item.is_recommended_workspace):
+        raise ValueError(f"技能 '{slug}' 不在推荐工作区中")
+    if not user_can_access_skill(operator, item, require_enabled=True):
+        raise ValueError(f"技能 '{slug}' 不存在或无权访问")
+
+    skill_dir = _resolve_skill_dir(item)
+    if not skill_dir.exists() or not skill_dir.is_dir():
+        raise ValueError(f"技能源目录不存在：{slug}")
+
+    resolved = await install_personal_skill_dir(
+        str(operator.uid),
+        skill_dir,
+        refresh_cache=True,
+    )
+    return resolved.to_dict()
 
 
 async def import_skill_dir(

@@ -839,6 +839,8 @@ class PostgresManager(metaclass=SingletonMeta):
             "ALTER TABLE IF EXISTS skills ADD COLUMN IF NOT EXISTS tool_dependencies JSONB DEFAULT '[]'::jsonb",
             "ALTER TABLE IF EXISTS skills ADD COLUMN IF NOT EXISTS mcp_dependencies JSONB DEFAULT '[]'::jsonb",
             "ALTER TABLE IF EXISTS skills ADD COLUMN IF NOT EXISTS skill_dependencies JSONB DEFAULT '[]'::jsonb",
+            "ALTER TABLE IF EXISTS skills ADD COLUMN IF NOT EXISTS is_recommended_workspace BOOLEAN NOT NULL DEFAULT FALSE",  # noqa: E501
+            "CREATE INDEX IF NOT EXISTS ix_skills_recommended_workspace ON skills (is_recommended_workspace) WHERE is_recommended_workspace = TRUE",  # noqa: E501
             "ALTER TABLE IF EXISTS skills ADD COLUMN IF NOT EXISTS version VARCHAR(64)",
             "ALTER TABLE IF EXISTS skills ADD COLUMN IF NOT EXISTS source_type VARCHAR(32) NOT NULL DEFAULT 'upload'",
             (
@@ -1398,6 +1400,83 @@ class PostgresManager(metaclass=SingletonMeta):
             ON agent_run_requests(uid, agent_slug, conversation_thread_id, status, created_at, id)
             """,
             "CREATE INDEX IF NOT EXISTS ix_agent_run_requests_dispatched_run_id ON agent_run_requests(dispatched_run_id)",  # noqa: E501
+            # ---------- 推荐技能套件 ----------
+            """
+            CREATE TABLE IF NOT EXISTS recommended_skill_suites (
+                id SERIAL PRIMARY KEY,
+                slug VARCHAR(80) NOT NULL UNIQUE,
+                name VARCHAR(128) NOT NULL,
+                provider VARCHAR(128) NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                source VARCHAR(512) NOT NULL,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                created_by VARCHAR(64),
+                updated_by VARCHAR(64),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS recommended_suite_members (
+                id SERIAL PRIMARY KEY,
+                suite_id INTEGER NOT NULL REFERENCES recommended_skill_suites(id) ON DELETE CASCADE,
+                slug VARCHAR(128) NOT NULL,
+                name VARCHAR(128) NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                CONSTRAINT uq_recommended_suite_members_suite_slug UNIQUE (suite_id, slug)
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS ix_recommended_skill_suites_enabled_order "
+            "ON recommended_skill_suites (enabled, sort_order, id)",
+            "CREATE INDEX IF NOT EXISTS ix_recommended_suite_members_suite "
+            "ON recommended_suite_members (suite_id, sort_order)",
+            # 首次启动 seed：把原前端硬编码的 Anthropic 文档处理套件写进来（idempotent via app_schema_migrations）
+            """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM app_schema_migrations WHERE migration_key = 'seed_recommended_suites_v1'
+                ) THEN
+                    INSERT INTO recommended_skill_suites
+                        (slug, name, provider, description, source, sort_order, enabled,
+                         created_by, updated_by, created_at, updated_at)
+                    VALUES
+                        (
+                            'anthropic-documents',
+                            'Anthropic 文档处理套件',
+                            'Anthropic',
+                            'Anthropic 官方文档处理 Skills，覆盖 PDF、Word、电子表格与演示文稿的读取、创建和编辑。',
+                            'https://github.com/anthropics/skills',
+                            0,
+                            TRUE,
+                            'system',
+                            'system',
+                            NOW(),
+                            NOW()
+                        )
+                    ON CONFLICT (slug) DO NOTHING;
+
+                    INSERT INTO recommended_suite_members
+                        (suite_id, slug, name, description, sort_order)
+                    SELECT suite.id, member.slug, member.name, member.description, member.sort_order
+                    FROM (SELECT id FROM recommended_skill_suites WHERE slug = 'anthropic-documents') suite
+                    CROSS JOIN (VALUES
+                        ('pdf',  'PDF',  '提取文本与表格，支持合并拆分、旋转水印、表单、加解密、图片提取和 OCR。', 0),
+                        ('docx', 'Docs', '创建和编辑 Word 文档，处理目录、页码、图片、查找替换、修订与批注。', 1),
+                        ('xlsx', 'XLSX', '创建和编辑电子表格，支持公式、格式、图表、数据清洗、表格重构与格式转换。', 2),
+                        ('pptx', 'PPTX', '创建和编辑演示文稿，支持文本提取、模板版式、备注批注以及合并拆分。', 3)
+                    ) AS member(slug, name, description, sort_order)
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM recommended_suite_members m
+                        WHERE m.suite_id = suite.id AND m.slug = member.slug
+                    );
+
+                    INSERT INTO app_schema_migrations (migration_key) VALUES ('seed_recommended_suites_v1');
+                END IF;
+            END $$
+            """,
         ]
         async with self.async_engine.begin() as conn:
             # 历史未绑定用户的 API Key 会在下方迁移语句里被静默删除，先计数告警
