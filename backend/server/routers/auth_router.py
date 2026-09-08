@@ -117,6 +117,7 @@ class UserUpdate(BaseModel):
 
     username: str | None = None
     password: str | None = Field(default=None, min_length=8)
+    role: str | None = None
     phone_number: str | None = None
     avatar: str | None = None
     department_id: int | None = None
@@ -1235,6 +1236,12 @@ async def update_user(
                 detail="管理员只能修改普通用户账户",
             )
 
+    if current_user.role != "superadmin" and user_data.role is not None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="只有超级管理员才能修改用户角色",
+        )
+
     # 更新信息
     update_details = []
 
@@ -1253,6 +1260,27 @@ async def update_user(
     if user_data.password is not None:
         user.password_hash = AuthUtils.hash_password(user_data.password)
         update_details.append("密码已更新")
+
+    if user_data.role is not None:
+        if not await RoleRepository(db).get(user_data.role):
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="角色不存在")
+        if user_data.role == "superadmin" and user.role != "superadmin":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不能新增超级管理员账户")
+        if user.role == "superadmin" and user_data.role != "superadmin":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不能降级超级管理员账户")
+        if user.role == "admin" and user_data.role != "admin" and user.department_id is not None:
+            admin_count = await UserRepository().get_admin_count_in_department(
+                user.department_id, exclude_user_id=user_id
+            )
+            if admin_count <= 1:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="不能将管理员降级为普通用户，因为该用户是当前部门的唯一管理员",
+                )
+        if user.role != user_data.role:
+            old_role = user.role
+            user.role = user_data.role
+            update_details.append(f"角色: {old_role} -> {user_data.role}")
 
     if user_data.phone_number is not None:
         user.phone_number = user_data.phone_number

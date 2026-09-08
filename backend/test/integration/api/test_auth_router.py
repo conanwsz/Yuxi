@@ -393,7 +393,7 @@ async def test_department_admin_is_limited_to_own_department_users(test_client, 
         role_escalation = await test_client.put(
             f"/api/auth/users/{user_a['id']}", json={"role": "admin"}, headers=dept_a["admin_headers"]
         )
-        assert role_escalation.status_code == 422, role_escalation.text
+        assert role_escalation.status_code == 403, role_escalation.text
 
         cross_disable = await test_client.post(
             f"/api/auth/users/{user_b['id']}/disable", headers=dept_a["admin_headers"]
@@ -446,3 +446,50 @@ async def test_locked_user_token_is_rejected(test_client, standard_user):
     profile_response = await test_client.get("/api/auth/me", headers=standard_user["headers"])
     assert profile_response.status_code == 423
     assert "X-Lock-Remaining" in profile_response.headers
+
+
+async def test_superadmin_can_update_user_role_and_self_without_error(test_client, admin_headers):
+    await _require_superadmin(test_client, admin_headers)
+    me_resp = await test_client.get("/api/auth/me", headers=admin_headers)
+    assert me_resp.status_code == 200
+    my_id = me_resp.json()["id"]
+
+    # 1. 超管自编辑，提交 role: "superadmin" 不应报错（防止 422 extra_forbidden 或 400 降级报错）
+    self_update = await test_client.put(
+        f"/api/auth/users/{my_id}",
+        json={"role": "superadmin"},
+        headers=admin_headers,
+    )
+    assert self_update.status_code == 200, self_update.text
+
+    # 2. 超管不能将自己或其他超管降级
+    self_demote = await test_client.put(
+        f"/api/auth/users/{my_id}",
+        json={"role": "user"},
+        headers=admin_headers,
+    )
+    assert self_demote.status_code == 400, self_demote.text
+    assert "不能降级超级管理员账户" in self_demote.text
+
+    # 3. 创建普通用户，超管可以修改其角色为 admin
+    created_user = await _create_user(test_client, admin_headers, "u_role")
+    try:
+        promote_resp = await test_client.put(
+            f"/api/auth/users/{created_user['id']}",
+            json={"role": "admin"},
+            headers=admin_headers,
+        )
+        assert promote_resp.status_code == 200, promote_resp.text
+        assert promote_resp.json()["role"] == "admin"
+
+        # 不能提升为 superadmin
+        promote_super_resp = await test_client.put(
+            f"/api/auth/users/{created_user['id']}",
+            json={"role": "superadmin"},
+            headers=admin_headers,
+        )
+        assert promote_super_resp.status_code == 400, promote_super_resp.text
+        assert "不能新增超级管理员账户" in promote_super_resp.text
+    finally:
+        await _cleanup_user(test_client, admin_headers, created_user["id"])
+

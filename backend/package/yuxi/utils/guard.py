@@ -51,10 +51,12 @@ class ContentGuard:
 
         # 从配置读取LLM模型设置
         self.enable_llm = config.enable_content_guard_llm
+        self.llm_model = None
         if self.enable_llm and config.content_guard_llm_model:
-            self.llm_model = select_model(model_spec=config.content_guard_llm_model)
-        else:
-            self.llm_model = None
+            try:
+                self.llm_model = select_model(model_spec=config.content_guard_llm_model)
+            except Exception as e:
+                logger.warning(f"内容审查 LLM 模型初次加载失败，将在调用时重试: {e}")
 
     async def check(self, text: str) -> bool:
         """
@@ -94,10 +96,17 @@ class ContentGuard:
         True: 不合规
         False: 合规
         """
-        if not text:
+        if not self.enable_llm:
             return False
 
-        if not self.enable_llm or self.llm_model is None:
+        if self.llm_model is None and config.content_guard_llm_model:
+            try:
+                self.llm_model = select_model(model_spec=config.content_guard_llm_model)
+            except Exception as e:
+                logger.warning(f"内容审查 LLM 模型初始化失败: {e}")
+                return False
+
+        if self.llm_model is None:
             logger.warning("LLM content guard not enabled or model not loaded")
             return False
 

@@ -537,13 +537,31 @@
         </template>
 
         <a-form-item label="角色" class="form-item">
-          <a-select v-if="userStore.isSuperAdmin" v-model:value="userManagement.form.role">
-            <a-select-option v-for="role in roles" :key="role.key" :value="role.key">
+          <a-select
+            v-if="userStore.isSuperAdmin"
+            v-model:value="userManagement.form.role"
+            :disabled="userManagement.editMode && userManagement.editUserRole === 'superadmin'"
+          >
+            <a-select-option
+              v-for="role in roles"
+              :key="role.key"
+              :value="role.key"
+              :disabled="
+                role.key === 'superadmin' &&
+                (!userManagement.editMode || userManagement.editUserRole !== 'superadmin')
+              "
+            >
               {{ role.name }}
             </a-select-option>
           </a-select>
           <a-input v-else :value="roleName(userManagement.form.role)" disabled />
-          <div v-if="!userStore.isSuperAdmin" class="help-text">只有超级管理员可以修改角色</div>
+          <div
+            v-if="userManagement.editMode && userManagement.editUserRole === 'superadmin'"
+            class="help-text"
+          >
+            超级管理员账户无法修改角色
+          </div>
+          <div v-else-if="!userStore.isSuperAdmin" class="help-text">只有超级管理员可以修改角色</div>
         </a-form-item>
 
         <a-form-item label="周额度" class="form-item">
@@ -804,6 +822,7 @@ const userManagement = reactive({
   modalTitle: '添加用户',
   editMode: false,
   editUserId: null,
+  editUserRole: null,
   selectedUserIds: [],
   globalResetModalVisible: false,
   globalResetConfirmText: '',
@@ -1129,6 +1148,7 @@ const showAddUserModal = () => {
   userManagement.modalTitle = '添加用户'
   userManagement.editMode = false
   userManagement.editUserId = null
+  userManagement.editUserRole = null
   userManagement.form = {
     username: '',
     generatedUid: '',
@@ -1153,6 +1173,7 @@ const showEditUserModal = async (user) => {
   userManagement.modalTitle = '编辑用户'
   userManagement.editMode = true
   userManagement.editUserId = user.id
+  userManagement.editUserRole = user.role
   userManagement.form = {
     username: user.username,
     generatedUid: user.uid || '', // 编辑模式显示现有的uid
@@ -1367,6 +1388,9 @@ const handleUserFormSubmit = async () => {
           userManagement.editUserId,
           userManagement.form.managedDepartmentIds
         )
+      }
+      if (userManagement.editUserId === userStore.userId) {
+        await userStore.getCurrentUser()
       }
       message.success('用户更新成功')
     } else {

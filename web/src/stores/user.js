@@ -3,6 +3,17 @@ import { ref, computed } from 'vue'
 import { useAgentStore } from './agent'
 import { authApi } from '@/apis/auth_api'
 
+function formatErrorMessage(error, defaultMessage) {
+  if (typeof error?.detail === 'string') return error.detail
+  if (Array.isArray(error?.detail)) {
+    return error.detail.map((item) => item.msg || JSON.stringify(item)).join('; ')
+  }
+  if (error?.detail && typeof error.detail === 'object') {
+    return error.detail.message || error.detail.error || JSON.stringify(error.detail)
+  }
+  return error?.message || defaultMessage
+}
+
 export const useUserStore = defineStore('user', () => {
   // 状态
   const token = ref(localStorage.getItem('user_token') || '')
@@ -239,7 +250,7 @@ export const useUserStore = defineStore('user', () => {
 
       if (!response.ok) {
         const error = await response.json()
-        throw new Error(error.detail || '更新用户失败')
+        throw new Error(formatErrorMessage(error, '更新用户失败'))
       }
 
       return await response.json()
