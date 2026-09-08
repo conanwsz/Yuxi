@@ -120,6 +120,8 @@
 
 - 内置网页搜索工具新增豆包联网搜索支持：新增 `WEB_SEARCH_PROVIDER`（`doubao`/`tavily`）与 `DOUBAO_SEARCH_API_KEY` 配置，未显式指定时按已配置的 API Key 自动识别 provider；两种 provider 统一注册为工具名 `web_search`，`deep-research` Skill 依赖同步从 `tavily_search` 改为 `web_search`。
 
+- 修复对话内手动选择的模型刷新后回退到默认：`restoreThreadModelSelection` 此前只接 2 个参数、后端 `response.model_spec`（最新 run 覆盖值）被丢弃，现已正确读取并写入 `selectedModelByThread`；`handleModelSelect` 同时把选择落库到 `localStorage`（key `yuxi_chat_model_<threadId|__draft__>`），覆盖「选完还没发消息就刷新」这种后端无 run、无 history 的最后场景。
+
 ## v0.7.1 (2026-07-17)
 
 ### 安全

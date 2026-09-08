@@ -1137,12 +1137,18 @@ const agentDefaultModel = computed(
 const currentModelSpec = computed(
   () => selectedModelByThread[currentChatId.value || DRAFT_MODEL_KEY] || agentDefaultModel.value
 )
+const CHAT_MODEL_STORAGE_PREFIX = 'yuxi_chat_model_'
+const chatModelStorageKey = (key) => `${CHAT_MODEL_STORAGE_PREFIX}${key || DRAFT_MODEL_KEY}`
 const handleModelSelect = (spec) => {
   if (typeof spec === 'string') {
+    const slot = currentChatId.value || DRAFT_MODEL_KEY
+    const storageKey = chatModelStorageKey(slot)
     if (spec) {
-      selectedModelByThread[currentChatId.value || DRAFT_MODEL_KEY] = spec
+      selectedModelByThread[slot] = spec
+      localStorage.setItem(storageKey, spec)
     } else {
-      delete selectedModelByThread[currentChatId.value || DRAFT_MODEL_KEY]
+      delete selectedModelByThread[slot]
+      localStorage.removeItem(storageKey)
     }
   }
 }
@@ -2476,6 +2482,12 @@ const fetchThreadMessages = async ({ agentId, threadId, delay = 0 }) => {
     threadMessages.value[threadId] = history
     reconcileFailedHumanMessages(threadId, history)
     restoreThreadModelSelection(threadId, history, response.model_spec)
+    // 兜底:用户选过模型但还没发出过消息(无 run、无 history 记录),后端不会返回
+    // model_spec,此时用 localStorage 恢复,避免刷新后回退到 agent 默认模型。
+    if (!selectedModelByThread[threadId]) {
+      const persisted = localStorage.getItem(chatModelStorageKey(threadId))
+      if (persisted) selectedModelByThread[threadId] = persisted
+    }
   } catch (error) {
     handleChatError(error, 'load')
     throw error
@@ -2490,8 +2502,14 @@ const promoteDraftSelection = (selectionByThread, threadId) => {
   delete selectionByThread[DRAFT_MODEL_KEY]
 }
 
-// 跨会话还原：从最近一条显式携带覆盖值的用户消息恢复线程级选择。
-const restoreThreadModelSelection = (threadId, history) => {
+// 跨会话还原：优先采用后端 response 顶层的最新 model_spec；缺失时再回退到最近一条带
+// 覆盖值的用户消息。
+const restoreThreadModelSelection = (threadId, history, responseModelSpec) => {
+  // 后端 conversation_service 已经在 response 顶层返回 thread 最新 run 的 model_spec,
+  // 直接采用避免忽略接口契约；只在非空时覆盖，保留 history 回退兜底。
+  if (typeof responseModelSpec === 'string' && responseModelSpec.trim()) {
+    selectedModelByThread[threadId] = responseModelSpec.trim()
+  }
   const restoreField = (target, accept, key) => {
     if (target[key]) return
     for (let i = history.length - 1; i >= 0; i -= 1) {
