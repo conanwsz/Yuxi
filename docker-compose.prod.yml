@@ -184,7 +184,7 @@ services:
       - ./docker/volumes/neo4j/data:/data
       - ./docker/volumes/neo4j/logs:/var/lib/neo4j/logs
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:7474 || exit 1"]
+      test: ["CMD-SHELL", "cypher-shell -a bolt://localhost:7687 -u ${NEO4J_USERNAME:-neo4j} -p ${NEO4J_PASSWORD:-0123456789} 'RETURN 1;' >/dev/null || exit 1"]
       interval: 20s
       timeout: 10s
       retries: 5
