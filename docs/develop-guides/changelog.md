@@ -6,6 +6,7 @@
 
 ## v0.7.2 (current)
 
+- **修复出站消息毒块导致会话级联 400**：v1 流式聚合在工具 args JSON 解析失败时产出 `invalid_tool_call` content block，langchain-openai 1.2.2 出站放行该类型，上游网关返回 400 且毒块随 checkpoint 持久化反复重放，会话永久损坏。`ModelContentSanitizerMiddleware` 新增 AIMessage 清洗：模型调用前剔除 `invalid_tool_call` block 并同步清空 `invalid_tool_calls` 属性，毒会话下次调用自动自愈；既有 binary ToolMessage 清洗不变。
 - **LangGraph checkpoint 定期清理**：新增 `checkpoint_cleanup_service` 并挂入 `SchedulerService` tick 循环（默认每 24h 一轮、单轮至多 500 thread、最老优先），删除连续 30 天不活跃（按 `conversations.updated_at` 判定）线程在 `checkpoints` / `checkpoint_blobs` / `checkpoint_writes` 三表中的全部数据，并附带清扫无 conversation 行的孤儿线程；有 pending/running/cancel_requested 运行的线程永不删除。仅 postgres 后端生效，sqlite 后端跳过。执行时机支持 `CHECKPOINT_CLEANUP_DAILY_AT=HH:MM`（`SCHEDULER_TIMEZONE` 时区）改为每天固定时刻清理，当天已跑不重复、错过不补跑；非法值告警并回退默认模式。防 O(N²) 快照膨胀（旧 SQLite 时代单文件已达 1.1GB）。
 - **推荐工作区（用户共建池）**：Skill 安装位置新增第三个选项「推荐工作区」（与现有「个人工作区」「共享 Skill」并列）。选「推荐工作区」= **发布** 到用户共建池（不是安装到任何工作区）：在 `skills` 表写入 `is_recommended_workspace=True` 记录，共享范围自动全局可读，publisher 自己**不自动装机**。该 skill 出现在「技能」tab 顶部的「推荐」分组（与 admin 套件并列，状态文案「N 个可安装」+「查看并安装」），其他用户及 publisher 本人都要从「推荐」列表点击预览 modal 后选「安装到个人工作区」才能使用。`skills` 表加 1 列 + 1 部分索引；3 个新端点（list / install-to-recommended-workspace / install-to-personal），均不引入新权限（所有用户都已有 `skills.create` / `skills.read`）。v1 不支持「从推荐工作区装到共享」（避免新一轮 share_config 流程）。
 

@@ -52,6 +52,7 @@ def _mcp_tools_cache_ttl_seconds() -> float:
         return 0.0
     return value
 
+
 # MCP tools statistics (for reporting enabled/disabled counts)
 _mcp_tools_stats: dict[str, dict[str, int]] = {}
 _UNSET = object()
@@ -262,12 +263,7 @@ async def get_mcp_tools(
     cache_disabled = ttl_seconds <= 0
 
     async with _mcp_lock:
-        if (
-            not force_refresh
-            and cache
-            and not cache_disabled
-            and cache_key in _mcp_tools_cache
-        ):
+        if not force_refresh and cache and not cache_disabled and cache_key in _mcp_tools_cache:
             loaded_at = _mcp_tools_cache_loaded_at.get(cache_key)
             if loaded_at is None or (now - loaded_at) < ttl_seconds:
                 all_processed_tools = _mcp_tools_cache[cache_key]

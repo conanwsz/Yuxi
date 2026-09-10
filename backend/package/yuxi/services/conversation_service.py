@@ -917,9 +917,7 @@ async def delete_thread_attachment_view(
     return {"message": "附件已删除"}
 
 
-def serialize_history_tool_call(
-    tool_call: ToolCall, extra_metadata: dict[str, Any] | None = None
-) -> dict[str, Any]:
+def serialize_history_tool_call(tool_call: ToolCall, extra_metadata: dict[str, Any] | None = None) -> dict[str, Any]:
     """将工具调用序列化为前端历史消息结构，并附带已落库的执行时间。"""
     tool_id = tool_call.langgraph_tool_call_id or str(tool_call.id)
     payload: dict[str, Any] = {
