@@ -30,6 +30,7 @@ from yuxi.services.file_preview import (
     detect_media_type,
     is_binary_preview_type,
     is_office_pdf_preview_file,
+    is_xlsx_sheet_preview_file,
     render_preview_payload,
     render_preview_too_large_payload,
 )
@@ -169,6 +170,14 @@ async def _render_viewer_preview(path: str, raw_content: bytes) -> dict | Stream
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         pdf_path = str(PurePosixPath(path).with_suffix(".pdf"))
         return _preview_binary_response(pdf_path, pdf_content, "pdf")
+
+    if is_xlsx_sheet_preview_file(path):
+        file_name = PurePosixPath(path).name or "preview.xlsx"
+        return _preview_binary_response(
+            file_name,
+            raw_content,
+            "xlsx",
+        )
 
     payload = render_preview_payload(path, raw_content)
     if is_binary_preview_type(payload["preview_type"]) and payload["supported"]:

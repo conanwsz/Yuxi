@@ -145,6 +145,13 @@
       <template v-else-if="file?.previewType === 'pdf' && file?.previewUrl">
         <iframe :src="file.previewUrl" class="pdf-preview" :title="filePath" />
       </template>
+      <template v-else-if="file?.previewType === 'xlsx' && file?.previewUrl">
+        <XlsxPreview
+          :url="file.previewUrl"
+          :filename="filePath"
+          :download-url="file?.rawDownloadUrl || file.previewUrl"
+        />
+      </template>
       <template v-else-if="isHtmlFile && htmlPreviewMode === 'render'">
         <iframe
           :key="`embedded-${htmlPreviewRenderKey}`"
@@ -228,6 +235,14 @@
                 :title="filePath"
               />
             </template>
+            <template v-else-if="file?.previewType === 'xlsx' && file?.previewUrl">
+              <XlsxPreview
+                :url="file.previewUrl"
+                :filename="filePath"
+                :download-url="file?.rawDownloadUrl || file.previewUrl"
+                class="xlsx-fullscreen"
+              />
+            </template>
             <template v-else-if="isHtmlFile && htmlPreviewMode === 'render'">
               <iframe
                 :key="`fullscreen-${htmlPreviewRenderKey}`"
@@ -280,6 +295,7 @@ import {
 import hljs from 'highlight.js/lib/common'
 import MarkdownPreview from '@/components/common/MarkdownPreview.vue'
 import FileTypeIcon from '@/components/common/FileTypeIcon.vue'
+import XlsxPreview from '@/components/XlsxPreview.vue'
 import { useThemeStore } from '@/stores/theme'
 import { escapeHtml } from '@/utils/html'
 import {

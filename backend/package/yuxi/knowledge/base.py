@@ -21,6 +21,7 @@ from yuxi.services.file_preview import (
     detect_media_type,
     is_binary_preview_type,
     is_office_pdf_preview_file,
+    is_xlsx_sheet_preview_file,
     render_preview_payload,
     render_preview_too_large_payload,
 )
@@ -623,6 +624,19 @@ class KnowledgeBase(ABC):
                 "filename": f"{stem}.pdf",
                 "media_type": "application/pdf",
                 "preview_type": "pdf",
+                "supported": True,
+                "message": None,
+                "binary": True,
+            }
+
+        if is_xlsx_sheet_preview_file(filename):
+            raw_content = await self._read_minio_bytes(original_path)
+            return {
+                **response,
+                "content": raw_content,
+                "filename": filename,
+                "media_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "preview_type": "xlsx",
                 "supported": True,
                 "message": None,
                 "binary": True,
