@@ -148,7 +148,7 @@
             <template #renderItem="{ item }">
               <a-list-item @click="switchToUser(item)" style="cursor: pointer">
                 <a-list-item-meta
-                  :title="item.username"
+                  :title="`${item.username}${item.department_path || item.department_name ? ` · ${item.department_path || item.department_name}` : ''}`"
                   :description="`${item.role_name || roleName(item.role)}${item.uid ? ` · UID: ${item.uid}` : ''}`"
                 />
               </a-list-item>
