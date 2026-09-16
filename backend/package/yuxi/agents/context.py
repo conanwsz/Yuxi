@@ -15,7 +15,7 @@ DEFAULT_SUMMARY_THRESHOLD_K = 100  # 100K tokens
 DEFAULT_SUMMARY_KEEP_MESSAGES = 10
 DEFAULT_SUMMARY_TOOL_RESULT_TOKEN_LIMIT = 300
 DEFAULT_SUMMARY_L2_TRIGGER_RATIO = 0.4
-DEFAULT_MAX_EXECUTION_STEPS = 300
+DEFAULT_MAX_EXECUTION_STEPS = 800
 DEFAULT_TOOL_RESULT_EVICTION_K_TOKENS = 3
 DEFAULT_YUXI_SUMMARY_PROMPT = """你是对话上下文压缩助手。
 你的任务是把下面的对话历史压缩成后续智能体继续工作所需的高价值上下文。
@@ -508,10 +508,10 @@ async def normalize_agent_context_config(
 ) -> dict:
     schema = context_schema or BaseContext
     raw_context = dict(context) if isinstance(context, dict) else {}
-    from yuxi.services.permission_service import authorization_role
-
-    filtered = filter_config_by_role({"context": raw_context}, authorization_role(user), schema)
-    normalized = dict(filtered.get("context") or {})
+    # 这里处理的是管理员维护的 agent 自有配置（agents.config_json），不是用户输入；
+    # 权限边界在写入侧（agent_router 按 config 编辑者角色过滤），运行时按聊天者角色
+    # 过滤会导致 admin 配置对低权限用户静默失效，因此不再做角色过滤。
+    normalized = dict(raw_context)
     field_names = {item.name for item in fields(schema)}
     resource_fields = _AGENT_RESOURCE_FIELDS & field_names
     if not resource_fields:
