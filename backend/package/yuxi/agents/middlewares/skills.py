@@ -383,17 +383,25 @@ class SkillsMiddleware(AgentMiddleware):
 
         # 生成 caller token，与 resolve_configured_runtime_tools 保持一致
         uid = str(getattr(context, "uid", "") or "")
+        emp_no = str(getattr(context, "emp_no", "") or uid or "").strip()
         caller_token: str | None = None
         if uid:
+            token_payload = {"sub": uid, "scope": "mcp_caller"}
+            if emp_no:
+                token_payload["emp_no"] = emp_no
             caller_token = AuthUtils.create_access_token(
-                {"sub": uid, "scope": "mcp_caller"},
+                token_payload,
                 expires_delta=timedelta(minutes=5),
             )
 
         async def load_mcp_tools(server_name: str) -> list:
             """加载单个 MCP 服务器的工具"""
             try:
-                mcp_tools = await get_enabled_mcp_tools(server_name, caller_token=caller_token)
+                mcp_tools = await get_enabled_mcp_tools(
+                    server_name,
+                    caller_token=caller_token,
+                    caller_emp_no=emp_no or None,
+                )
                 if not mcp_tools:
                     logger.warning(f"SkillsMiddleware: mcp dependency unavailable, skip: {server_name}")
                 return mcp_tools

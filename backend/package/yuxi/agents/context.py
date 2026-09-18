@@ -92,6 +92,7 @@ async def build_agent_input_context(
     uid: str,
     run_id: str | None = None,
     request_id: str | None = None,
+    emp_no: str | None = None,
 ) -> dict:
     input_context = dict(agent_config or {})
     agent_context = await asyncio.to_thread(_load_workspace_agent_context, thread_id, uid)
@@ -100,7 +101,14 @@ async def build_agent_input_context(
         base_prompt = str(input_context.get("system_prompt") or "").rstrip()
         input_context["system_prompt"] = f"{base_prompt}\n\n{agent_context}" if base_prompt else agent_context
 
-    input_context.update({"uid": uid, "thread_id": thread_id, "run_id": run_id, "request_id": request_id})
+    resolved_emp_no = emp_no or str(input_context.get("emp_no") or uid or "")
+    input_context.update({
+        "uid": uid,
+        "emp_no": resolved_emp_no,
+        "thread_id": thread_id,
+        "run_id": run_id,
+        "request_id": request_id,
+    })
     return input_context
 
 
@@ -153,6 +161,11 @@ class BaseContext:
     uid: str = field(
         default_factory=lambda: str(uuid.uuid4()),
         metadata={"name": "UID", "configurable": False, "description": "用来唯一标识一个用户"},
+    )
+
+    emp_no: str | None = field(
+        default=None,
+        metadata={"name": "员工工号", "configurable": False, "hide": True},
     )
 
     run_id: str | None = field(
@@ -593,6 +606,8 @@ async def prepare_agent_runtime_context(
         await resolve_visible_knowledge_bases_for_context(context)
         skill_scope = await resolve_runtime_skills_for_context(context, db=db, user=user)
         context.skills = skill_scope["context_skills"]
+        if hasattr(context, "emp_no"):
+            context.emp_no = getattr(user, "emp_no", None) or str(user.uid)
         setattr(context, "_prompt_skills", skill_scope["prompt_skills"])
         setattr(context, "_readable_skills", skill_scope["readable_skills"])
         setattr(context, "_runtime_skill_metadata", skill_scope["runtime_skill_metadata"])

@@ -39,6 +39,8 @@ async def resolve_agent_runtime_context(
 
     context_schema = backend.context_schema
     context = context_schema(thread_id="", uid=str(user.uid))
+    if hasattr(context, "emp_no"):
+        context.emp_no = getattr(user, "emp_no", None) or str(user.uid)
     normalized_config = await normalize_agent_context_config(
         (agent_item.config_json or {}).get("context", {}),
         db=db,
@@ -65,5 +67,7 @@ async def resolve_thread_agent_runtime_context(
     )
     runtime_context.thread_id = thread_id
     runtime_context.uid = str(user.uid)
+    if hasattr(runtime_context, "emp_no"):
+        runtime_context.emp_no = getattr(user, "emp_no", None) or str(user.uid)
     await prepare_agent_runtime_context(runtime_context)
     return runtime_context

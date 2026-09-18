@@ -6,6 +6,8 @@
 
 ## v0.7.2 (current)
 
+- **MCP 用户身份与工号透传**：Agent 执行调用 MCP 服务时，自动将当前用户的 Yuxi JWT（`X-Superchuchu-Token`）与员工工号（`X-User-Emp-No`）注入远程 HTTP headers，并在 JWT payload 中包含 `sub` 与 `emp_no`；用户工号统一映射为 `User.uid`（SSO 登录工号）。MCP Server 可据此在调用内部办公系统时以实际用户身份鉴权，避免跨用户越权查询日程等敏感信息。
+
 - **修复 admin 调优配置对普通用户静默失效**：`normalize_agent_context_config` 曾按聊天者角色剥离 `auth: "admin"` 字段（共 8 项，含 `max_execution_steps`、摘要参数、`model_retry_times`），但该过滤入口处理的是管理员维护的 agent 自有配置而非用户输入，导致 UI 配置的 500 步在 user 角色下静默回落 300。移除运行时角色过滤，权限边界保留在写入侧（agent_router 按配置编辑者角色过滤）；`tool_approval_mode` 的 run 级覆盖校验不变。同步将 `DEFAULT_MAX_EXECUTION_STEPS` 300 提至 800。
 
 - **修复出站消息毒块导致会话级联 400**：v1 流式聚合在工具 args JSON 解析失败时产出 `invalid_tool_call` content block，langchain-openai 1.2.2 出站放行该类型，上游网关返回 400 且毒块随 checkpoint 持久化反复重放，会话永久损坏。`ModelContentSanitizerMiddleware` 新增 AIMessage 清洗：模型调用前剔除 `invalid_tool_call` block 并同步清空 `invalid_tool_calls` 属性，毒会话下次调用自动自愈；既有 binary ToolMessage 清洗不变。

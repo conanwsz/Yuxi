@@ -116,10 +116,14 @@ async def resolve_configured_runtime_tools(context) -> list[Any]:
 
     # 为本次 Agent 执行生成短生命周期 caller token（5 分钟），用于 MCP 身份透传。
     uid = str(getattr(context, "uid", "") or "")
+    emp_no = str(getattr(context, "emp_no", "") or uid or "").strip()
     caller_token: str | None = None
     if uid:
+        token_payload = {"sub": uid, "scope": "mcp_caller"}
+        if emp_no:
+            token_payload["emp_no"] = emp_no
         caller_token = AuthUtils.create_access_token(
-            {"sub": uid, "scope": "mcp_caller"},
+            token_payload,
             expires_delta=timedelta(minutes=5),
         )
 
@@ -129,7 +133,11 @@ async def resolve_configured_runtime_tools(context) -> list[Any]:
             continue
         selected_mcp_servers.add(server_name)
         try:
-            mcp_tools = await get_enabled_mcp_tools(server_name, caller_token=caller_token)
+            mcp_tools = await get_enabled_mcp_tools(
+                server_name,
+                caller_token=caller_token,
+                caller_emp_no=emp_no or None,
+            )
         except Exception as e:
             logger.warning(f"Failed to load configured MCP tools '{server_name}': {e}")
             continue

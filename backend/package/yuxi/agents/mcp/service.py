@@ -223,6 +223,7 @@ async def get_mcp_tools(
     force_refresh: bool = False,
     raise_on_error: bool = False,
     caller_token: str | None = None,
+    caller_emp_no: str | None = None,
 ) -> list[Callable[..., Any]]:
     """Get MCP tools for a specific server.
 
@@ -241,6 +242,9 @@ async def get_mcp_tools(
         caller_token: 当前用户的 Yuxi JWT，用于向 MCP Server 透传身份。
             仅对 sse/streamable_http transport 生效，注入为 X-Superchuchu-Token header。
             不参与缓存 key 计算，不影响工具缓存逻辑。
+        caller_emp_no: 当前用户的员工工号，用于向 MCP Server 透传身份。
+            仅对 sse/streamable_http transport 生效，注入为 X-User-Emp-No header。
+            不参与缓存 key 计算，不影响工具缓存逻辑。
     """
     if additional_servers and server_slug in additional_servers:
         server_config = additional_servers[server_slug]
@@ -253,7 +257,7 @@ async def get_mcp_tools(
 
     # 配置 hash 直接基于完整配置生成。只要数据库中的配置发生变化，
     # 本地工具缓存 key 就会变化，从而自然触发重建。
-    # caller_token 不参与 hash 计算——工具 schema 由服务端决定，与调用者身份无关。
+    # caller_token / caller_emp_no 不参与 hash 计算——工具 schema 由服务端决定，与调用者身份无关。
     config_payload = json.dumps(server_config, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
     config_hash = hashlib.sha256(config_payload.encode("utf-8")).hexdigest()[:16]
     cache_key = f"{server_slug}:{config_hash}"
@@ -283,9 +287,12 @@ async def get_mcp_tools(
 
             # 将调用者身份注入 HTTP headers，仅对远程 transport 生效。
             # 使用独立的 client_config 副本，避免修改缓存源数据。
-            if caller_token and client_config.get("transport") in ("sse", "streamable_http"):
+            if (caller_token or caller_emp_no) and client_config.get("transport") in ("sse", "streamable_http"):
                 headers = dict(client_config.get("headers") or {})
-                headers["X-Superchuchu-Token"] = caller_token
+                if caller_token:
+                    headers["X-Superchuchu-Token"] = caller_token
+                if caller_emp_no:
+                    headers["X-User-Emp-No"] = caller_emp_no
                 client_config = {**client_config, "headers": headers}
 
             client = await get_mcp_client({server_slug: client_config})
@@ -605,7 +612,12 @@ async def toggle_tool_enabled(
 # =============================================================================
 
 
-async def get_enabled_mcp_tools(server_slug: str, *, caller_token: str | None = None) -> list:
+async def get_enabled_mcp_tools(
+    server_slug: str,
+    *,
+    caller_token: str | None = None,
+    caller_emp_no: str | None = None,
+) -> list:
     """Get MCP server tools (auto-filtering disabled_tools).
 
     Unified entry point for Agents, automatically:
@@ -616,6 +628,7 @@ async def get_enabled_mcp_tools(server_slug: str, *, caller_token: str | None = 
     Args:
         server_slug: Server slug
         caller_token: 当前用户的 Yuxi JWT，透传给 get_mcp_tools 以注入身份 header。
+        caller_emp_no: 当前用户的员工工号，透传给 get_mcp_tools 以注入 X-User-Emp-No header。
 
     Returns:
         List of enabled tools
@@ -631,6 +644,7 @@ async def get_enabled_mcp_tools(server_slug: str, *, caller_token: str | None = 
         additional_servers={server_slug: config},
         disabled_tools=disabled_tools,
         caller_token=caller_token,
+        caller_emp_no=caller_emp_no,
     )
 
 
