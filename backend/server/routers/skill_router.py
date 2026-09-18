@@ -292,7 +292,7 @@ async def prepare_remote_skills_route(
 async def confirm_skill_install_draft_route(
     draft_id: str,
     payload: SkillDraftConfirmRequest,
-    current_user: User = Depends(get_admin_user),
+    current_user: User = Depends(require_permission("skills.share")),
     db: AsyncSession = Depends(get_db),
 ):
     try:
