@@ -364,6 +364,9 @@ class SkillsMiddleware(AgentMiddleware):
     ) -> list:
         """从上下文配置中获取 MCP 工具列表"""
         import asyncio
+        from datetime import timedelta
+
+        from yuxi.utils.auth_utils import AuthUtils
 
         # MCP 工具（并行加载）
         mcps = getattr(context, "mcps", None) or []
@@ -378,10 +381,19 @@ class SkillsMiddleware(AgentMiddleware):
         # 去重
         unique_mcp_names = list(dict.fromkeys(all_mcp_names))
 
+        # 生成 caller token，与 resolve_configured_runtime_tools 保持一致
+        uid = str(getattr(context, "uid", "") or "")
+        caller_token: str | None = None
+        if uid:
+            caller_token = AuthUtils.create_access_token(
+                {"sub": uid, "scope": "mcp_caller"},
+                expires_delta=timedelta(minutes=5),
+            )
+
         async def load_mcp_tools(server_name: str) -> list:
             """加载单个 MCP 服务器的工具"""
             try:
-                mcp_tools = await get_enabled_mcp_tools(server_name)
+                mcp_tools = await get_enabled_mcp_tools(server_name, caller_token=caller_token)
                 if not mcp_tools:
                     logger.warning(f"SkillsMiddleware: mcp dependency unavailable, skip: {server_name}")
                 return mcp_tools
