@@ -16,7 +16,7 @@ class BrowserViewerConfig:
     port: int
 
     @classmethod
-    def from_env(cls) -> "BrowserViewerConfig":
+    def from_env(cls) -> BrowserViewerConfig:
         return cls(
             mcp_url=os.environ.get("MCP_PLAYWRIGHT_URL", "http://mcp-playwright:8931"),
             max_contexts=int(os.environ.get("BROWSER_VIEWER_MAX_CONTEXTS", "30")),

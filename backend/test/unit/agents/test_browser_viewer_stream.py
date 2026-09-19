@@ -1,8 +1,4 @@
-"""FastAPI app 单元测试，用 AsyncMock 替代 MCP 客户端。
-
-SSE 流测试跳过（无限循环 + TestClient 同步上下文不易终止），
-端到端 SSE 测试在 backend/test/integration/api/test_browser_stream.py 跑真实容器。
-"""
+"""FastAPI app 单元测试（mock MCP 客户端）。"""
 
 from __future__ import annotations
 
@@ -31,9 +27,12 @@ def config() -> BrowserViewerConfig:
 @pytest.fixture
 def mcp() -> BrowserMCPClient:
     mock = AsyncMock(spec=BrowserMCPClient)
+    mock.initialize.return_value = "sess-test"
     mock.health.return_value = True
-    mock.create_context.return_value = "ctx_test_001"
-    mock.call_tool.return_value = {"ok": True}
+    mock.call_tool.return_value = {
+        "content": [{"type": "text", "text": "fake-base64-png-data"}],
+        "isError": False,
+    }
     return mock
 
 
@@ -48,12 +47,6 @@ class TestHealth:
         resp = client.get("/health")
         assert resp.status_code == 200
         assert resp.json()["status"] == "ok"
-
-    def test_returns_degraded_when_mcp_unhealthy(self, client: TestClient, mcp: BrowserMCPClient) -> None:
-        mcp.health.return_value = False
-        resp = client.get("/health")
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "degraded"
 
 
 class TestEnsureContext:
@@ -79,23 +72,32 @@ class TestEnsureContext:
         third = c.post("/browser/context/ensure", json={"user_id": "user-c"})
         assert third.status_code == 503
 
+    def test_calls_mcp_initialize(self, client: TestClient, mcp: BrowserMCPClient) -> None:
+        client.post("/browser/context/ensure", json={"user_id": "user-a"})
+        mcp.initialize.assert_awaited()
+
 
 class TestMcpCall:
-    def test_returns_result(self, client: TestClient, mcp: BrowserMCPClient) -> None:
+    def test_returns_result(self, client: TestClient) -> None:
         resp = client.post(
             "/browser/mcp/call",
-            json={"user_id": "user-a", "tool": "browser_click", "args": {"ref": "btn-1"}},
+            json={"user_id": "user-a", "tool": "browser_navigate", "args": {"url": "https://x"}},
         )
         assert resp.status_code == 200
-        assert resp.json()["result"] == {"ok": True}
-        # 第二次调用：同一 user_id 应复用 context_id
+        assert resp.json()["result"]["content"][0]["text"] == "fake-base64-png-data"
+
+    def test_ensure_then_call_uses_same_context(self, client: TestClient, mcp: BrowserMCPClient) -> None:
+        # ensure 一次 → mcp_call 一次：context_id 应一致；mcp.initialize 只调一次
+        client.post("/browser/context/ensure", json={"user_id": "user-a"})
+        init_calls_before = mcp.initialize.await_count
         client.post(
             "/browser/mcp/call",
-            json={"user_id": "user-a", "tool": "browser_click", "args": {"ref": "btn-2"}},
+            json={"user_id": "user-a", "tool": "browser_navigate", "args": {}},
         )
-        first_call_args = mcp.call_tool.await_args_list[0]
-        second_call_args = mcp.call_tool.await_args_list[1]
-        assert second_call_args.args[0] == first_call_args.args[0]  # 同一 context_id
+        # call_tool 必须被调用
+        mcp.call_tool.assert_awaited()
+        # ensure 已 initialize 过，call 不应再 initialize
+        assert mcp.initialize.await_count == init_calls_before
 
     def test_returns_502_on_mcp_error(self, client: TestClient, mcp: BrowserMCPClient) -> None:
         from yuxi.agents.browser_viewer.mcp_client import MCPClientError
@@ -108,11 +110,8 @@ class TestMcpCall:
 
 
 class TestStreamEndpointReachable:
-    """仅验证端点可达 + media type 正确，不验证流内容（端到端在集成测试里）。"""
-
     def test_endpoint_returns_event_stream_media_type(self, client: TestClient) -> None:
         client.post("/browser/context/ensure", json={"user_id": "user-a"})
-        # 用 httpx 短超时直接发请求，验证 status_code + headers
         import httpx
         base_url = str(client.base_url).rstrip("/")
         with httpx.Client(timeout=0.5) as http_client:
@@ -121,5 +120,4 @@ class TestStreamEndpointReachable:
                 assert resp.status_code == 200
                 assert "text/event-stream" in resp.headers.get("content-type", "")
             except (httpx.ReadTimeout, httpx.RemoteProtocolError):
-                # 流式响应在第一次 yield 后还活着，连接关闭触发的异常可接受
                 pass

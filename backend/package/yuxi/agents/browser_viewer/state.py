@@ -16,6 +16,7 @@ class _UserEntry:
     last_active_ts: float
     disconnected_ts: float | None = None
     dirty: bool = False
+    mcp_session_id: str | None = None  # 真实 MCP session id（protocol 层的）
 
 
 @dataclass
@@ -33,6 +34,12 @@ class BrowserViewerState:
             )
             return new_id
         return entry.context_id
+
+    def set_mcp_session_id(self, user_id: str, session_id: str | None) -> None:
+        entry = self._entries.get(user_id)
+        if entry is None:
+            return
+        entry.mcp_session_id = session_id
 
     def mark_active(self, user_id: str, ts: float | None = None) -> None:
         entry = self._entries.get(user_id)

@@ -432,6 +432,17 @@ services:
   mcp-playwright:
     image: mcp/playwright:latest
     container_name: mcp-playwright
+    entrypoint: ["node", "/app/cli.js"]
+    command:
+      - "--headless"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8931"
+      - "--allowed-hosts"
+      - "*"
+      - "--executable-path"
+      - "/ms-playwright/chromium-1226/chrome-linux/chrome"
     ports:
       - "127.0.0.1:8931:8931"
     environment:
@@ -448,10 +459,8 @@ services:
     restart: unless-stopped
 
   browser-viewer:
-    build:
-      context: ./backend
-      dockerfile: docker/api.Dockerfile
-    image: yuxi-browser-viewer:${YUXI_VERSION:-0.7.1}
+    # 复用 api 镜像（同一个 Python 环境 + 依赖），只覆盖 command 启动 viewer
+    image: yuxi-api:${YUXI_VERSION:-0.7.1}
     container_name: browser-viewer
     working_dir: /app
     command: uv run python -m yuxi.agents.browser_viewer.server
