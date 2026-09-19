@@ -203,11 +203,17 @@ class User(Base):
     agent_env = relationship("AgentEnv", back_populates="user", cascade="all, delete-orphan", uselist=False)
     user_config = relationship("UserConfig", back_populates="user", cascade="all, delete-orphan", uselist=False)
 
+    @property
+    def emp_no(self) -> str:
+        """返回用户的员工工号（对应 User.uid）。"""
+        return str(self.uid)
+
     def to_dict(self, include_password: bool = False) -> dict[str, Any]:
         result = {
             "id": self.id,
             "username": self.username,
             "uid": self.uid,
+            "emp_no": self.emp_no,
             "phone_number": self.phone_number,
             "avatar": normalize_public_minio_url(self.avatar),
             "role": self.role,

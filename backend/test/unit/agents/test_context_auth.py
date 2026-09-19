@@ -227,11 +227,13 @@ async def test_normalize_agent_context_config_expands_null_and_filters_explicit_
     assert normalized["mcps"] == ["mcp-a", "mcp-b"]
     assert normalized["skills"] == []
     assert normalized["subagents"] == ["research-agent"]
-    assert "summary_threshold" not in normalized
-    assert "summary_keep_messages" not in normalized
-    assert "summary_prompt" not in normalized
-    assert "summary_tool_result_token_limit" not in normalized
-    assert "max_execution_steps" not in normalized
+    # 管理员维护的调优字段属于 agent 自有配置，运行时按聊天者角色透传，
+    # 权限边界在写入侧（agent_router），这里不再剥离。
+    assert normalized["summary_threshold"] == 10
+    assert normalized["summary_keep_messages"] == 8
+    assert normalized["summary_prompt"] == "custom summary"
+    assert normalized["summary_tool_result_token_limit"] == 500
+    assert normalized["max_execution_steps"] == 50
 
     empty_subagents_normalized = await normalize_agent_context_config(
         {"tools": [], "knowledges": [], "mcps": [], "skills": [], "subagents": []},

@@ -20,6 +20,7 @@ from yuxi.services.file_preview import (
     detect_preview_type,
     is_binary_preview_type,
     is_office_pdf_preview_file,
+    is_xlsx_sheet_preview_file,
     render_preview_payload,
     render_preview_too_large_payload,
 )
@@ -177,6 +178,15 @@ async def read_workspace_file_content(*, path: str, current_user: User) -> dict 
             content=pdf_content,
             media_type="application/pdf",
             preview_type="pdf",
+        )
+
+    if is_xlsx_sheet_preview_file(path):
+        raw_content = await asyncio.to_thread(target.read_bytes)
+        return _preview_binary_response(
+            filename=target.name or "preview.xlsx",
+            content=raw_content,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            preview_type="xlsx",
         )
 
     raw_content = await asyncio.to_thread(target.read_bytes)

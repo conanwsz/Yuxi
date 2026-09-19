@@ -147,6 +147,7 @@ export const isHtmlPreview = (path) => HTML_EXTENSIONS.has(getPreviewFileExtensi
 export const getPreviewTypeByContentType = (contentType) => {
   const normalized = String(contentType || '').toLowerCase()
   if (normalized.includes('application/pdf')) return 'pdf'
+  if (normalized.includes('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')) return 'xlsx'
   if (normalized.startsWith('image/')) return 'image'
   if (normalized.includes('text/markdown')) return 'markdown'
   if (normalized.includes('text/html')) return 'html'

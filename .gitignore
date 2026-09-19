@@ -55,6 +55,7 @@ cache
 .codex
 .sisyphus
 .pytest_cache
+.qwen
 
 *.secret*
 *.nogit*

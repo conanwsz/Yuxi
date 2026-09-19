@@ -133,20 +133,25 @@ async def test_read_office_pdf_preview_converts_and_caches_pdf(tmp_path, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_non_docx_pptx_office_files_do_not_get_pdf_preview(tmp_path, monkeypatch) -> None:
+async def test_read_file_preview_returns_xlsx_binary_for_sheet_preview(tmp_path, monkeypatch) -> None:
     kb = make_kb(tmp_path)
     kb.test_file_meta["filename"] = "demo.xlsx"
+    kb.test_file_meta["path"] = "minio://knowledgebases/db1/upload/demo.xlsx"
     minio_client = FakeMinioClient()
-    minio_client.objects[("knowledgebases", "db1/upload/demo.docx")] = b"PK\x03\x04excel"
+    original_bytes = b"PK\x03\x04excel"
+    minio_client.objects[("knowledgebases", "db1/upload/demo.xlsx")] = original_bytes
+
     monkeypatch.setattr("yuxi.storage.minio.get_minio_client", lambda: minio_client)
 
-    entry = kb._knowledge_file_entry("db1", "file1", kb.test_file_meta)
     response = await kb.read_file_preview("db1", "file1")
 
-    assert entry["has_original_file"] is True
-    assert entry["has_parsed_markdown"] is True
-    assert response["preview_type"] == "unsupported"
-    assert response["supported"] is False
+    assert response["preview_type"] == "xlsx"
+    assert response["supported"] is True
+    assert response["binary"] is True
+    assert response["content"] == original_bytes
+    assert response["media_type"] == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    # No PDF preview cache should be created for xlsx files
+    assert ("knowledgebases", "db1/preview/file1.pdf") not in minio_client.objects
 
 
 @pytest.mark.asyncio

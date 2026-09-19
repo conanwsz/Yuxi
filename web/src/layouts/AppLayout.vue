@@ -397,7 +397,7 @@ provide('settingsModal', {
       <div class="foo">
         <!-- 用户信息组件 -->
         <div class="nav-item user-info" @click.stop>
-          <UserInfoComponent :show-role="!sidebarCollapsed">
+          <UserInfoComponent :show-role="!sidebarCollapsed" placement="topLeft">
             <template v-if="userStore.hasPermission('system.tasks.manage')" #actions>
               <a-tooltip placement="top" title="任务中心">
                 <button

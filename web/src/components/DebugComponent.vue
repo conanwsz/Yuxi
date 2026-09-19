@@ -117,18 +117,63 @@
         title="切换用户"
         :confirmLoading="state.switchingUser"
         :footer="null"
+        :destroyOnClose="true"
         :bodyStyle="{ padding: '12px' }"
+        width="520px"
+        @cancel="resetUserSwitcherState"
       >
-        <a-list item-layout="horizontal" :data-source="state.users">
-          <template #renderItem="{ item }">
-            <a-list-item @click="switchToUser(item)" style="cursor: pointer">
-              <a-list-item-meta :title="item.username" :description="item.role" />
-            </a-list-item>
-          </template>
-          <template #empty>
-            <a-empty description="暂无用户" />
-          </template>
-        </a-list>
+        <div class="user-switcher-toolbar">
+          <a-input
+            v-model:value="state.userSwitcherSearchKeyword"
+            class="user-switcher-search"
+            placeholder="搜索用户名 / UID"
+            allow-clear
+          >
+            <template #prefix><Search :size="16" /></template>
+          </a-input>
+          <a-select v-model:value="state.userSwitcherRoleFilter" class="user-switcher-role">
+            <a-select-option value="">全部角色</a-select-option>
+            <a-select-option v-for="role in roleOptions" :key="role.key" :value="role.key">
+              {{ role.name }}
+            </a-select-option>
+          </a-select>
+        </div>
+        <a-spin :spinning="state.userSwitcherFetching" class="user-switcher-list-spin">
+          <a-list
+            v-if="paginatedUsers.length"
+            item-layout="horizontal"
+            :data-source="paginatedUsers"
+            class="user-switcher-list"
+          >
+            <template #renderItem="{ item }">
+              <a-list-item @click="switchToUser(item)" style="cursor: pointer">
+                <a-list-item-meta
+                  :title="`${item.username}${item.department_path || item.department_name ? ` · ${item.department_path || item.department_name}` : ''}`"
+                  :description="`${item.role_name || roleName(item.role)}${item.uid ? ` · UID: ${item.uid}` : ''}`"
+                />
+              </a-list-item>
+            </template>
+          </a-list>
+          <a-empty
+            v-else
+            :description="state.users.length === 0 ? '暂无用户' : '没有匹配的用户'"
+            style="padding: 24px 0"
+          />
+        </a-spin>
+        <div
+          v-if="filteredUsers.length > state.userSwitcherPageSize"
+          class="user-switcher-pagination"
+        >
+          <a-pagination
+            v-model:current="state.userSwitcherCurrentPage"
+            v-model:page-size="state.userSwitcherPageSize"
+            :total="filteredUsers.length"
+            :page-size-options="['20', '50', '100']"
+            show-size-changer
+            size="small"
+            @change="handleUserSwitcherPageChange"
+          />
+        </div>
       </a-modal>
     </div>
   </a-modal>
@@ -187,9 +232,11 @@ import {
   BugOutlined,
   SwapOutlined
 } from '@ant-design/icons-vue'
+import { Search } from 'lucide-vue-next'
 import dayjs from '@/utils/time'
 import { configApi } from '@/apis/system_api'
 import { checkSuperAdminPermission } from '@/stores/user'
+import { filterUserManagementUsers } from '@/utils/userManagementFilters'
 
 const configStore = useConfigStore()
 const userStore = useUserStore()
@@ -218,7 +265,12 @@ const state = reactive({
   isFullscreen: false,
   showUserSwitcher: false,
   users: [],
-  switchingUser: false
+  switchingUser: false,
+  userSwitcherSearchKeyword: '',
+  userSwitcherRoleFilter: '',
+  userSwitcherCurrentPage: 1,
+  userSwitcherPageSize: 20,
+  userSwitcherFetching: false
 })
 
 const error = ref('')
@@ -536,10 +588,58 @@ const printAgentConfig = async () => {
   }
 }
 
+// 角色名映射（与用户管理页面保持一致）
+const roleName = (key) => {
+  return { superadmin: '超级管理员', admin: '管理员', user: '普通用户' }[key] || key
+}
+
+// 角色选项：从已加载用户去重
+const roleOptions = computed(() => {
+  const keys = [...new Set(state.users.map((user) => user.role).filter(Boolean))]
+  return keys.map((key) => ({ key, name: roleName(key) }))
+})
+
+// 搜索/过滤后的用户（复用用户管理工具函数，匹配 username/uid + role）
+const filteredUsers = computed(() => {
+  return filterUserManagementUsers(state.users, {
+    keyword: state.userSwitcherSearchKeyword,
+    role: state.userSwitcherRoleFilter
+  })
+})
+
+// 分页切片
+const paginatedUsers = computed(() => {
+  const pageSize = Number(state.userSwitcherPageSize)
+  const start = (state.userSwitcherCurrentPage - 1) * pageSize
+  return filteredUsers.value.slice(start, start + pageSize)
+})
+
+// 搜索/筛选变化时回到第 1 页
+watch(
+  () => [state.userSwitcherSearchKeyword, state.userSwitcherRoleFilter],
+  () => {
+    state.userSwitcherCurrentPage = 1
+  }
+)
+
+// 关闭弹窗时重置搜索/分页，避免下次打开时残留旧状态
+const resetUserSwitcherState = () => {
+  state.userSwitcherSearchKeyword = ''
+  state.userSwitcherRoleFilter = ''
+  state.userSwitcherCurrentPage = 1
+}
+
+// 切换分页时把列表滚回顶部
+const handleUserSwitcherPageChange = () => {
+  const listEl = document.querySelector('.user-switcher-list')
+  if (listEl) listEl.scrollTop = 0
+}
+
 // 获取用户列表
 const fetchUsers = async () => {
+  state.userSwitcherFetching = true
   try {
-    const response = await fetch('/api/auth/users', {
+    const response = await fetch('/api/auth/users?limit=1000', {
       headers: userStore.getAuthHeaders()
     })
     if (!response.ok) {
@@ -548,6 +648,8 @@ const fetchUsers = async () => {
     state.users = await response.json()
   } catch (err) {
     message.error(`获取用户列表失败: ${err.message}`)
+  } finally {
+    state.userSwitcherFetching = false
   }
 }
 
@@ -841,5 +943,35 @@ const switchToUser = async (user) => {
   .multi-select-cards .options-grid {
     grid-template-columns: repeat(2, 1fr);
   }
+}
+
+.user-switcher-toolbar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.user-switcher-search {
+  flex: 1;
+}
+
+.user-switcher-role {
+  width: 130px;
+}
+
+.user-switcher-list-spin {
+  min-height: 80px;
+}
+
+.user-switcher-list {
+  max-height: 420px;
+  overflow-y: auto;
+  padding: 0 4px;
+}
+
+.user-switcher-pagination {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
 }
 </style>

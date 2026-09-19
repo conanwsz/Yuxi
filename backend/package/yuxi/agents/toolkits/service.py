@@ -95,7 +95,10 @@ def get_tool_instances_by_category(category: str) -> list[Any]:
 
 
 async def resolve_configured_runtime_tools(context) -> list[Any]:
+    from datetime import timedelta
+
     from yuxi.agents.mcp.service import get_enabled_mcp_tools
+    from yuxi.utils.auth_utils import AuthUtils
 
     selected_tools = []
     selected_tool_names: set[str] = set()
@@ -111,13 +114,30 @@ async def resolve_configured_runtime_tools(context) -> list[Any]:
         selected_tools.append(tool)
         selected_tool_names.add(tool_name)
 
+    # 为本次 Agent 执行生成短生命周期 caller token（5 分钟），用于 MCP 身份透传。
+    uid = str(getattr(context, "uid", "") or "")
+    emp_no = str(getattr(context, "emp_no", "") or uid or "").strip()
+    caller_token: str | None = None
+    if uid:
+        token_payload = {"sub": uid, "scope": "mcp_caller"}
+        if emp_no:
+            token_payload["emp_no"] = emp_no
+        caller_token = AuthUtils.create_access_token(
+            token_payload,
+            expires_delta=timedelta(minutes=5),
+        )
+
     selected_mcp_servers: set[str] = set()
     for server_name in getattr(context, "mcps", None) or []:
         if not isinstance(server_name, str) or server_name in selected_mcp_servers:
             continue
         selected_mcp_servers.add(server_name)
         try:
-            mcp_tools = await get_enabled_mcp_tools(server_name)
+            mcp_tools = await get_enabled_mcp_tools(
+                server_name,
+                caller_token=caller_token,
+                caller_emp_no=emp_no or None,
+            )
         except Exception as e:
             logger.warning(f"Failed to load configured MCP tools '{server_name}': {e}")
             continue

@@ -15,6 +15,7 @@ _MARKDOWN_EXTENSIONS = frozenset({".md", ".markdown", ".mdx"})
 _PDF_EXTENSIONS = frozenset({".pdf"})
 _HTML_EXTENSIONS = frozenset({".html", ".htm"})
 _OFFICE_PDF_PREVIEW_EXTENSIONS = frozenset({".docx", ".pptx"})
+_XLSX_SHEET_PREVIEW_EXTENSIONS = frozenset({".xlsx"})
 _OFFICE_MEDIA_TYPES = {
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
@@ -89,6 +90,14 @@ class OfficePreviewConversionError(RuntimeError):
 
 def is_office_pdf_preview_file(path: str) -> bool:
     return PurePosixPath(path).suffix.lower() in _OFFICE_PDF_PREVIEW_EXTENSIONS
+
+
+def is_xlsx_sheet_preview_file(path: str) -> bool:
+    """xlsx files go through the SheetJS client-side preview path, not the PDF
+    conversion pipeline. Use the file suffix, not the binary content, because
+    callers may not have the bytes handy at the routing decision point.
+    """
+    return PurePosixPath(path).suffix.lower() in _XLSX_SHEET_PREVIEW_EXTENSIONS
 
 
 def is_binary_preview_type(preview_type: str) -> bool:

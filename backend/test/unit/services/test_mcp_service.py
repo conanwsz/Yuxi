@@ -397,3 +397,94 @@ async def test_clear_mcp_server_tools_cache_also_clears_loaded_at(monkeypatch):
     assert mcp_service._mcp_tools_cache_loaded_at == {}
 
     mcp_service.clear_mcp_cache()
+
+
+async def test_get_mcp_tools_injects_caller_token_and_emp_no_header_for_http_transport(monkeypatch):
+    """caller_token 和 caller_emp_no 在 sse/streamable_http transport 下应分别注入对应 header。"""
+    mcp_service.clear_mcp_cache()
+
+    captured_configs: list[dict] = []
+
+    async def fake_get_enabled_mcp_server_config(server_name: str, db=None):
+        del db
+        return {
+            "transport": "streamable_http",
+            "url": "https://example.com/mcp",
+            "headers": {"Authorization": "Bearer static-token"},
+        }
+
+    async def fake_get_mcp_client(server_configs):
+        captured_configs.append(server_configs["demo"].copy())
+        return _FakeClient([SimpleNamespace(name="get_schedule", metadata={})])
+
+    monkeypatch.setattr(mcp_service, "get_enabled_mcp_server_config", fake_get_enabled_mcp_server_config)
+    monkeypatch.setattr(mcp_service, "get_mcp_client", fake_get_mcp_client)
+
+    await mcp_service.get_mcp_tools("demo", caller_token="user-jwt-abc", caller_emp_no="EMP999")
+
+    assert len(captured_configs) == 1
+    headers = captured_configs[0].get("headers", {})
+    # 用户 token 及工号注入成功，静态 token 保留
+    assert headers.get("X-Superchuchu-Token") == "user-jwt-abc"
+    assert headers.get("X-User-Emp-No") == "EMP999"
+    assert headers.get("Authorization") == "Bearer static-token"
+
+    mcp_service.clear_mcp_cache()
+
+
+async def test_get_mcp_tools_does_not_inject_caller_headers_for_stdio_transport(monkeypatch):
+    """stdio transport 不支持 HTTP headers，caller_token 和 caller_emp_no 均不应注入。"""
+    mcp_service.clear_mcp_cache()
+
+    captured_configs: list[dict] = []
+
+    async def fake_get_enabled_mcp_server_config(server_name: str, db=None):
+        del db
+        return {"transport": "stdio", "command": "demo-cmd"}
+
+    async def fake_get_mcp_client(server_configs):
+        captured_configs.append(server_configs["demo"].copy())
+        return _FakeClient([SimpleNamespace(name="some_tool", metadata={})])
+
+    monkeypatch.setattr(mcp_service, "get_enabled_mcp_server_config", fake_get_enabled_mcp_server_config)
+    monkeypatch.setattr(mcp_service, "get_mcp_client", fake_get_mcp_client)
+
+    await mcp_service.get_mcp_tools("demo", caller_token="user-jwt-abc", caller_emp_no="EMP999")
+
+    assert len(captured_configs) == 1
+    # stdio 配置中不应出现 X-Superchuchu-Token 或 X-User-Emp-No
+    assert "X-Superchuchu-Token" not in captured_configs[0].get("headers", {})
+    assert "X-User-Emp-No" not in captured_configs[0].get("headers", {})
+    assert "headers" not in captured_configs[0]
+
+    mcp_service.clear_mcp_cache()
+
+
+async def test_get_mcp_tools_caller_token_does_not_affect_cache_key(monkeypatch):
+    """caller_token 不参与缓存 key 计算：不同 token 调用时共享同一份工具缓存。"""
+    mcp_service.clear_mcp_cache()
+
+    build_calls: list[str] = []
+
+    async def fake_get_enabled_mcp_server_config(server_name: str, db=None):
+        del db
+        return {"transport": "streamable_http", "url": "https://example.com/mcp"}
+
+    async def fake_get_mcp_client(server_configs):
+        build_calls.append("called")
+        return _FakeClient([SimpleNamespace(name="some_tool", metadata={})])
+
+    monkeypatch.setattr(mcp_service, "get_enabled_mcp_server_config", fake_get_enabled_mcp_server_config)
+    monkeypatch.setattr(mcp_service, "get_mcp_client", fake_get_mcp_client)
+
+    # 第一次调用（token=user-A）建连并写缓存
+    tools_a = await mcp_service.get_mcp_tools("demo", caller_token="token-user-a", caller_emp_no="EMP-A")
+    # 第二次调用（token=user-B）应命中缓存，不重新建连
+    tools_b = await mcp_service.get_mcp_tools("demo", caller_token="token-user-b", caller_emp_no="EMP-B")
+
+    assert len(tools_a) == 1
+    assert len(tools_b) == 1
+    # 仅建连一次，说明缓存命中
+    assert build_calls == ["called"]
+
+    mcp_service.clear_mcp_cache()

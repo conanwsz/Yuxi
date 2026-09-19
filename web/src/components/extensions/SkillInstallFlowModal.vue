@@ -130,7 +130,7 @@
                 <span>仅自己可用，保存在个人 workspace，不进入平台数据库。</span>
               </button>
               <button
-                v-if="userStore.isAdmin"
+                v-if="userStore.hasPermission('skills.share')"
                 type="button"
                 class="install-target-option"
                 :class="{ selected: installTarget === 'shared' }"
@@ -141,6 +141,7 @@
                 <span>进入平台 Skill 库，并继续配置指定人、部门或全局范围。</span>
               </button>
               <button
+                v-if="userStore.hasPermission('skills.recommend')"
                 type="button"
                 class="install-target-option"
                 :class="{ selected: installTarget === 'recommended_workspace' }"

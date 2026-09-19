@@ -6,6 +6,12 @@
 
 ## v0.7.2 (current)
 
+- **MCP 用户身份与工号透传**：Agent 执行调用 MCP 服务时，自动将当前用户的 Yuxi JWT（`X-Superchuchu-Token`）与员工工号（`X-User-Emp-No`）注入远程 HTTP headers，并在 JWT payload 中包含 `sub` 与 `emp_no`；用户工号统一映射为 `User.uid`（SSO 登录工号）。MCP Server 可据此在调用内部办公系统时以实际用户身份鉴权，避免跨用户越权查询日程等敏感信息。
+
+- **修复 admin 调优配置对普通用户静默失效**：`normalize_agent_context_config` 曾按聊天者角色剥离 `auth: "admin"` 字段（共 8 项，含 `max_execution_steps`、摘要参数、`model_retry_times`），但该过滤入口处理的是管理员维护的 agent 自有配置而非用户输入，导致 UI 配置的 500 步在 user 角色下静默回落 300。移除运行时角色过滤，权限边界保留在写入侧（agent_router 按配置编辑者角色过滤）；`tool_approval_mode` 的 run 级覆盖校验不变。同步将 `DEFAULT_MAX_EXECUTION_STEPS` 300 提至 800。
+
+- **修复出站消息毒块导致会话级联 400**：v1 流式聚合在工具 args JSON 解析失败时产出 `invalid_tool_call` content block，langchain-openai 1.2.2 出站放行该类型，上游网关返回 400 且毒块随 checkpoint 持久化反复重放，会话永久损坏。`ModelContentSanitizerMiddleware` 新增 AIMessage 清洗：模型调用前剔除 `invalid_tool_call` block 并同步清空 `invalid_tool_calls` 属性，毒会话下次调用自动自愈；既有 binary ToolMessage 清洗不变。
+- **LangGraph checkpoint 定期清理**：新增 `checkpoint_cleanup_service` 并挂入 `SchedulerService` tick 循环（默认每 24h 一轮、单轮至多 500 thread、最老优先），删除连续 30 天不活跃（按 `conversations.updated_at` 判定）线程在 `checkpoints` / `checkpoint_blobs` / `checkpoint_writes` 三表中的全部数据，并附带清扫无 conversation 行的孤儿线程；有 pending/running/cancel_requested 运行的线程永不删除。仅 postgres 后端生效，sqlite 后端跳过。执行时机支持 `CHECKPOINT_CLEANUP_DAILY_AT=HH:MM`（`SCHEDULER_TIMEZONE` 时区）改为每天固定时刻清理，当天已跑不重复、错过不补跑；非法值告警并回退默认模式。防 O(N²) 快照膨胀（旧 SQLite 时代单文件已达 1.1GB）。
 - **推荐工作区（用户共建池）**：Skill 安装位置新增第三个选项「推荐工作区」（与现有「个人工作区」「共享 Skill」并列）。选「推荐工作区」= **发布** 到用户共建池（不是安装到任何工作区）：在 `skills` 表写入 `is_recommended_workspace=True` 记录，共享范围自动全局可读，publisher 自己**不自动装机**。该 skill 出现在「技能」tab 顶部的「推荐」分组（与 admin 套件并列，状态文案「N 个可安装」+「查看并安装」），其他用户及 publisher 本人都要从「推荐」列表点击预览 modal 后选「安装到个人工作区」才能使用。`skills` 表加 1 列 + 1 部分索引；3 个新端点（list / install-to-recommended-workspace / install-to-personal），均不引入新权限（所有用户都已有 `skills.create` / `skills.read`）。v1 不支持「从推荐工作区装到共享」（避免新一轮 share_config 流程）。
 
 - **推荐位治理（下架/删除推荐工作区技能）**：「管理推荐」弹窗更名为「管理推荐位」并新增「推荐工作区技能」tab，`skills.recommend` 持有者可列出全部已发布技能（含他人发布与已下架），支持**下架**（`enabled=False`，运行时不再注入，「推荐」分组对所有用户即时隐藏，可一键重新上架）与**物理删除**（复用回收站链路，不可恢复）。新增 3 个 `/system/skills/recommended-workspace/*` 端点，门控为路由级 `skills.recommend` + 对象级 `is_recommended_workspace` 校验；弹窗变更后「推荐」分组即时刷新。
@@ -49,6 +55,7 @@
 - 新增 MiniMax Coding Plan MCP 独立 Docker 部署包：固定兼容依赖并通过 Streamable HTTP 暴露 `web_search`、`understand_image`，附带 Compose、健康检查、离线镜像迁移和 Yuxi 接入说明；Key 仅由运行环境注入，默认只监听本机。
 
 - 修复 Agent 文件侧栏中 `outputs` 目录的 PPTX/DOCX 被误判为不支持预览：统一复用 Office 转 PDF 预览能力并返回 PDF 元数据，与 `workspace/saved_artifacts` 行为保持一致，原文件下载不受影响。
+- **xlsx 预览改用前端 SheetJS 原生渲染**：不再走 `soffice → PDF → iframe` 路径，xlsx 在后端三处入口（workspace / viewer / 知识库）单独路由返回原始字节 + `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`，前端 `XlsxPreview.vue`（依赖 `xlsx@0.18.5`）解析并以原生表格展示，支持多 sheet tab、合并单元格、列宽、单元格搜索、行高亮与首屏 5000 行截断（超出提示下载完整文件）；docx/pptx 仍走 LibreOffice 转 PDF 路径，Dockerfile 保留 `libreoffice-impress-nogui/writer-nogui`，`libreoffice-calc-nogui` 不再需要并移除。
 
 - 完善基本设置自动保存体验：重新打开时解析已选模型的友好名称，明确标注自动保存；保存成功给出提示，失败时恢复原值并显示错误，开发热更新同步 Store 动作，避免误报失败或误以为配置回退。
 

@@ -8,6 +8,7 @@ from yuxi.services.file_preview import (
     MAX_TEXT_PREVIEW_CHARS,
     detect_preview_type,
     is_office_pdf_preview_file,
+    is_xlsx_sheet_preview_file,
     render_preview_payload,
 )
 
@@ -52,3 +53,10 @@ def test_office_pdf_preview_scope_only_includes_docx_and_pptx():
     assert is_office_pdf_preview_file("demo.xlsx") is False
     assert is_office_pdf_preview_file("demo.doc") is False
     assert is_office_pdf_preview_file("demo.ppt") is False
+
+
+def test_xlsx_sheet_preview_scope_only_includes_xlsx():
+    assert is_xlsx_sheet_preview_file("demo.xlsx") is True
+    assert is_xlsx_sheet_preview_file("demo.xls") is False
+    assert is_xlsx_sheet_preview_file("demo.docx") is False
+    assert is_xlsx_sheet_preview_file("demo.pptx") is False

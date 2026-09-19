@@ -23,6 +23,7 @@ from yuxi.repositories.schedule_repository import (
     ScheduleExecutionRepository,
     ScheduleRepository,
 )
+from yuxi.services import checkpoint_cleanup_service
 from yuxi.services.agent_run_service import (
     await_agent_run_result,
     create_agent_run_view,
@@ -47,6 +48,7 @@ TICK_INTERVAL_SECONDS = 10.0
 TICK_BATCH_LIMIT = 20
 RESULT_SUMMARY_MAX_CHARS = 500
 EXECUTION_RETENTION_DAYS = 90
+CHECKPOINT_CLEANUP_INTERVAL_HOURS = checkpoint_cleanup_service.CHECKPOINT_CLEANUP_INTERVAL_HOURS
 SCHEDULE_METADATA_SOURCE = "schedule"
 SCHEDULE_METADATA_SCHEDULE_ID_KEY = "schedule_id"
 SCHEDULE_METADATA_EXECUTION_ID_KEY = "schedule_execution_id"
@@ -103,11 +105,14 @@ class SchedulerService:
         tick_batch_limit: int = TICK_BATCH_LIMIT,
         result_summary_max_chars: int = RESULT_SUMMARY_MAX_CHARS,
         execution_retention_days: int = EXECUTION_RETENTION_DAYS,
+        checkpoint_cleanup_interval_hours: int = CHECKPOINT_CLEANUP_INTERVAL_HOURS,
     ) -> None:
         self._tick_interval = float(tick_interval_seconds)
         self._tick_batch_limit = int(tick_batch_limit)
         self._result_summary_max_chars = int(result_summary_max_chars)
         self._execution_retention_days = int(execution_retention_days)
+        self._checkpoint_cleanup_interval_hours = int(checkpoint_cleanup_interval_hours)
+        self._last_checkpoint_cleanup_at: datetime | None = None
 
         self._started = False
         self._lock = asyncio.Lock()
@@ -196,6 +201,8 @@ class SchedulerService:
         for schedule in due_schedules:
             await self._handle_due_schedule(schedule=schedule, now=now)
             await self._maybe_cleanup_old_executions()
+
+        await self._maybe_cleanup_stale_checkpoints(now=now)
 
     async def _handle_due_schedule(self, *, schedule: Schedule, now: datetime) -> None:
         """单条 schedule 的处理：写 pending execution + 派发执行任务。
@@ -420,6 +427,33 @@ class SchedulerService:
         except Exception as exc:  # noqa: BLE001
             logger.debug("Scheduler cleanup skipped: {}", exc)
 
+    async def _maybe_cleanup_stale_checkpoints(self, *, now: datetime | None = None) -> None:
+        """清理不活跃 thread 的 checkpoint。
+
+        默认按进程启动锚点 + interval 节流；配置 CHECKPOINT_CLEANUP_DAILY_AT=HH:MM
+        后改为每天固定时刻（SCHEDULER_TIMEZONE 时区）执行，当天已跑不再重复，错过不补跑。
+        """
+        current = now or utc_now_naive()
+        daily_at = checkpoint_cleanup_service.parse_daily_at(os.getenv(checkpoint_cleanup_service.DAILY_AT_ENV_KEY))
+        if daily_at is not None:
+            if not checkpoint_cleanup_service.is_daily_at_due(
+                now_utc=current,
+                daily_at=daily_at,
+                tz=checkpoint_cleanup_service.resolve_scheduler_timezone(),
+                last_run_at=self._last_checkpoint_cleanup_at,
+            ):
+                return
+        elif self._last_checkpoint_cleanup_at is not None:
+            elapsed_hours = (current - self._last_checkpoint_cleanup_at).total_seconds() / 3600.0
+            if elapsed_hours < self._checkpoint_cleanup_interval_hours:
+                return
+        try:
+            await checkpoint_cleanup_service.cleanup_inactive_checkpoints()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Checkpoint cleanup failed: {}", exc)
+        finally:
+            self._last_checkpoint_cleanup_at = current
+
     # -- external API --
     async def fire_now(self, *, schedule_id: str) -> ScheduleExecution:
         """立即触发一条 schedule：写一条 execution 并异步派发，不等结果。"""
@@ -467,6 +501,7 @@ __all__ = [
     "TICK_INTERVAL_SECONDS",
     "TICK_BATCH_LIMIT",
     "EXECUTION_RETENTION_DAYS",
+    "CHECKPOINT_CLEANUP_INTERVAL_HOURS",
     "RESULT_SUMMARY_MAX_CHARS",
     "SCHEDULE_METADATA_SOURCE",
     "SCHEDULE_METADATA_SCHEDULE_ID_KEY",

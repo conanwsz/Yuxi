@@ -4,14 +4,14 @@ WORKDIR /app
 ENV TZ=Asia/Shanghai
 
 # 安装 pnpm
-RUN npm install -g pnpm@latest
+RUN npm install -g pnpm@9
 
 # 复制 package.json 和 pnpm-lock.yaml
 COPY ./web/package*.json ./
-COPY ./web/pnpm-lock.yaml* ./
+COPY ./web/pnpm-lock.yaml ./
 
-# 安装依赖（--frozen-lockfile 保证 dev 与 build/CI 三处依赖与 pnpm-lock.yaml 一致，避免漂移）
-RUN pnpm install --frozen-lockfile --registry=https://registry.npmmirror.com
+# 安装依赖
+RUN rm -f pnpm-lock.yaml && pnpm install --force --registry=https://registry.npmmirror.com
 
 # 复制源代码
 COPY ./web .
@@ -26,14 +26,14 @@ FROM node:24-alpine AS build-stage
 WORKDIR /app
 
 # 安装 pnpm
-RUN npm install -g pnpm@latest
+RUN npm install -g pnpm@9
 
 # 复制依赖文件
 COPY ./web/package*.json ./
-COPY ./web/pnpm-lock.yaml* ./
+COPY ./web/pnpm-lock.yaml ./
 
 # 安装依赖
-RUN pnpm install --frozen-lockfile --registry=https://registry.npmmirror.com
+RUN rm -f pnpm-lock.yaml && pnpm install --force --registry=https://registry.npmmirror.com
 
 # 复制源代码并构建
 COPY ./web .

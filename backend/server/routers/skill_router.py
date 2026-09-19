@@ -292,7 +292,7 @@ async def prepare_remote_skills_route(
 async def confirm_skill_install_draft_route(
     draft_id: str,
     payload: SkillDraftConfirmRequest,
-    current_user: User = Depends(get_admin_user),
+    current_user: User = Depends(require_permission("skills.share")),
     db: AsyncSession = Depends(get_db),
 ):
     try:
@@ -902,7 +902,7 @@ async def list_recommended_workspace_route(
 @user_skills.post("/import/install-to-recommended-workspace")
 async def install_to_recommended_workspace_route(
     payload: RecommendedWorkspaceInstallRequest,
-    current_user: User = Depends(require_permission("skills.create")),
+    current_user: User = Depends(require_permission("skills.recommend")),
     db: AsyncSession = Depends(get_db),
 ):
     """把 draft 里的 skill 发布到「推荐」用户共建池（不开新草稿，1 步完成）。
