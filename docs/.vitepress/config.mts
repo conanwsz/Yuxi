@@ -49,6 +49,7 @@ export default defineConfig({
           { text: '智能体评估', link: '/agents/agent-evaluation' },
           { text: '沙盒架构与设计', link: '/agents/sandbox-architecture' },
           { text: 'MCP 集成', link: '/agents/mcp-integration' },
+          { text: '浏览器工具 MCP', link: '/agents/browser-mcp' },
           { text: 'Skills 管理', link: '/agents/skills-management' },
           { text: '子智能体', link: '/agents/subagents-management' }
         ]
