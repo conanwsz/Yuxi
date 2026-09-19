@@ -145,7 +145,7 @@
 </template>
 
 <script setup>
-import { computed, ref, inject, useSlots, watch } from 'vue'
+import { computed, ref, inject, useSlots, watch, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import DebugComponent from '@/components/DebugComponent.vue'
@@ -310,6 +310,15 @@ const loadTokenQuota = async ({ silent = false } = {}) => {
     tokenQuotaLoading.value = false
   }
 }
+
+// 组件挂载即拉一次，避免首次点开菜单时「骨架 → 完整卡片」造成的菜单高度跳动。
+// handleDropdownVisibleChange 仍保留作为 fallback（应对组件挂载后立即被点开等极端时序）。
+onMounted(() => {
+  if (!hasLoadedTokenQuota.value) {
+    hasLoadedTokenQuota.value = true
+    loadTokenQuota()
+  }
+})
 
 // 首次展开下拉时拉一次；下拉收起时静默刷新，下一次展开拿到的就是新数据。
 const handleDropdownVisibleChange = (visible) => {
