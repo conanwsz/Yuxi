@@ -1,0 +1,1 @@
+"""Browser viewer 微服务：按 user_id 隔离 Playwright browser context，提供 SSE 视图流。"""
