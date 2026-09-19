@@ -81,7 +81,7 @@
                   <span class="suffix">Token</span>
                 </div>
                 <div v-if="tokenQuota.resetAt" class="token-reset">
-                  重置于 {{ tokenQuota.resetAt }}
+                  下次重置 {{ tokenQuota.resetAt }}
                 </div>
               </div>
             </template>
@@ -101,12 +101,15 @@
                     :style="{ width: quotaUsedPercent + '%', background: quotaProgressColor }"
                   ></div>
                 </div>
-                <div class="token-numbers">
-                  <strong>{{ formatQuotaMetric(tokenQuota.used) }}</strong>
-                  <span class="suffix">/ {{ formatQuotaMetric(tokenQuota.quota) }} Token</span>
+                <div
+                  class="token-numbers"
+                  :title="`已用 ${formatQuotaMetric(tokenQuota.used)} / 配额 ${formatQuotaMetric(tokenQuota.quota)} Token`"
+                >
+                  <strong>{{ formatQuotaMetricShort(tokenQuota.used) }}</strong>
+                  <span class="suffix">/ {{ formatQuotaMetricShort(tokenQuota.quota) }} Token</span>
                 </div>
                 <div v-if="tokenQuota.resetAt" class="token-reset">
-                  重置于 {{ tokenQuota.resetAt }}
+                  下次重置 {{ tokenQuota.resetAt }}
                 </div>
               </div>
             </template>
@@ -286,6 +289,22 @@ const normalizeQuotaNumber = (value) => {
 const formatQuotaMetric = (value) => {
   if (tokenQuota.value.mode === 'unlimited' && value === null) return '不限'
   if (!Number.isFinite(value)) return '-'
+  return new Intl.NumberFormat('zh-CN').format(value)
+}
+
+// 菜单内展示的紧凑版：≥ 1 亿 → X.XX 亿；1 万 ≤ x < 1 亿 → X.XX 万；
+// < 1 万 → 原样千分位。trim 末尾的 0/小数点，避免出现 "1.00 亿"。
+// 原值通过容器的原生 title 属性显示（hover 即可看到精确数字）。
+const formatQuotaMetricShort = (value) => {
+  if (!Number.isFinite(value)) return '-'
+  if (value >= 1e8) {
+    const s = (value / 1e8).toFixed(2).replace(/\.?0+$/, '')
+    return `${s} 亿`
+  }
+  if (value >= 1e4) {
+    const s = (value / 1e4).toFixed(2).replace(/\.?0+$/, '')
+    return `${s} 万`
+  }
   return new Intl.NumberFormat('zh-CN').format(value)
 }
 
