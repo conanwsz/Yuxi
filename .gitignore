@@ -89,3 +89,4 @@ web/src/utils/__tests__/
 .harness/
 .omx/
 output/
+.mavis/
