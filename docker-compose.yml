@@ -34,8 +34,8 @@ x-api-worker-env: &api-worker-env
   YUXI_CORS_ORIGINS: ${YUXI_CORS_ORIGINS:-}
   YUXI_DATASET_PERSIST_BATCH_SIZE: ${YUXI_DATASET_PERSIST_BATCH_SIZE:-1}
   # 其他环境变量
-  NO_PROXY: localhost,127.0.0.1,milvus,graph,minio,milvus-etcd-dev,etcd,mineru,paddlex,sandbox-provisioner,api.siliconflow.cn
-  no_proxy: localhost,127.0.0.1,milvus,graph,minio,milvus-etcd-dev,etcd,mineru,paddlex,sandbox-provisioner,api.siliconflow.cn
+  NO_PROXY: localhost,127.0.0.1,milvus,graph,minio,milvus-etcd-dev,etcd,mineru,paddlex,sandbox-provisioner,api.siliconflow.cn,mcp-playwright,browser-viewer
+  no_proxy: localhost,127.0.0.1,milvus,graph,minio,milvus-etcd-dev,etcd,mineru,paddlex,sandbox-provisioner,api.siliconflow.cn,mcp-playwright,browser-viewer
   LANGGRAPH_CHECKPOINTER_BACKEND: postgres
 
 services:
@@ -429,8 +429,65 @@ services:
       - app-network
     restart: unless-stopped
 
+  mcp-playwright:
+    image: mcp/playwright:latest
+    container_name: mcp-playwright
+    ports:
+      - "127.0.0.1:8931:8931"
+    environment:
+      - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+    volumes:
+      - mcp_playwright_cache:/ms-playwright
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+    shm_size: '2gb'
+    networks:
+      - app-network
+    restart: unless-stopped
+
+  browser-viewer:
+    build:
+      context: ./backend
+      dockerfile: docker/api.Dockerfile
+    image: yuxi-browser-viewer:${YUXI_VERSION:-0.7.1}
+    container_name: browser-viewer
+    working_dir: /app
+    command: uv run python -m yuxi.agents.browser_viewer.server
+    ports:
+      - "127.0.0.1:8932:8932"
+    volumes:
+      - ./backend/server:/app/server
+      - ./backend/package:/app/package
+      - ./backend/scripts:/app/scripts
+      - ./backend/pyproject.toml:/app/pyproject.toml
+      - ./backend/uv.lock:/app/uv.lock
+    environment:
+      - HOST_IP=${HOST_IP:-}
+      - RUNNING_IN_DOCKER=true
+      - YUXI_ENV=development
+      - NO_PROXY=localhost,127.0.0.1,mcp-playwright,browser-viewer
+      - no_proxy=localhost,127.0.0.1,mcp-playwright,browser-viewer
+      - MCP_PLAYWRIGHT_URL=http://mcp-playwright:8931
+      - BROWSER_VIEWER_PORT=8932
+      - BROWSER_VIEWER_MAX_CONTEXTS=30
+      - BROWSER_VIEWER_IDLE_TIMEOUT=1800
+      - BROWSER_VIEWER_SSE_POLL_MS=1500
+      - BROWSER_VIEWER_DISCONNECT_GRACE=300
+    depends_on:
+      - mcp-playwright
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    networks:
+      - app-network
+    restart: unless-stopped
+
 volumes:
   nltk_data:
+  mcp_playwright_cache:
 
 networks:
   app-network:
