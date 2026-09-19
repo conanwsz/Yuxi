@@ -34,7 +34,7 @@ mcp-playwright 容器（官方镜像 mcp/playwright:latest）
     ▼
 Chromium 进程（容器内 1 个，多 context）
 
-前端 BrowserDrawer（web/src/components/agent/BrowserDrawer.vue）
+前端 BrowserDrawer（`web/src/components/BrowserDrawer.vue`）
     │ ② SSE 订阅 user_id 的浏览器视图流
     ▼
 browser-viewer 容器（自建 FastAPI + SSE）
@@ -66,7 +66,7 @@ mcp-playwright（HTTP/SSE MCP，复用连接）
 
 1. 用户进入 `/agent` 路由 → BrowserDrawer 组件挂载（不自动展开）
 2. SSE 连接就绪 + 用户未禁用 → 抽屉可见
-3. 首次订阅时调 `POST /browser/context/ensure {user_id}` → viewer 触发 mcp-playwright 创建或复用 context，返回 `context_id`
+3. 首次订阅时调 `POST /browser/context/ensure {user_id}` → viewer 触发 mcp-playwright 创建或复用 context，返回 `context_id`（幂等：已存在则直接返回）
 4. 浏览器订阅 EventSource(`/browser/stream/{user_id}`)
 5. viewer 后台线程循环（默认 1.5s 间隔）：
    - 调 mcp-playwright `browser_take_screenshot` 拿 base64
@@ -117,9 +117,10 @@ viewer 维护 `last_activity_ts[user_id]`：
 
 ### 5.2 集成点
 
-- `AgentView.vue` 引入 `<BrowserDrawer :user-id="currentUser.id" />`
+- 集成到现有 `web/src/views/AgentView.vue`（已是 agent chat 主入口），引入 `<BrowserDrawer :user-id="currentUser.id" />`
 - SSE 鉴权：viewer 接 Yuxi 现有 session cookie，不引入新机制
 - 抽屉默认隐藏状态保存在 Pinia，可被"禁用"永久关闭
+- 抽屉关闭不影响 agent 调 `browser_*` 工具（用户可能不关心小窗，但 agent 仍在跑）
 
 ## 6. 部署
 
@@ -127,10 +128,10 @@ viewer 维护 `last_activity_ts[user_id]`：
 
 ```yaml
 mcp-playwright:
-  image: mcp/playwright:latest
+  image: mcp/playwright:v1.x   # 实现阶段锁定版本
   container_name: mcp-playwright
   ports:
-    - "8931:8931"   # MCP HTTP/SSE 端点
+    - "127.0.0.1:8931:8931"   # MCP HTTP/SSE 端点，仅本机
   environment:
     - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
   volumes:
@@ -142,13 +143,15 @@ mcp-playwright:
   shm_size: '2gb'   # Chromium 必需
 
 browser-viewer:    # 独立容器（方案 X）
-  build: ./backend
+  build:
+    context: ./backend
   container_name: browser-viewer
   command: uv run python -m yuxi.agents.browser_viewer.server
   ports:
-    - "8932:8932"   # viewer HTTP/SSE
+    - "127.0.0.1:8932:8932"   # viewer HTTP/SSE，仅本机
   environment:
     - MCP_PLAYWRIGHT_URL=http://mcp-playwright:8931
+    - BROWSER_VIEWER_PORT=8932
     - BROWSER_VIEWER_MAX_CONTEXTS=30
     - BROWSER_VIEWER_IDLE_TIMEOUT=1800   # 30 分钟
   depends_on:
@@ -231,7 +234,7 @@ viewer 与 mcp-playwright 通信走 **HTTP/SSE MCP 协议**，避免 stdio 容�
 2. ✅ 登录用户 A 在 `/agent` 启用 MCP `mcp-playwright` 后，agent 工具列表出现 `browser_navigate` / `browser_click` 等官方 mcp-playwright 工具
 3. ✅ agent 调 `browser_navigate` 后，用户 A 的 BrowserDrawer 抽屉自动展开，显示当前页面截图
 4. ✅ 用户 B 同时启用同一 MCP，agent 调 `browser_navigate` 后，用户 A 与 B 的抽屉显示各自独立页面（cookie / 登录态不串）
-5. ✅ 用户 A 关闭抽屉 30 分钟后，viewer 后台关闭其 context
+5. ✅ 用户 A 在 SSE 断开 5 分钟宽限期后无任何 MCP 调用（即最后活动 ≥ 30 分钟），viewer 后台关闭其 context
 6. ✅ 用户 A 重新打开抽屉，agent 再调 `browser_navigate` 时，viewer 自动重建 context
 7. ✅ 同时启用 30 个用户后，第 31 个用户 ensure 返回 503
 8. ✅ mcp-playwright 容器重启后，所有活跃用户下次 ensure 时自动重建 context（不报错）
@@ -239,7 +242,7 @@ viewer 与 mcp-playwright 通信走 **HTTP/SSE MCP 协议**，避免 stdio 容�
 10. ✅ 所有 §8 测试用例通过
 11. ✅ 现有 e2e / integration 测试不回归
 
-## 10. 文件落点（实现阶段待分配）
+## 10. 文件落点（实现阶段分工细化）
 
 | 内容 | 路径 |
 |---|---|
@@ -247,14 +250,15 @@ viewer 与 mcp-playwright 通信走 **HTTP/SSE MCP 协议**，避免 stdio 容�
 | viewer 状态管理 | `backend/package/yuxi/agents/browser_viewer/state.py` |
 | viewer SSE 端点 | `backend/package/yuxi/agents/browser_viewer/stream.py` |
 | viewer 客户端（连 mcp-playwright） | `backend/package/yuxi/agents/browser_viewer/mcp_client.py` |
-| MCP 注册：mcp-playwright | `backend/package/yuxi/agents/mcp/registry.py`（既有，加配置项） |
-| 前端抽屉组件 | `web/src/components/agent/BrowserDrawer.vue` |
-| 前端 SSE composable | `web/src/composables/useBrowserStream.js` |
+| MCP 注册：mcp-playwright | `backend/package/yuxi/agents/mcp/service.py`（既有 `MultiServerMCPClient`，加配置项） |
+| 前端抽屉组件 | `web/src/components/BrowserDrawer.vue`（与 `AgentChatComponent.vue` 同级） |
+| 前端 SSE composable | `web/src/composables/useBrowserStream.js`（与 `useAgentStreamHandler.js` 同级） |
+| 前端 view 集成 | `web/src/views/AgentView.vue`（既有，挂 `<BrowserDrawer />`） |
 | docker-compose 服务 | `docker-compose.yml`（追加 mcp-playwright + browser-viewer） |
 | 文档（面向用户） | `docs/agents/browser-mcp.md`（Yuxi 文档站，需更新 `docs/.vitepress/config.mts`） |
 | 单元测试 | `backend/test/unit/agents/test_browser_viewer_state.py` |
 | 集成测试 | `backend/test/integration/api/test_browser_stream.py` |
-| 前端单元测试 | `web/test/unit/components/BrowserDrawer.test.js` |
+| 前端单元测试 | `web/test/unit/components/BrowserDrawer.test.js`（与现有 `agent_store_permissions.test.js` 等同级） |
 | 端到端测试 | `backend/test/e2e/test_browser_agent_flow.py` |
 | 变更日志 | `docs/develop-guides/changelog.md` |
 
