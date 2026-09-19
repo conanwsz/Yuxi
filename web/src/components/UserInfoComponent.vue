@@ -3,6 +3,7 @@
     <a-dropdown
       :trigger="['click']"
       v-if="userStore.isLoggedIn"
+      :placement="placement"
       @visibleChange="handleDropdownVisibleChange"
     >
       <div class="user-info-dropdown" :data-align="showRole ? 'left' : 'center'">
@@ -176,6 +177,13 @@ defineProps({
   showButton: {
     type: Boolean,
     default: false
+  },
+  // a-dropdown 的 placement；侧边栏底部 trigger 应传 'topLeft'，
+  // 顶部 trigger 保持默认 'bottomLeft'。指定后 vc-dropdown 不会再做
+  // overflow adjust flip，避免「先在底部弹出再跳到顶部」的视觉闪烁。
+  placement: {
+    type: String,
+    default: 'bottomLeft'
   }
 })
 
