@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from yuxi.storage.minio.client import MinIOClient, normalize_public_minio_url
 
 
@@ -21,6 +23,9 @@ class FakeMinio:
 
 
 def test_public_image_uses_same_origin_url_without_bucket_listing(monkeypatch):
+    # vuln-0007: 凭证缺失即启动失败 (fail-closed),测试需显式注入占位凭证。
+    monkeypatch.setenv("MINIO_ACCESS_KEY", "test-access-key")
+    monkeypatch.setenv("MINIO_SECRET_KEY", "test-secret-key")
     monkeypatch.setenv("MINIO_PUBLIC_URL", "/minio")
     client = MinIOClient()
     fake_minio = FakeMinio()
@@ -32,6 +37,25 @@ def test_public_image_uses_same_origin_url_without_bucket_listing(monkeypatch):
     assert fake_minio.policy is not None
     actions = [action for statement in fake_minio.policy["Statement"] for action in statement["Action"]]
     assert actions == ["s3:GetObject"]
+
+
+def test_minio_client_init_fails_closed_when_access_key_missing(monkeypatch):
+    # vuln-0007: 移除 minioadmin 默认回退后,env 缺失必须抛 KeyError 拒绝启动。
+    monkeypatch.delenv("MINIO_ACCESS_KEY", raising=False)
+    monkeypatch.delenv("MINIO_SECRET_KEY", raising=False)
+    monkeypatch.setenv("MINIO_PUBLIC_URL", "/minio")
+
+    with pytest.raises(KeyError, match="MINIO_ACCESS_KEY"):
+        MinIOClient()
+
+
+def test_minio_client_init_fails_closed_when_secret_key_missing(monkeypatch):
+    monkeypatch.setenv("MINIO_ACCESS_KEY", "test-access-key")
+    monkeypatch.delenv("MINIO_SECRET_KEY", raising=False)
+    monkeypatch.setenv("MINIO_PUBLIC_URL", "/minio")
+
+    with pytest.raises(KeyError, match="MINIO_SECRET_KEY"):
+        MinIOClient()
 
 
 def test_legacy_public_minio_url_is_normalized_to_same_origin(monkeypatch):

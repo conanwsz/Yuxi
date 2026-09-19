@@ -7,7 +7,10 @@ import pytest
 class TestMinIOClientStatFile:
     """Test MinIOClient.stat_file and astat_file methods."""
 
-    def test_stat_file_returns_size(self):
+    def test_stat_file_returns_size(self, monkeypatch):
+        # vuln-0007: MinIOClient 现在 fail-closed,测试必须显式注入凭证。
+        monkeypatch.setenv("MINIO_ACCESS_KEY", "test-access-key")
+        monkeypatch.setenv("MINIO_SECRET_KEY", "test-secret-key")
         from yuxi.storage.minio.client import MinIOClient
 
         client = MinIOClient()
@@ -22,7 +25,10 @@ class TestMinIOClientStatFile:
             bucket_name="knowledgebases", object_name="db/upload/test.pdf"
         )
 
-    def test_stat_file_returns_none_when_not_found(self):
+    def test_stat_file_returns_none_when_not_found(self, monkeypatch):
+        # vuln-0007: 见上,显式注入凭证。
+        monkeypatch.setenv("MINIO_ACCESS_KEY", "test-access-key")
+        monkeypatch.setenv("MINIO_SECRET_KEY", "test-secret-key")
         from io import BytesIO
 
         from minio.error import S3Error
@@ -41,7 +47,10 @@ class TestMinIOClientStatFile:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_astat_file_returns_size(self):
+    async def test_astat_file_returns_size(self, monkeypatch):
+        # vuln-0007: 见上,显式注入凭证。
+        monkeypatch.setenv("MINIO_ACCESS_KEY", "test-access-key")
+        monkeypatch.setenv("MINIO_SECRET_KEY", "test-secret-key")
         from yuxi.storage.minio.client import MinIOClient
 
         client = MinIOClient()

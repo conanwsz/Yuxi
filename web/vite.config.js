@@ -2,6 +2,8 @@ import { fileURLToPath, URL } from 'node:url'
 import { defineConfig, loadEnv } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
+import { minioPublicRewrite } from './src/utils/minioPublicRewrite.js'
+
 // 生产构建剥离 console.log / debug / info / warn / trace 调用:
 //   走 inline Vite plugin,在 transform 阶段把 console.X( 改写为 0&&console.X(
 //   后续 Oxc minifier 看到 0 && X 短路,会把整段 call expression tree-shake 掉
@@ -59,7 +61,9 @@ export default defineConfig(({ mode }) => {
         '^/minio/public/': {
           target: env.VITE_MINIO_URL || 'http://minio:9000',
           changeOrigin: true,
-          rewrite: (path) => path.replace(/^\/minio/, '')
+          // vuln-0007: 反代 rewrite 必须在归一化后的路径上重新断言 /public/ 前缀,
+          // 避免"原始路径判定、归一化路径执行"的语义错位导致 .. 点段逃逸。
+          rewrite: minioPublicRewrite
         }
       },
       watch: {

@@ -73,8 +73,17 @@ class MinIOClient:
     def __init__(self):
         """初始化 MinIO 客户端"""
         self.endpoint = os.getenv("MINIO_URI") or "http://minio:9000"
-        self.access_key = os.getenv("MINIO_ACCESS_KEY") or "minioadmin"
-        self.secret_key = os.getenv("MINIO_SECRET_KEY") or "minioadmin"
+        # vuln-0007: 拒绝默认 root 凭证 (minioadmin/minioadmin) 兜底。
+        # env 缺失或空串都抛 KeyError,启动期 fail-closed,与 docker-compose
+        # `${VAR:?msg}` 拒空串的语义保持一致,迫使部署方显式注入强随机凭证。
+        access_key = os.environ.get("MINIO_ACCESS_KEY")
+        if not access_key:
+            raise KeyError("MINIO_ACCESS_KEY is required (was missing or empty)")
+        secret_key = os.environ.get("MINIO_SECRET_KEY")
+        if not secret_key:
+            raise KeyError("MINIO_SECRET_KEY is required (was missing or empty)")
+        self.access_key = access_key
+        self.secret_key = secret_key
         self.public_base_url = (os.getenv("MINIO_PUBLIC_URL") or "/minio").rstrip("/")
         self._client = None
 

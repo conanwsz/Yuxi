@@ -6,6 +6,8 @@
 
 ## v0.7.2 (current)
 
+- **修复 `/minio/public/` 反代点段绕过（vuln-0007）**：渗透报告披露 Vite dev proxy 与 nginx 反代上的 `/public/` 前缀白名单仅作用于未归一化 URI,而 `..` 由下游 MinIO 才折叠,导致 `/minio/public/../<bucket>/` 逃出 public 桶约束。`web/src/utils/minioPublicRewrite.js` 把 vite rewrite 改为"先解码（含双重编码）+ 折叠点段 + 归一化后重新断言 `/public/` 前缀",越界统一映射到不存在的键;`docker/nginx/default.conf` 在 `/minio/public/` 前加正则黑名单拦截编码点/编码斜杠/双重编码,并 `proxy_pass_request_headers off` 阻断外网经反代对 MinIO 做 SigV4 调用。
+- **移除 MinIO 默认 root 凭证兜底（vuln-0007）**：`docker-compose.yml` 的 `MINIO_ACCESS_KEY`/`MINIO_SECRET_KEY` 与 `backend/.../minio/client.py` 的 `MinIOClient.__init__` 移除 `minioadmin` 默认回退,env 缺失或空串即启动失败（fail-closed）。**生产环境发版前必须轮换为强随机凭证**,建议同时审计桶策略与已读对象的合规影响。
 - **MCP 用户身份与工号透传**：Agent 执行调用 MCP 服务时，自动将当前用户的 Yuxi JWT（`X-Superchuchu-Token`）与员工工号（`X-User-Emp-No`）注入远程 HTTP headers，并在 JWT payload 中包含 `sub` 与 `emp_no`；用户工号统一映射为 `User.uid`（SSO 登录工号）。MCP Server 可据此在调用内部办公系统时以实际用户身份鉴权，避免跨用户越权查询日程等敏感信息。
 
 - **修复 admin 调优配置对普通用户静默失效**：`normalize_agent_context_config` 曾按聊天者角色剥离 `auth: "admin"` 字段（共 8 项，含 `max_execution_steps`、摘要参数、`model_retry_times`），但该过滤入口处理的是管理员维护的 agent 自有配置而非用户输入，导致 UI 配置的 500 步在 user 角色下静默回落 300。移除运行时角色过滤，权限边界保留在写入侧（agent_router 按配置编辑者角色过滤）；`tool_approval_mode` 的 run 级覆盖校验不变。同步将 `DEFAULT_MAX_EXECUTION_STEPS` 300 提至 800。
