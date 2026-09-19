@@ -67,6 +67,13 @@ _DEFAULT_MCP_SERVERS = {
         "icon": "📊",
         "tags": ["内置", "图表"],
     },
+    "mcp-playwright": {
+        "transport": "http",
+        "url": "http://mcp-playwright:8931",
+        "description": "Playwright 浏览器自动化（browser_navigate/click/fill/screenshot）。配合 browser-viewer。",
+        "icon": "🌐",
+        "tags": ["内置", "浏览器", "测试"],
+    },
 }
 
 _RETIRED_BUILTIN_MCP_SERVER_SLUGS = ("sequentialthinking",)
