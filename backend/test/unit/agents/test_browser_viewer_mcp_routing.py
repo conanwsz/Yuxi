@@ -12,7 +12,7 @@ def test_mcp_playwright_in_default_servers():
     assert "mcp-playwright" in _DEFAULT_MCP_SERVERS, "mcp-playwright 应在 _DEFAULT_MCP_SERVERS 中"
 
     cfg = _DEFAULT_MCP_SERVERS["mcp-playwright"]
-    assert cfg.get("transport") == "http", "mcp-playwright 应使用 http transport"
+    assert cfg.get("transport") == "streamable_http", "mcp-playwright 应使用 streamable_http transport"
     assert "mcp-playwright:8931" in cfg.get("url", ""), "URL 应指向 mcp-playwright:8931"
 
 

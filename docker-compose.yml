@@ -443,6 +443,7 @@ services:
       - "*"
       - "--executable-path"
       - "/ms-playwright/chromium-1226/chrome-linux/chrome"
+      - "--shared-browser-context"
     ports:
       - "127.0.0.1:8931:8931"
     environment:
@@ -463,7 +464,7 @@ services:
     image: yuxi-api:${YUXI_VERSION:-0.7.1}
     container_name: browser-viewer
     working_dir: /app
-    command: uv run python -m yuxi.agents.browser_viewer.server
+    command: watchfiles --filter python "python -m yuxi.agents.browser_viewer.server" /app/package
     ports:
       - "127.0.0.1:8932:8932"
     volumes:

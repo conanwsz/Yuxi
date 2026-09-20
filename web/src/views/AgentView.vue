@@ -105,7 +105,6 @@
         </AgentChatComponent>
       </div>
     </div>
-    <BrowserDrawer v-if="userStore.user?.id" :user-id="userStore.user.id" />
     <AgentEditModal
       ref="agentEditModalRef"
       :backend-options="agentBackendOptions"
@@ -123,7 +122,6 @@ import { agentApi } from '@/apis/agent_api'
 import { useOutsidePointerdown } from '@/composables/useOutsidePointerdown'
 import AgentChatComponent from '@/components/AgentChatComponent.vue'
 import AgentEditModal from '@/components/model-management/AgentEditModal.vue'
-import BrowserDrawer from '@/components/BrowserDrawer.vue'
 import { isBuiltinAgent, useAgentStore } from '@/stores/agent'
 import { useUserStore } from '@/stores/user'
 import { handleChatError } from '@/utils/errorHandler'

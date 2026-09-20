@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -40,9 +41,9 @@ class BrowserMCPClient:
 
     每个 BrowserMCPClient 实例对应一个 user session。生命周期：
     1. `mcp = BrowserMCPClient(cfg)`
-    2. `await mcp.initialize()` —— 调 initialize，存 session_id
+    2. `await mcp.initialize()` —— 调 initialize，存 session_id，启动 ping/pong 保活
     3. `await mcp.call_tool(name, args)` —— 多次
-    4. `await mcp.close()` —— 浏览器侧 close_context（清 session_id）
+    4. `await mcp.close()` —— 浏览器侧 close_context（清 session_id，停 ping 保活）
     5. `await mcp.aclose()` —— httpx close（FastAPI shutdown 时调）
     """
 
@@ -51,6 +52,7 @@ class BrowserMCPClient:
         self._client: httpx.AsyncClient | None = None
         self._session_id: str | None = None
         self._request_id = 0
+        self._ping_task: asyncio.Task | None = None
 
     def _ensure_client(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -60,7 +62,65 @@ class BrowserMCPClient:
             )
         return self._client
 
+    def _start_ping_listener(self) -> None:
+        """启动后台 SSE 监听任务，响应 mcp-playwright 的 heartbeat ping。"""
+        self._stop_ping_listener()
+        if self._session_id is not None:
+            self._ping_task = asyncio.create_task(self._listen_ping_events())
+
+    def _stop_ping_listener(self) -> None:
+        """停止后台 SSE 监听任务。"""
+        if self._ping_task is not None:
+            self._ping_task.cancel()
+            self._ping_task = None
+
+    async def _listen_ping_events(self) -> None:
+        """监听 GET /mcp 的 SSE 事件，收到 ping 立即回复 pong 以保活 session。"""
+        sid = self._session_id
+        while self._session_id == sid and sid is not None:
+            try:
+                headers = {
+                    "Accept": "text/event-stream",
+                    "mcp-session-id": sid,
+                }
+                async with self.client.stream(
+                    "GET", "/mcp", headers=headers, timeout=httpx.Timeout(60.0, connect=5.0)
+                ) as resp:
+                    if resp.status_code != 200 or not hasattr(resp, "aiter_lines"):
+                        break
+                    async for line in resp.aiter_lines():
+                        if self._session_id != sid:
+                            return
+                        if line.startswith("data:"):
+                            data_str = line[5:].strip()
+                            if not data_str:
+                                continue
+                            try:
+                                msg = json.loads(data_str)
+                            except json.JSONDecodeError:
+                                continue
+                            if isinstance(msg, dict) and msg.get("method") == "ping":
+                                ping_id = msg.get("id")
+                                await self.client.post(
+                                    "/mcp",
+                                    json={"jsonrpc": "2.0", "id": ping_id, "result": {}},
+                                    headers={
+                                        "Content-Type": "application/json",
+                                        "Accept": "application/json, text/event-stream",
+                                        "mcp-session-id": sid,
+                                    },
+                                    timeout=httpx.Timeout(5.0),
+                                )
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:  # noqa: BLE001
+                if self._session_id != sid:
+                    return
+                logger.debug("MCP SSE ping listener reconnecting: %s", exc)
+                await asyncio.sleep(0.5)
+
     async def aclose(self) -> None:
+        self._stop_ping_listener()
         if self._client is not None:
             try:
                 await self._client.aclose()
@@ -117,6 +177,10 @@ class BrowserMCPClient:
             body["params"] = params
 
         resp = await self._post_with_retry("/mcp", body, headers=headers)
+        if resp.status_code == 404 or "Session not found" in resp.text:
+            self._session_id = None
+            self._stop_ping_listener()
+            raise MCPClientError("Session not found")
         return _parse_sse_response(resp.text)
 
     async def _post_with_retry(
@@ -192,6 +256,7 @@ class BrowserMCPClient:
         if not session_id:
             raise MCPClientError("initialize response missing mcp-session-id header")
         self._session_id = session_id
+        self._start_ping_listener()
         parsed = _parse_sse_response(resp.text)
         if "error" in parsed:
             raise MCPClientError(f"initialize JSON-RPC error: {parsed['error']}")
@@ -202,7 +267,8 @@ class BrowserMCPClient:
         result = await self._post_jsonrpc("tools/list", params={})
         if "error" in result:
             raise MCPClientError(f"tools/list failed: {result['error']}")
-        return result.get("tools", [])
+        payload = result.get("result", result)
+        return payload.get("tools", [])
 
     async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
         """通用 tools/call。返回 tools/call 的 result 字段（去掉 JSON-RPC 包裹）。
@@ -221,16 +287,24 @@ class BrowserMCPClient:
             raise MCPClientError(f"tools/call {name} returned error: {error_text}")
         return result
 
-    async def close(self) -> None:
+    async def close(self, session_id: str | None = None) -> None:
         """关闭浏览器 context。
 
         MS Playwright MCP 用 browser_close 工具关掉当前 session 的浏览器。
         失败不抛异常（外部 idle_reclaimer 会 catch）。
         """
-        if self._session_id is None:
+        self._stop_ping_listener()
+        sid = session_id or self._session_id
+        if sid is None:
             return
+        if self._session_id == sid:
+            self._session_id = None
         try:
-            await self.call_tool("browser_close", {})
+            await self._post_jsonrpc(
+                "tools/call",
+                params={"name": "browser_close", "arguments": {}},
+                session_id=sid,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("browser_close failed: %s", exc)
 
@@ -248,6 +322,7 @@ class BrowserMCPClient:
         for item in result.get("content", []):
             if item.get("type") == "image" and item.get("data"):
                 import base64
+
                 return base64.b64decode(item["data"])
         logger.warning("no image content in screenshot response")
         return None
@@ -258,9 +333,9 @@ def _parse_sse_response(text: str) -> dict[str, Any]:
     last_data: str | None = None
     for line in text.splitlines():
         if line.startswith("data: "):
-            last_data = line[len("data: "):]
+            last_data = line[len("data: ") :]
         elif line.startswith("data:"):
-            last_data = line[len("data:"):].lstrip()
+            last_data = line[len("data:") :].lstrip()
     if last_data is None:
         raise MCPClientError(f"no data: line in SSE response: {text[:200]}")
     try:
@@ -282,6 +357,7 @@ def _extract_text_content(content: list[dict[str, Any]]) -> str:
 def _extract_markdown_link_target(text: str) -> str | None:
     """提取 markdown 链接的目标 URL: [label](target) -> target"""
     import re
+
     m = re.search(r"\]\(([^)]+)\)", text)
     if m:
         return m.group(1).strip()

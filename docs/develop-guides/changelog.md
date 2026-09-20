@@ -6,7 +6,7 @@
 
 ## v0.7.2 (current)
 
-- **浏览器工具 MCP（mcp-playwright + browser-viewer）**：测试同事可使用 Yuxi 智能体做模拟人工操作浏览器的自动化测试。新增两个 Docker 服务（官方 `mcp/playwright` 镜像 + 自建 FastAPI viewer），按 user_id 隔离 Playwright browser context，chat 右侧抽屉实时展示浏览器视图（每 1.5s 刷新）；agent 工具列表自动出现 `browser_navigate` / `browser_click` / `browser_fill` / `browser_screenshot` 等官方工具。默认并发 30、30 分钟空闲回收、权限继承现有 MCP governance。详见 [浏览器工具 MCP](../agents/browser-mcp.md)。
+- **浏览器工具 MCP（mcp-playwright + browser-viewer）**：支持智能体操作浏览器。新增 `mcp/playwright` 与 FastAPI viewer 容器，按 user_id 隔离 context；浏览器视图融合至会话“状态”面板，以 16:9 实时展示截图，页面快照仅超管可见且默认折叠；会话首次调用自动展开并尊重用户手动关闭意愿；仅工具实际调用刷新活跃时间，无操作 30 分钟后准时自动回收并释放浏览器资源。详见 [浏览器工具 MCP](../agents/browser-mcp.md)。
 
 - **修复 `/minio/public/` 反代点段绕过（vuln-0007）**：渗透报告披露 Vite dev proxy 与 nginx 反代上的 `/public/` 前缀白名单仅作用于未归一化 URI,而 `..` 由下游 MinIO 才折叠,导致 `/minio/public/../<bucket>/` 逃出 public 桶约束。`web/src/utils/minioPublicRewrite.js` 把 vite rewrite 改为"先解码（含双重编码）+ 折叠点段 + 归一化后重新断言 `/public/` 前缀",越界统一映射到不存在的键;`docker/nginx/default.conf` 在 `/minio/public/` 前加正则黑名单拦截编码点/编码斜杠/双重编码,并 `proxy_pass_request_headers off` 阻断外网经反代对 MinIO 做 SigV4 调用。
 - **移除 MinIO 默认 root 凭证兜底（vuln-0007）**：`docker-compose.yml` 的 `MINIO_ACCESS_KEY`/`MINIO_SECRET_KEY` 与 `backend/.../minio/client.py` 的 `MinIOClient.__init__` 移除 `minioadmin` 默认回退,env 缺失或空串即启动失败（fail-closed）。**生产环境发版前必须轮换为强随机凭证**,建议同时审计桶策略与已读对象的合规影响。

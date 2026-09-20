@@ -24,6 +24,10 @@ class EnsureRequest(BaseModel):
     user_id: str
 
 
+class ActivityRequest(BaseModel):
+    user_id: str
+
+
 class CallRequest(BaseModel):
     user_id: str
     tool: str
@@ -52,6 +56,7 @@ def build_app(
                 except Exception as exc:  # noqa: BLE001
                     logger.exception("reclaimer loop error: %s", exc)
                 await asyncio.sleep(60)
+
         asyncio.create_task(_run_reclaimer())
 
     @app.on_event("shutdown")
@@ -78,6 +83,21 @@ def build_app(
             logger.warning("ensure: mcp.initialize failed for %s: %s", req.user_id, exc)
         return {"context_id": ctx_id}
 
+    @app.post("/browser/activity")
+    async def activity(req: ActivityRequest) -> dict:
+        """记录浏览器操作活跃，并确保 MCP session 处于就绪状态。"""
+        logger.info("browser-viewer activity called for user_id=%s", req.user_id)
+        ctx_id = state.ensure(req.user_id)
+        state.mark_active(req.user_id)
+        m = app.state.mcp
+        if m.session_id is None or state._entries[req.user_id].mcp_session_id is None:  # noqa: SLF001
+            try:
+                sid = await m.initialize()
+                state.set_mcp_session_id(req.user_id, sid)
+            except MCPClientError as exc:
+                logger.warning("activity: mcp.initialize failed for %s: %s", req.user_id, exc)
+        return {"status": "ok", "context_id": ctx_id}
+
     @app.get("/browser/stream/{user_id}")
     async def stream(user_id: str, request: Request) -> StreamingResponse:
         m = app.state.mcp
@@ -99,8 +119,8 @@ def build_app(
         m = app.state.mcp
         state.ensure(req.user_id)
         state.mark_active(req.user_id)
-        # 第一次调用前 session 可能没建；自动 initialize
-        if state._entries[req.user_id].mcp_session_id is None:  # noqa: SLF001
+        # 第一次调用前或 session 被回收后；自动 initialize
+        if m.session_id is None or state._entries[req.user_id].mcp_session_id is None:  # noqa: SLF001
             try:
                 sid = await m.initialize()
                 state.set_mcp_session_id(req.user_id, sid)

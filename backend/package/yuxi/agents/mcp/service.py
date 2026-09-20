@@ -16,6 +16,7 @@ import time
 from collections.abc import Callable
 from typing import Any, cast
 
+import httpx
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -68,7 +69,7 @@ _DEFAULT_MCP_SERVERS = {
         "tags": ["内置", "图表"],
     },
     "mcp-playwright": {
-        "transport": "http",
+        "transport": "streamable_http",
         "url": "http://mcp-playwright:8931",
         "description": "Playwright 浏览器自动化（browser_navigate/click/fill/screenshot）。配合 browser-viewer。",
         "icon": "🌐",
@@ -646,13 +647,58 @@ async def get_enabled_mcp_tools(
         return []
 
     disabled_tools = config.get("disabled_tools") or []
-    return await get_mcp_tools(
+    tools = await get_mcp_tools(
         server_slug,
         additional_servers={server_slug: config},
         disabled_tools=disabled_tools,
         caller_token=caller_token,
         caller_emp_no=caller_emp_no,
     )
+
+    if server_slug == "mcp-playwright" and tools:
+        target_uid = "1"
+        if caller_token:
+            try:
+                from yuxi.utils.auth_utils import AuthUtils
+
+                payload = AuthUtils.decode_token(caller_token)
+                if payload and payload.get("sub"):
+                    target_uid = str(payload["sub"])
+            except Exception:
+                pass
+
+        import copy
+
+        wrapped_tools = []
+        for tool in tools:
+            orig_coro = getattr(tool, "coroutine", None)
+            if orig_coro is not None:
+
+                def _create_wrapper(coro: Callable[..., Any], uid: str) -> Callable[..., Any]:
+                    async def _wrapped(*args: Any, **kwargs: Any) -> Any:
+                        asyncio.create_task(_notify_browser_activity(uid))
+                        return await coro(*args, **kwargs)
+
+                    return _wrapped
+
+                tool_copy = copy.copy(tool)
+                tool_copy.coroutine = _create_wrapper(orig_coro, target_uid)
+                wrapped_tools.append(tool_copy)
+            else:
+                wrapped_tools.append(tool)
+        return wrapped_tools
+
+    return tools
+
+
+async def _notify_browser_activity(uid: str) -> None:
+    """异步通知 browser-viewer 该用户的浏览器工具被调用，激活推流并刷新活跃时间。"""
+    try:
+        browser_viewer_url = os.environ.get("BROWSER_VIEWER_URL", "http://browser-viewer:8932").rstrip("/")
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            await client.post(f"{browser_viewer_url}/browser/activity", json={"user_id": uid})
+    except Exception as exc:
+        logger.warning(f"notify browser activity failed for {uid}: {type(exc)} {exc}")
 
 
 async def get_servers_config(names: list[str]) -> dict[str, dict[str, Any]]:

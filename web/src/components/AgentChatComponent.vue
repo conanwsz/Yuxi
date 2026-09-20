@@ -317,10 +317,27 @@
                 >
                   <RefreshCw :size="14" :class="{ 'is-spinning': isRefreshingState }" />
                 </button>
+                <button
+                  type="button"
+                  class="state-close-btn"
+                  title="关闭状态面板"
+                  @click.stop="handleCloseStatePanel"
+                >
+                  <X :size="14" />
+                </button>
               </div>
             </div>
 
             <div class="state-panel-body">
+              <BrowserStateSection
+                v-if="hasBrowserActivity"
+                :screenshot="latestScreenshot"
+                :event="latestBrowserEvent"
+                :status="browserServiceStatus"
+                :is-expanded="isStateSectionExpanded('browser')"
+                @toggle-expand="toggleStateSection('browser')"
+              />
+
               <section
                 v-if="currentTokenUsage"
                 class="state-section"
@@ -683,8 +700,12 @@ import {
   LayoutList,
   Play,
   RefreshCw,
-  Trash2
+  Trash2,
+  X
 } from 'lucide-vue-next'
+import { useUserStore } from '@/stores/user'
+import { useBrowserStream } from '@/composables/useBrowserStream'
+import BrowserStateSection from '@/components/BrowserStateSection.vue'
 import { formatFileSize } from '@/utils/file_utils'
 import FileTypeIcon from '@/components/common/FileTypeIcon.vue'
 import { generatePixelAvatar } from '@/utils/pixelAvatar'
@@ -830,8 +851,19 @@ const collapsedStateSections = reactive({
   todos: false,
   files: false,
   artifacts: false,
-  subagents: false
+  subagents: false,
+  browser: false
 })
+
+// 浏览器推流与状态管理
+const userStore = useUserStore()
+const userIdRef = computed(() => (userStore.uid || (userStore.userId ? String(userStore.userId) : '')))
+const {
+  events: browserEvents,
+  status: browserServiceStatus,
+  connect: connectBrowser,
+  disconnect: disconnectBrowser
+} = useBrowserStream(userIdRef)
 const threadConfigNoticeMap = ref({})
 const threadPendingConfigNoticeMap = ref({})
 const threadConfigSnapshotMap = ref({})
@@ -1121,6 +1153,64 @@ const currentAgent = computed(() => {
   return agents.value.find((a) => a.id === currentAgentId.value) || null
 })
 const currentChatId = computed(() => currentThreadId.value)
+
+// 浏览器推流与会话状态管理
+const autoOpenedThreads = ref(new Set())
+const manuallyClosedThreads = ref(new Set())
+
+const isBrowserUsed = (event) => {
+  if (!event) return false
+  if (event.status === 'idle') return false
+  if (event.url && event.url !== 'about:blank') return true
+  if (event.action_summary) return true
+  if (event.snapshot && event.snapshot.trim() && !event.snapshot.includes('Page URL: about:blank')) return true
+  return false
+}
+
+const latestScreenshot = computed(() => {
+  if (browserServiceStatus.value === 'idle') return null
+  for (let i = browserEvents.value.length - 1; i >= 0; i--) {
+    if (browserEvents.value[i]?.screenshot_b64) return browserEvents.value[i].screenshot_b64
+  }
+  return null
+})
+
+const latestBrowserEvent = computed(() => {
+  return browserEvents.value.length ? browserEvents.value[browserEvents.value.length - 1] : null
+})
+
+const hasBrowserActivity = computed(() => {
+  if (browserServiceStatus.value === 'idle') return false
+  return Boolean(latestScreenshot.value || isBrowserUsed(latestBrowserEvent.value))
+})
+
+watch(browserEvents, (val) => {
+  if (!val.length) return
+  const latest = val[val.length - 1]
+  // 若当前推流状态已是空闲（被回收或未启动），不触发自动打开
+  if (latest?.status === 'idle' || browserServiceStatus.value === 'idle') return
+  const key = currentChatId.value || ''
+  // 每个会话第一次使用到浏览器时，自动打开浏览器视图；若用户已手动关闭，则尊重用户意愿不再强行打开
+  if (isBrowserUsed(latest) && !autoOpenedThreads.value.has(key)) {
+    autoOpenedThreads.value.add(key)
+    if (!manuallyClosedThreads.value.has(key)) {
+      statePanelOpen.value = true
+    }
+  }
+}, { deep: true })
+
+watch(currentChatId, (newId, oldId) => {
+  if (!oldId && newId) {
+    if (manuallyClosedThreads.value.has('')) {
+      manuallyClosedThreads.value.add(newId)
+      manuallyClosedThreads.value.delete('')
+    }
+    if (autoOpenedThreads.value.has('')) {
+      autoOpenedThreads.value.add(newId)
+      autoOpenedThreads.value.delete('')
+    }
+  }
+})
 
 // ==================== 对话级模型覆盖 ====================
 // 按线程记忆用户选择的模型；未选择时回退到智能体配置的模型。
@@ -1512,7 +1602,8 @@ const hasVisibleStateSections = computed(
     currentTodos.value.length > 0 ||
     currentStateFiles.value.length > 0 ||
     currentArtifactFiles.value.length > 0 ||
-    displaySubagentRuns.value.length > 0
+    displaySubagentRuns.value.length > 0 ||
+    hasBrowserActivity.value
 )
 
 const { mentionConfig } = useAgentMentionConfig({
@@ -2397,6 +2488,10 @@ onMounted(() => {
     document.addEventListener('visibilitychange', handlePageVisibilityChange)
   }
 
+  if (userStore.uid || userStore.userId) {
+    connectBrowser()
+  }
+
   nextTick(() => {
     const chatMainContainer = document.querySelector('.chat-main')
     if (chatMainContainer) {
@@ -2422,6 +2517,7 @@ onUnmounted(() => {
   if (typeof document !== 'undefined') {
     document.removeEventListener('visibilitychange', handlePageVisibilityChange)
   }
+  disconnectBrowser()
   scrollController.cleanup()
   stopChatMainResizeObserver()
   stopStreamingStateRefresh()
@@ -3301,8 +3397,20 @@ const handleAgentStateRefresh = async (threadId = null) => {
   }
 }
 
+const handleCloseStatePanel = () => {
+  const key = currentChatId.value || ''
+  manuallyClosedThreads.value.add(key)
+  statePanelOpen.value = false
+}
+
 const toggleStatePanel = async () => {
   const nextOpen = !statePanelOpen.value
+  const key = currentChatId.value || ''
+  if (!nextOpen) {
+    manuallyClosedThreads.value.add(key)
+  } else {
+    manuallyClosedThreads.value.delete(key)
+  }
   statePanelOpen.value = nextOpen
   if (nextOpen && currentChatId.value && !currentAgentState.value) {
     await handleAgentStateRefresh()
@@ -4450,7 +4558,8 @@ watch(currentChatId, (threadId, oldThreadId) => {
   gap: 8px;
 }
 
-.state-refresh-btn {
+.state-refresh-btn,
+.state-close-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;

@@ -22,8 +22,6 @@ class BrowserViewerConfig:
             max_contexts=int(os.environ.get("BROWSER_VIEWER_MAX_CONTEXTS", "30")),
             idle_timeout_seconds=int(os.environ.get("BROWSER_VIEWER_IDLE_TIMEOUT", "1800")),
             sse_poll_interval_ms=int(os.environ.get("BROWSER_VIEWER_SSE_POLL_MS", "1500")),
-            sse_disconnect_grace_seconds=int(
-                os.environ.get("BROWSER_VIEWER_DISCONNECT_GRACE", "300")
-            ),
+            sse_disconnect_grace_seconds=int(os.environ.get("BROWSER_VIEWER_DISCONNECT_GRACE", "300")),
             port=int(os.environ.get("BROWSER_VIEWER_PORT", "8932")),
         )

@@ -1,6 +1,6 @@
 # 浏览器工具 MCP
 
-测试同事可以使用 Yuxi 智能体做"模拟人工操作浏览器"的自动化测试。智能体获得一组浏览器自动化工具（导航、点击、填表、截图、执行 JS），并能在 chat 右侧抽屉实时看到浏览器正在做什么。
+测试同事可以使用 Yuxi 智能体做"模拟人工操作浏览器"的自动化测试。智能体获得一组浏览器自动化工具（导航、点击、填表、截图、执行 JS），并能在 chat 状态面板实时看到浏览器正在做什么。
 
 ## 启用方法
 
@@ -23,7 +23,7 @@
 
 ## 实时视图
 
-启用后，chat 界面右侧会自动展开一个抽屉，实时显示浏览器正在做什么（每 1.5 秒刷新一次截图）。抽屉可手动关闭，但**不会中断 agent 运行**。
+启用后，chat 会话在第一次使用浏览器工具时会自动展开状态面板，实时以 16:9 比例显示浏览器截图（每 1.5 秒刷新一次）。状态面板可手动关闭（关闭后当前会话不会强行再开），但**不会中断 agent 运行**。超级管理员还可展开查看 DOM 页面快照。
 
 ## 多用户隔离
 
@@ -50,7 +50,7 @@ mcp-playwright 容器（官方 Playwright 镜像）
    ▼
 Chromium（容器内 1 个进程，按 user_id 多 context）
 
-前端 BrowserDrawer（web/src/components/BrowserDrawer.vue）
+前端 BrowserStateSection（web/src/components/BrowserStateSection.vue）
    │ ② SSE 订阅
    ▼
 browser-viewer 容器（自建 FastAPI）
@@ -63,10 +63,10 @@ mcp-playwright
 
 | 现象 | 可能原因 | 处理 |
 |---|---|---|
-| 抽屉一直"浏览器不可用" | browser-viewer 容器未起 | `docker compose ps browser-viewer`，必要时 `docker compose up -d browser-viewer` |
-| 抽屉一直"连接中" | browser-viewer 无法连 mcp-playwright | `docker compose logs browser-viewer`，检查 `MCP_PLAYWRIGHT_URL` 环境变量 |
+| 状态面板一直"浏览器不可用" | browser-viewer 容器未起 | `docker compose ps browser-viewer`，必要时 `docker compose up -d browser-viewer` |
+| 状态面板一直"连接中" | browser-viewer 无法连 mcp-playwright | `docker compose logs browser-viewer`，检查 `MCP_PLAYWRIGHT_URL` 环境变量 |
 | agent 调工具返回 502 | 同上 | 同上 |
-| 抽屉显示"重连中"超过 1 分钟 | 网络抖动 / viewer 容器过载 | `docker compose restart browser-viewer` |
+| 状态面板显示"重连中"超过 1 分钟 | 网络抖动 / viewer 容器过载 | `docker compose restart browser-viewer` |
 | 并发 503 | 同时活跃用户超过 30 | 等待空闲回收，或联系管理员调整 `BROWSER_VIEWER_MAX_CONTEXTS` |
 
 ## 已知边界（YAGNI）

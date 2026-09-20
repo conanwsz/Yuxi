@@ -48,9 +48,9 @@ class IdleReclaimer:
             now_ts=now_ts,
             grace_after_disconnect=self._config.sse_disconnect_grace_seconds,
         )
-        for user_id, _sid in evicted_snapshot:
+        for user_id, sid in evicted_snapshot:
             try:
-                await self._mcp.close()
+                await self._mcp.close(session_id=sid)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Failed to close MCP for %s: %s", user_id, exc)
         return evicted_ids

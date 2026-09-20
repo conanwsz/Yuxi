@@ -892,8 +892,9 @@ class MCPServer(Base):
         """转换为 MCP 配置格式（用于加载到 MCP_SERVERS 缓存）"""
         import json
 
-        config = {"transport": self.transport}
-        if self.transport == "stdio":
+        transport = "streamable_http" if self.transport == "http" else self.transport
+        config = {"transport": transport}
+        if transport == "stdio":
             if self.command:
                 config["command"] = self.command
             if self.args:
@@ -912,7 +913,7 @@ class MCPServer(Base):
                         config["env"] = json.loads(self.env)
                     except json.JSONDecodeError:
                         pass
-        elif self.transport in ("sse", "streamable_http"):
+        elif transport in ("sse", "streamable_http"):
             if self.url:
                 config["url"] = self.url
             if self.headers:
