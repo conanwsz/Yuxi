@@ -115,6 +115,11 @@ def _normalize_model_item(model: dict[str, Any]) -> dict[str, Any]:
         if batch_size not in (None, ""):
             normalized["batch_size"] = int(batch_size)
 
+    if "token_coefficient" in model:
+        # 即便非 chat 模型也要落到 normalized，便于回显和缓存层读取；
+        # 校验失败直接抛错（避免脏值进 DB 后运行时静默回退）。
+        normalized["token_coefficient"] = _normalize_token_coefficient(model.get("token_coefficient"))
+
     return normalized
 
 

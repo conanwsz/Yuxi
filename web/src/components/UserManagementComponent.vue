@@ -237,8 +237,12 @@
 
                 <template v-else-if="column.key === 'department'">
                   <div class="table-department">
-                    <span>{{ user.department_path || user.department_name || '未分配部门' }}</span>
-                    <span class="table-secondary"> 兼职：{{ partTimeLabel(user) }} </span>
+                    <span
+                      class="table-department-path"
+                      :title="user.department_path || user.department_name || '未分配部门'"
+                    >
+                      {{ user.department_path || user.department_name || '未分配部门' }}
+                    </span>
                   </div>
                 </template>
 
@@ -459,7 +463,7 @@
                 v-model:current="userManagement.currentPage"
                 v-model:page-size="userManagement.pageSize"
                 :total="filteredUsers.length"
-                :page-size-options="['20', '50', '100']"
+                :page-size-options="USER_PAGE_SIZE_OPTIONS"
                 show-size-changer
                 size="small"
               />
@@ -731,6 +735,7 @@ import InfoCard from '@/components/shared/InfoCard.vue'
 const userStore = useUserStore()
 const roles = ref([])
 const GLOBAL_RESET_CONFIRM_TEXT = '重置额度'
+const USER_PAGE_SIZE_OPTIONS = ['20', '50', '100', '200', '500']
 const tokenQuotaModeOptions = [
   { value: 'inherit', label: '继承' },
   { value: 'custom', label: '自定义' },
@@ -940,7 +945,7 @@ const userTablePagination = computed(() => ({
   current: userManagement.currentPage,
   pageSize: userManagement.pageSize,
   total: filteredUsers.value.length,
-  pageSizeOptions: ['20', '50', '100'],
+  pageSizeOptions: USER_PAGE_SIZE_OPTIONS,
   showSizeChanger: true,
   showTotal: (total) => `共 ${total} 名用户`
 }))
@@ -1986,6 +1991,15 @@ onMounted(async () => {
           flex-direction: column;
           gap: 2px;
           min-width: 0;
+        }
+
+        .table-department-path {
+          overflow: hidden;
+          color: var(--gray-800);
+          font-size: 12px;
+          line-height: 1.4;
+          text-overflow: ellipsis;
+          white-space: nowrap;
         }
 
         .table-user-name {

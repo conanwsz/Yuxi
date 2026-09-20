@@ -44,6 +44,10 @@ class ModelInfo:
     dimension: int | None = None
     batch_size: int = 40
 
+    # Token 计费倍率，运行时由 token_quota_service._resolve_token_coefficient 读取并加权。
+    # 必须在写入端（service._normalize_model_item）完成校验，缓存层只透传。
+    token_coefficient: float = 1.0
+
     @property
     def spec(self) -> str:
         return f"{self.provider_id}:{self.model_id}"
@@ -62,10 +66,17 @@ class ModelInfo:
             "request_body_overrides": self.request_body_overrides,
             "dimension": self.dimension,
             "batch_size": self.batch_size,
+            "token_coefficient": self.token_coefficient,
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> ModelInfo:
+        raw_coefficient = data.get("token_coefficient", 1.0)
+        # 兼容修复前已写入 Redis 的旧缓存条目：缺失字段默认 1.0。
+        try:
+            coefficient = float(raw_coefficient)
+        except (TypeError, ValueError):
+            coefficient = 1.0
         return cls(
             provider_id=data["provider_id"],
             model_id=data["model_id"],
@@ -79,6 +90,7 @@ class ModelInfo:
             request_body_overrides=data.get("request_body_overrides", {}),
             dimension=data.get("dimension"),
             batch_size=data.get("batch_size", 40),
+            token_coefficient=coefficient,
         )
 
 
@@ -136,7 +148,7 @@ class ModelCache:
         return grouped
 
     def rebuild(self, providers: list[Any]) -> None:
-        from yuxi.models.providers.service import resolve_api_key
+        from yuxi.models.providers.service import _normalize_token_coefficient, resolve_api_key
 
         new_cache: dict[str, ModelInfo] = {}
 
@@ -163,6 +175,7 @@ class ModelCache:
                     request_body_overrides=dict(model.get("request_body_overrides") or {}),
                     dimension=model.get("dimension"),
                     batch_size=model.get("batch_size", 40),
+                    token_coefficient=_normalize_token_coefficient(model.get("token_coefficient")),
                 )
                 new_cache[info.spec] = info
 
