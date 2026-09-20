@@ -64,6 +64,77 @@ def test_model_cache_prefers_model_base_url_override(monkeypatch):
     assert saved_cache["alibaba-cn:qwen3-rerank"].base_url == "https://invalid.example/rerank"
 
 
+def test_model_cache_rebuild_carries_token_coefficient(monkeypatch):
+    saved_cache = {}
+
+    class Provider:
+        is_enabled = True
+        provider_id = "alibaba-cn"
+        api_key = "sk-test"
+        api_key_env = None
+        provider_type = "openai"
+        base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        embedding_base_url = ""
+        rerank_base_url = ""
+        headers_json = {}
+        extra_json = {}
+        enabled_models = [
+            {
+                "id": "qwen3-8-flash-next",
+                "type": "chat",
+                "display_name": "Qwen3.8 Flash",
+                "token_coefficient": 0.5,
+            },
+            {
+                "id": "qwen3-30b",
+                "type": "chat",
+                "display_name": "Qwen3 30B",
+                # 没有 token_coefficient 字段时应回退到 1.0
+            },
+            {
+                "id": "qwen-embed",
+                "type": "embedding",
+                "display_name": "Qwen Embed",
+                "token_coefficient": 2.5,
+            },
+        ]
+
+    cache = ModelCache()
+    monkeypatch.setattr(cache, "_save_cache", lambda data: saved_cache.update(data))
+
+    cache.rebuild([Provider()])
+
+    assert saved_cache["alibaba-cn:qwen3-8-flash-next"].token_coefficient == 0.5
+    assert saved_cache["alibaba-cn:qwen3-30b"].token_coefficient == 1.0
+    assert saved_cache["alibaba-cn:qwen-embed"].token_coefficient == 2.5
+
+
+def test_model_cache_rebuild_rejects_invalid_token_coefficient(monkeypatch):
+    class Provider:
+        is_enabled = True
+        provider_id = "alibaba-cn"
+        api_key = "sk-test"
+        api_key_env = None
+        provider_type = "openai"
+        base_url = "https://example.com/v1"
+        embedding_base_url = ""
+        rerank_base_url = ""
+        headers_json = {}
+        extra_json = {}
+        enabled_models = [
+            {
+                "id": "bad-model",
+                "type": "chat",
+                "display_name": "Bad",
+                "token_coefficient": 999,  # 超出 0.01-100 范围
+            }
+        ]
+
+    cache = ModelCache()
+    with pytest.raises(ValueError, match="token_coefficient"):
+        cache.rebuild([Provider()])
+
+
 def test_model_cache_loads_from_redis_and_uses_local_ttl(monkeypatch: pytest.MonkeyPatch):
     redis = _FakeRedis()
     _patch_redis(monkeypatch, redis)
@@ -113,3 +184,56 @@ def test_model_cache_save_writes_redis_json(monkeypatch: pytest.MonkeyPatch):
     payload = json.loads(redis.data[REDIS_CACHE_KEY])
     assert payload[info.spec]["base_url"] == "https://example.com/v1"
     assert payload[info.spec]["request_body_overrides"] == {"enable_thinking": True}
+    assert payload[info.spec]["token_coefficient"] == 1.0
+
+
+def test_model_cache_from_dict_defaults_legacy_entries_to_coefficient_1():
+    """修复前已写入 Redis 的缓存条目不含 token_coefficient，应回退到 1.0。"""
+    legacy_payload = {
+        "provider_id": "provider",
+        "model_id": "chat",
+        "model_type": "chat",
+        "display_name": "Chat",
+        "api_key": "sk-test",
+        "base_url": "https://example.com/v1",
+        "provider_type": "openai",
+        "headers": {},
+        "extra": {},
+        "request_body_overrides": {},
+    }
+    info = ModelInfo.from_dict(legacy_payload)
+    assert info.token_coefficient == 1.0
+
+
+def test_model_cache_from_dict_handles_unparseable_coefficient():
+    """脏数据兜底：非数字字符串应被忽略，强制回退 1.0。"""
+    payload = {
+        "provider_id": "provider",
+        "model_id": "chat",
+        "model_type": "chat",
+        "display_name": "Chat",
+        "api_key": "sk-test",
+        "base_url": "https://example.com/v1",
+        "provider_type": "openai",
+        "headers": {},
+        "extra": {},
+        "request_body_overrides": {},
+        "token_coefficient": "not-a-number",
+    }
+    info = ModelInfo.from_dict(payload)
+    assert info.token_coefficient == 1.0
+
+
+def test_model_cache_roundtrip_preserves_token_coefficient():
+    info = ModelInfo(
+        provider_id="provider",
+        model_id="chat",
+        model_type="chat",
+        display_name="Chat",
+        api_key="sk-test",
+        base_url="https://example.com/v1",
+        provider_type="openai",
+        token_coefficient=0.5,
+    )
+    rebuilt = ModelInfo.from_dict(info.to_dict())
+    assert rebuilt.token_coefficient == 0.5

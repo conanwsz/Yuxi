@@ -627,6 +627,92 @@ async def test_weighted_tokens_uses_ceiling():
     assert weighted == 11  # 7 * 1.5 = 10.5 -> ceil = 11
 
 
+async def test_rebuild_propagates_token_coefficient_into_settle(quota_session, monkeypatch):
+    """回归：ModelCache.rebuild() 后 _resolve_token_coefficient 应拿到新倍率，下一次 settle 立即按新值计费。"""
+    from contextlib import contextmanager
+    from yuxi.models.providers import cache as cache_module
+    from yuxi.models.providers.cache import ModelCache
+
+    class _FakeRedis:
+        def __init__(self):
+            self.data: dict[str, str] = {}
+
+        def get(self, key):
+            return self.data.get(key)
+
+        def set(self, key, value):
+            self.data[key] = value
+            return True
+
+    redis = _FakeRedis()
+
+    @contextmanager
+    def fake_sync_redis_client(*args, **kwargs):
+        del args, kwargs
+        yield redis
+
+    monkeypatch.setattr(cache_module, "sync_redis_client", fake_sync_redis_client)
+
+    fresh_cache = ModelCache()
+    monkeypatch.setattr(quota_service, "model_cache", fresh_cache)
+
+    class _Provider:
+        is_enabled = True
+        provider_id = "alibaba-cn"
+        api_key = "sk-test"
+        api_key_env = None
+        provider_type = "openai"
+        base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        embedding_base_url = ""
+        rerank_base_url = ""
+        headers_json = {}
+        extra_json = {}
+
+        def __init__(self, coefficient):
+            self.enabled_models = [{"id": "qwen-flash", "type": "chat", "token_coefficient": coefficient}]
+
+    async with quota_session() as db:
+        user = await _build_user(
+            db,
+            department_id=1,
+            uid="grace",
+            username="grace",
+            token_quota_mode="custom",
+            weekly_token_quota=10_000,
+        )
+
+        # 第 1 轮：倍率 1.0，100 tokens 应记 100。
+        fresh_cache.rebuild([_Provider(1.0)])
+        await settle(
+            db,
+            model_spec="alibaba-cn:qwen-flash",
+            event_id="evt-coef-1",
+            user_id=user.id,
+            uid_snapshot=user.uid,
+            usage={"prompt_tokens": 30, "completion_tokens": 70, "total_tokens": 100},
+        )
+
+        # 第 2 轮：管理员把倍率改成 0.5，rebuild 后 100 tokens 应记 50。
+        fresh_cache.rebuild([_Provider(0.5)])
+        await settle(
+            db,
+            model_spec="alibaba-cn:qwen-flash",
+            event_id="evt-coef-2",
+            user_id=user.id,
+            uid_snapshot=user.uid,
+            usage={"prompt_tokens": 30, "completion_tokens": 70, "total_tokens": 100},
+        )
+
+        await db.commit()
+        payload = await get_user_token_quota_payload_with_breakdown(db, user)
+        weekly = payload["token_quota"]
+        assert weekly["weighted_tokens"] == 150  # 100 + 50
+        per_model = weekly["by_model"][0]
+        assert per_model["model"] == "alibaba-cn:qwen-flash"
+        assert per_model["weighted_tokens"] == 150
+        assert per_model["total_tokens"] == 200  # 原始 token 仍然累计
+
+
 async def test_token_billing_context_propagates_into_callback():
     captured: dict[str, BillingContext | None] = {"value": None}
 

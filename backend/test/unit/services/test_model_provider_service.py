@@ -33,6 +33,40 @@ def test_normalize_payload_accepts_enabled_chat_model():
     assert payload["enabled_models"][0]["display_name"] == "anthropic/claude-sonnet-4.5"
 
 
+def test_normalize_payload_normalizes_token_coefficient():
+    """token_coefficient 应被规范化到 0.0001 精度，缺失时不写入（由 DB 默认 1.0 兜底）。"""
+    payload = _normalize_payload(
+        {
+            "provider_id": "alibaba-cn",
+            "display_name": "Alibaba CN",
+            "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "enabled_models": [
+                {"id": "qwen-flash", "type": "chat", "token_coefficient": 0.5},
+                {"id": "qwen-pro", "type": "chat", "token_coefficient": 1.23456},
+                {"id": "qwen-default", "type": "chat"},
+            ],
+        }
+    )
+    by_id = {m["id"]: m for m in payload["enabled_models"]}
+    assert by_id["qwen-flash"]["token_coefficient"] == 0.5
+    assert by_id["qwen-pro"]["token_coefficient"] == 1.2346  # HALF_UP 截断到 0.0001
+    assert "token_coefficient" not in by_id["qwen-default"]  # 缺失不写键，DB 默认 1.0 接管
+
+
+def test_normalize_payload_rejects_out_of_range_token_coefficient():
+    with pytest.raises(ValueError, match="token_coefficient"):
+        _normalize_payload(
+            {
+                "provider_id": "alibaba-cn",
+                "display_name": "Alibaba CN",
+                "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "enabled_models": [
+                    {"id": "bad", "type": "chat", "token_coefficient": 999},
+                ],
+            }
+        )
+
+
 def test_normalize_payload_accepts_allowed_model_request_body_overrides():
     overrides = {
         "enable_thinking": True,
